@@ -1,6 +1,6 @@
 # Sidebar V2: handoff checklist
 
-Status: design final (2026-11-14). Not implemented. Every item is unchecked until the code ships.
+Status: design final (2026-11-14). Implemented in steps P1 to P4 (2026-11-15). The checklist ticks what the code has; the "Code now" columns show the code before P1.
 Design source: Paper file "Termul Design System", page **Troupe Design - V2** (rows 1 and 2), and the **Shell** page, board **Sidebar**.
 
 Scope: the shell rail in its expanded and collapsed states, the hover panels of the collapsed rail, and the open workspace tab label. `AGENTS.md` asks to check every surface: the browser client renders the same rail, so check it too.
@@ -79,19 +79,32 @@ Code now: `RailRow` shows a `Tooltip` with label + hint. The chat peek and the p
 
 ## Checklist
 
-- [ ] Expanded rail rows: heights, insets, 1px gaps, 14px nav icons, no Kbd chips
-- [ ] Text colours: `secondary-foreground` for nav, project and chat labels
-- [ ] Long titles fade instead of "…" (rows only; multi-line keeps line-clamp)
-- [ ] Collapsed rail rebuilt as 1:1 with the expanded rail (`RailCollapsed.tsx`)
-- [ ] Open-sidebar toggle in the tab bar, right of the traffic lights, when collapsed
-- [ ] Hover chat peek, project card, nav tooltip with shortcut
-- [ ] Open tab label `secondary-foreground`
+- [x] Expanded rail rows: heights, insets, 1px gaps, 14px nav icons, no Kbd chips
+- [x] Text colours: `secondary-foreground` for nav, project and chat labels
+- [x] Long titles fade instead of "…" (rows only; multi-line keeps line-clamp)
+- [x] Collapsed rail rebuilt as 1:1 with the expanded rail (`RailBody.tsx` with `rail-density.tsx`; `RailCollapsed.tsx` is removed)
+- [x] Open-sidebar toggle in the tab bar, right of the traffic lights, when collapsed
+- [x] Hover chat peek, project card, nav tooltip with shortcut
+- [x] Open tab label `secondary-foreground`
 - [ ] Browser client checked (same rail)
-- [ ] Durable logs for new flows if any are added (`src/renderer/lib/log-api.ts`)
+- [x] Durable logs for new flows if any are added (`src/renderer/lib/log-api.ts`)
 - [ ] Light theme checked (design is dark only)
+
+### P4: what moved out of the removed panels
+
+The Side panel Chats tab, its header Workspace switcher and the StatusBar are gone (P1 to P3). P4 gives their remaining jobs a place:
+
+- [x] Worktree switch: the project row menu (right-click, Shift+F10 or the context-menu key, or the row "…" button on the expanded rail) has "Switch worktree…". It opens the working copies popover on the row (`shell/rail/worktree-switcher.tsx`: search, create, a terminal action per row). The pick stays in `shell-layout-store.worktreePickByProject`.
+- [x] Worktree chip: a muted chip under the project name with the picked worktree, only when the pick is not the project folder. The collapsed rail keeps its line (18px) with a branch glyph, so the icons keep their y; the chat peek repeats the chip.
+- [x] StatusBar information (git counts, cwd, exit code, needs-you pill) is dropped. The context bar settings (popover, store, loader) are removed; a stored `settings/context-bar` value is not read.
+- [x] Shell picker: right-click, Shift+F10 or the context-menu key on the tool strip Terminal button lists the detected shells (default first); a pick opens a terminal tab with that shell. A click opens the default shell. The tooltip says "Right-click for other shells".
+- [x] Windows and Linux window controls: in the window's top-right corner, above the tool strip (the strip starts 44px lower). The top row surface on their left (right panel header when the panel is open, else the tab bar, SSH header or fallback bar) ends with a 76px drag spacer. macOS is unchanged.
+- [x] Chat search: the command palette has a "Chats" group while there is a query. It searches every chat of the open project (title, agent, branch, model) and opens the picked chat. The rail "Search" row opens the palette.
+- [x] Import chats: an item in the Projects `+` menu, for the open project's working copy (disabled with the reason on a read-only server).
+- [x] Durable logs: worktree switch from the rail, shell picked from the strip, chat import started, chat opened from the palette.
+- [ ] Paper has no frame for the worktree chip, the row "…" button or the shell menu yet.
 
 ## Open items
 
-- `#38393A` (raised outline / popover edge) has no token yet.
-- The collapsed rail hides chat status. A small status dot on the agent icon was offered, not decided.
+- The collapsed rail shows a status dot on the agent icon (P2).
 - The design shows a dark theme only. Light-theme values come from the same tokens.

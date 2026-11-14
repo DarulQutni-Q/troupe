@@ -20,7 +20,6 @@ import { useAgentChatNotification } from './hooks/use-agent-chat-notification'
 import { useAppSettingsLoader } from './hooks/use-app-settings'
 import { useAutomationProposals } from './hooks/use-automation-proposals'
 import { useAppliedColorThemeSync } from './hooks/use-color-theme'
-import { useContextBarSettings } from './hooks/use-context-bar-settings'
 import { useCrashRecovery } from './hooks/use-crash-recovery'
 import { useCwd } from './hooks/use-cwd'
 import { useExitCode } from './hooks/use-exit-code'
@@ -164,7 +163,6 @@ function AppEffects(): null {
   useProjectIcon()
   useGitStatus()
   useExitCode()
-  useContextBarSettings()
   useAppSettingsLoader()
   useAppliedColorThemeSync()
   useAppliedUiZoomSync()
