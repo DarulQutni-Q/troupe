@@ -132,6 +132,12 @@ interface ChatInputBarProps {
    * limit). It replaces the near-limit warning while it shows.
    */
   notice?: React.ReactNode
+  /**
+   * Whether `notice` shows something now. A notice element can stay mounted
+   * while empty (to animate out), so its presence alone must not hide the
+   * limit warning. Defaults to `notice` being set.
+   */
+  noticeShown?: boolean
   /** Row above the card (the status chips); it sits above the queue too. */
   statusRow?: React.ReactNode
   /** Placeholder while `disabled` (default "Composer unavailable"). */
@@ -183,6 +189,7 @@ export function ChatInputBar({
   queue = [],
   permission,
   notice = null,
+  noticeShown = notice !== null,
   statusRow = null,
   disabledPlaceholder = 'Composer unavailable',
   onRemoveQueued,
@@ -640,7 +647,7 @@ export function ChatInputBar({
               />
             )}
             {permission && <PermissionPrompt permission={permission} isVisible={isVisible} />}
-            {!notice && !controlsDisabled && (
+            {!noticeShown && !controlsDisabled && (
               <>
                 <ClaudeLimitWarning sessionId={session.id} />
                 <CodexLimitWarning sessionId={session.id} />

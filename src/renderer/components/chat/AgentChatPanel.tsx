@@ -1093,6 +1093,11 @@ export function AgentChatPanel({
             busy={sessionTurnBusy(session)}
             disabled={isClosed && !isResumableStop}
             notice={composerNotice}
+            noticeShown={
+              showStoppedNotice ||
+              (atUsageLimit && !isClosed) ||
+              (Boolean(activeError) && !atUsageLimit)
+            }
             statusRow={renderStatusChips()}
             disabledPlaceholder={
               showStoppedNotice && !codexSignedOut ? 'Resume the chat to send a message' : undefined
