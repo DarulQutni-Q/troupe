@@ -15,6 +15,7 @@ import {
 import type { TermulToolEntry } from '@/lib/composer/termul-tools'
 import { parseToolSegments } from '@/lib/composer/tool-tokens'
 import type { FilePathResolutionContext } from '@/lib/file-path-links'
+import { stripTermulPlanFences } from '@/lib/plan-session'
 import {
   isFolderTokenPath,
   parseCommandSegments,
@@ -50,12 +51,14 @@ import { ToolChip } from './ToolChip'
 // the ~800-line limit. Re-exported so existing importers keep their paths.
 export { AgentProse, TermulFilePathButton, TermulMarkdownMedia } from './chat-agent-prose'
 
-/** Concatenate the text of all text blocks. */
+/** Concatenate the text of all text blocks, without a persisted plan snapshot. */
 function blocksToText(blocks: ContentBlock[]): string {
-  return blocks
-    .filter((b) => b.type === 'text')
-    .map((b) => b.text ?? '')
-    .join('')
+  return stripTermulPlanFences(
+    blocks
+      .filter((b) => b.type === 'text')
+      .map((b) => b.text ?? '')
+      .join('')
+  )
 }
 
 function UserMessageText({ text }: { text: string }): React.JSX.Element {

@@ -452,6 +452,51 @@ fn add_subagent_result(
     );
 }
 
+/// Leaf of a tool name: `mcp__server__plan` and `server:plan` are both `plan`.
+fn plan_tool_leaf(name: &str) -> String {
+    let slashed = name.rsplit(['/', ':']).next().unwrap_or(name);
+    let leaf = slashed.rsplit("__").next().unwrap_or(slashed);
+    leaf.trim().to_ascii_lowercase().replace('-', "_")
+}
+
+fn is_plan_tool_name(name: &str) -> bool {
+    matches!(
+        plan_tool_leaf(name).as_str(),
+        "plan" | "todowrite" | "todo_write" | "update_plan" | "updatetodos" | "update_todos"
+    )
+}
+
+/// A plan/todo tool call. The renderer hides these from the transcript.
+fn is_plan_tool(tool: &serde_json::Map<String, Value>) -> bool {
+    let mut names = Vec::new();
+    if let Some(title) = tool.get("title").and_then(Value::as_str) {
+        names.push(title);
+    }
+    if let Some(name) = tool
+        .get("_meta")
+        .and_then(Value::as_object)
+        .and_then(|meta| meta.get("claudeCode"))
+        .and_then(Value::as_object)
+        .and_then(|claude| claude.get("toolName"))
+        .and_then(Value::as_str)
+    {
+        names.push(name);
+    }
+    if let Some(name) = tool
+        .get("rawInput")
+        .and_then(Value::as_object)
+        .and_then(|input| {
+            input
+                .get("_toolName")
+                .and_then(Value::as_str)
+                .or_else(|| input.get("toolName").and_then(Value::as_str))
+        })
+    {
+        names.push(name);
+    }
+    names.iter().any(|name| is_plan_tool_name(name))
+}
+
 pub(super) fn normalize_durable_payload(type_: &str, payload: &Value) -> Value {
     if matches!(type_, "tool_call" | "tool_call_update") {
         // Strict DTO: tool-authored free-form content, arguments, output, and
@@ -483,6 +528,12 @@ pub(super) fn normalize_durable_payload(type_: &str, payload: &Value) -> Value {
                 if let Some(value) = tool.get(field) {
                     reduced.insert(field.to_string(), value.clone());
                 }
+            }
+            // Plan/todo writes render only in the sticky plan panel. The name
+            // is not otherwise durable, so the flag is what hides the card
+            // after a reload. Mirrors `planToolLeaf` in plan-session.ts.
+            if is_plan_tool(tool) {
+                reduced.insert("planTool".to_string(), Value::Bool(true));
             }
             add_file_change_summary(type_, tool, &mut reduced);
             if let Some(meta) = durable_subagent_meta(tool) {

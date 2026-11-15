@@ -36,6 +36,7 @@ import { CODEX_CLI_SIGNED_OUT_MESSAGE } from '@/lib/agents/codex-cli-auth'
 import { deleteSessionTempFiles } from '@/lib/attachment-temp-cleanup'
 import { retryWireBlocks } from '@/lib/composer/retry-wire'
 import { logFrontendError } from '@/lib/log-api'
+import { settleRunningPlan } from '@/lib/plan-session'
 import { isTauriContext } from '@/lib/tauri-runtime'
 import { useProjectStore } from '@/stores/project-store'
 import {
@@ -973,7 +974,10 @@ async function openHistorySessionInner(
     // greeting turn must not rehydrate a plan whose source never renders.
     const rehydrated = scanPlanFenceFromMessages(installed.messages)
     if (rehydrated && rehydrated.length > 0) {
-      set((s) => ({ plans: { ...s.plans, [id]: rehydrated } }))
+      // A finished turn must not come back with a spinner. A turn that is
+      // still running keeps `in_progress`.
+      const restored = turnLive ? rehydrated : (settleRunningPlan(rehydrated) ?? rehydrated)
+      set((s) => ({ plans: { ...s.plans, [id]: restored } }))
     } else {
       // Detect a malformed fence (fence present but JSON unparseable / not an
       // array / empty after coercion) and warn so a corrupted snapshot is
