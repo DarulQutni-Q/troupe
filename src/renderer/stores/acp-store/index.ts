@@ -83,6 +83,7 @@ import { splitReadOnlyGuard } from '@/lib/github-handoff/read-only-guard'
 import { logFrontendError } from '@/lib/log-api'
 import { foldRecoveredPlan, markPlanTool } from '@/lib/plan-session'
 import { wireBlocksToDisplay } from '@/lib/skills-wire-reverse'
+import { useChatStartPickStore } from '@/stores/chat-start-pick-store'
 import { getAgentChatSessionIdsInAllTrees, useWorkspaceStore } from '@/stores/workspace-store'
 import type { QueuedPrompt } from '../prompt-queue-orchestration'
 import { attachAgentRosterWatch } from './agent-roster-watch'
@@ -214,6 +215,18 @@ export function startClosedTranscriptEviction(): () => void {
       }
     }
     inTabs = next
+  })
+}
+
+/**
+ * An empty chat's working-copy pick lives until its session is gone (closed
+ * and removed, or deleted). A tab move keeps it: a failed restart gives the
+ * tab back to the chat with its pick. Returns the unsubscribe.
+ */
+export function startChatStartPickPruning(): () => void {
+  return useAcpStore.subscribe((state, prev) => {
+    if (state.sessions === prev.sessions) return
+    useChatStartPickStore.getState().prune(new Set(Object.keys(state.sessions)))
   })
 }
 
@@ -593,6 +606,7 @@ export function initAcpEventListeners(): () => void {
   connection.attach()
   teardown = [
     startClosedTranscriptEviction(),
+    startChatStartPickPruning(),
     // The `agents` watch: every relay transport has one, the desktop's
     // channel carrier included. It carries the roster and the browser policy
     // and automation change hints.
