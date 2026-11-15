@@ -324,6 +324,23 @@ describe('ChatMessage', () => {
     expect(screen.getByTestId('streamdown')).toHaveAttribute('data-renderer-languages', '')
   })
 
+  it('keeps a plan fence the user typed', () => {
+    const fence = '```termul-plan\n[{"content":"Ship the plan","status":"completed"}]\n```'
+    const message: ChatMessageType = {
+      id: 'user-fence',
+      role: 'user',
+      blocks: [{ type: 'text', text: fence }],
+      streaming: false,
+      timestamp: 0
+    }
+    render(
+      <TooltipProvider>
+        <ChatMessage message={message} isLast />
+      </TooltipProvider>
+    )
+    expect(screen.getByText(/Ship the plan/)).toBeInTheDocument()
+  })
+
   it('does not render a persisted plan fence inside a historical reply', () => {
     const fence = '```termul-plan\n[{"content":"Ship the plan","status":"completed"}]\n```'
     const message: ChatMessageType = {

@@ -29,7 +29,7 @@ import {
 } from '@/lib/acp-history-persistence'
 import { splitReadOnlyGuard } from '@/lib/github-handoff/read-only-guard'
 import { logFrontendError } from '@/lib/log-api'
-import { markPlanTool, plansAfterToolCall } from '@/lib/plan-session'
+import { markPlanTool, planEventHasList, plansAfterToolCall } from '@/lib/plan-session'
 import { wireBlocksToDisplay } from '@/lib/skills-wire-reverse'
 import { forgetComposerSession } from '../composer-options'
 import {
@@ -1512,7 +1512,7 @@ export const createTranscriptSlice: StateCreator<AcpState, [], [], TranscriptSli
       const idx = list.findIndex((t) => t.toolCallId === e.toolCall.toolCallId)
       if (idx === -1) {
         return {
-          ...planPatch(s.plans, e.sessionId, marked),
+          ...(planEventHasList(e.toolCall) ? planPatch(s.plans, e.sessionId, marked) : {}),
           toolCalls: {
             ...s.toolCalls,
             [e.sessionId]: [...list, marked]
@@ -1539,7 +1539,9 @@ export const createTranscriptSlice: StateCreator<AcpState, [], [], TranscriptSli
       const next = [...list]
       next[idx] = stored
       return {
-        ...planPatch(s.plans, e.sessionId, stored),
+        ...(planEventHasList(e.toolCall)
+          ? planPatch(s.plans, e.sessionId, { ...stored, rawInput: e.toolCall.rawInput })
+          : {}),
         toolCalls: { ...s.toolCalls, [e.sessionId]: next }
       }
     }
@@ -1594,7 +1596,9 @@ export const createTranscriptSlice: StateCreator<AcpState, [], [], TranscriptSli
       const next = [...list]
       next[idx] = stored
       return {
-        ...planPatch(s.plans, e.sessionId, stored),
+        ...(planEventHasList(e.update)
+          ? planPatch(s.plans, e.sessionId, { ...stored, rawInput: e.update.rawInput })
+          : {}),
         toolCalls: { ...s.toolCalls, [e.sessionId]: next }
       }
     }

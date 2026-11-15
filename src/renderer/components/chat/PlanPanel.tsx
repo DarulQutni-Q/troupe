@@ -132,7 +132,8 @@ export function PlanPanel({
     if (ids.length > 0) previousList.current = { ids, settled }
     if (!previous || ids.length === 0 || previous.ids.length === 0) return
     if (isNewPlanList(previous.ids, ids)) {
-      setCollapsed(false)
+      // A new plan opens, unless it is already finished. A finished plan stays closed.
+      setCollapsed(settled)
       return
     }
     if (settled && !previous.settled) setCollapsed(true)

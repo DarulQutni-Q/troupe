@@ -237,6 +237,21 @@ describe('PlanPanel finished and new plans', () => {
     )
   })
 
+  it('keeps a finished replacement plan closed', () => {
+    const { rerender } = render(
+      <PlanPanel entries={[{ content: 'Old task', status: 'in_progress' }]} />
+    )
+    expect(screen.getByRole('button', { name: /task in progress/ })).toHaveAttribute(
+      'aria-expanded',
+      'true'
+    )
+    rerender(<PlanPanel entries={[{ content: 'Different task', status: 'completed' }]} />)
+    expect(screen.getByRole('button', { name: /Plan, 1 of 1 task/ })).toHaveAttribute(
+      'aria-expanded',
+      'false'
+    )
+  })
+
   it('opens again when a new plan replaces the finished one', async () => {
     const { rerender } = render(
       <PlanPanel entries={[{ content: 'Old task', status: 'completed' }]} />

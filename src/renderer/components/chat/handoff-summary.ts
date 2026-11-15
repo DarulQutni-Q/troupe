@@ -265,14 +265,11 @@ function truncateFragment(value: string, max: number): string {
 }
 
 function messageText(message: ChatMessage): string {
-  return sanitizeFragment(
-    stripTermulPlanFences(
-      message.blocks
-        .filter((b) => b.type === 'text')
-        .map((b) => b.text ?? '')
-        .join('')
-    )
-  ).trim()
+  const text = message.blocks
+    .filter((b) => b.type === 'text')
+    .map((b) => b.text ?? '')
+    .join('')
+  return sanitizeFragment(message.role === 'agent' ? stripTermulPlanFences(text) : text).trim()
 }
 
 /** Compact tool one-liner via `describeToolCall`, e.g. "Read auth.ts L1-40". */

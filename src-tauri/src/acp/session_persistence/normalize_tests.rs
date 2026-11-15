@@ -400,6 +400,10 @@ fn a_plan_tool_call_is_marked_and_drops_its_arguments() {
     assert_eq!(tool["planTool"], json!(true));
     assert!(tool.get("rawInput").is_none());
     assert!(tool.get("title").is_none());
+    assert_eq!(
+        tool["planEntries"],
+        json!([{ "content": "Ship it", "status": "pending" }])
+    );
 }
 
 #[test]

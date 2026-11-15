@@ -81,13 +81,14 @@ import { AcpConnectionCoordinator, type AcpRecovery } from '@/lib/acp-connection
 import { getAcpTransport, isTransientAcpTransportError } from '@/lib/acp-transport'
 import { splitReadOnlyGuard } from '@/lib/github-handoff/read-only-guard'
 import { logFrontendError } from '@/lib/log-api'
-import { markPlanTool } from '@/lib/plan-session'
+import { foldRecoveredPlan, markPlanTool } from '@/lib/plan-session'
 import { wireBlocksToDisplay } from '@/lib/skills-wire-reverse'
 import { getAgentChatSessionIdsInAllTrees, useWorkspaceStore } from '@/stores/workspace-store'
 import type { QueuedPrompt } from '../prompt-queue-orchestration'
 import { attachAgentRosterWatch } from './agent-roster-watch'
 import {
   dropHiddenToolCalls,
+  dropPlanForSession,
   dropRecordKey,
   normalizeUserMessages,
   partitionTranscriptTurns,
@@ -287,6 +288,8 @@ async function installTransportRecovery(
   // cards instead of blanking the session's tool-call list.
   const recoveredToolCalls: ToolCall[] = []
   let recoveredCommands: { list: AvailableCommand[]; seq: number } | null = null
+  // Plan events in the snapshot. `null` means the snapshot never mentioned a plan.
+  const recoveredPlan = foldRecoveredPlan(recovery.events)
   let openRole: 'agent' | 'thought' | 'user' | null = null
   for (const event of recovery.events) {
     const payload = event.payload as Record<string, unknown>
@@ -482,6 +485,13 @@ async function installTransportRecovery(
             seq: recoveredCommands.seq
           })
         : {}),
+      ...(recoveredPlan === null
+        ? {}
+        : {
+            plans: recoveredPlan.length
+              ? { ...current.plans, [recovery.sessionId]: recoveredPlan }
+              : dropPlanForSession(current.plans, recovery.sessionId)
+          }),
       degradedRecoverySessions: dropRecordKey(current.degradedRecoverySessions, recovery.sessionId),
       sessions: session
         ? {

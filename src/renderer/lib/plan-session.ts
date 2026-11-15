@@ -52,6 +52,10 @@ export interface PlanToolFields {
   rawInput?: unknown
   _meta?: unknown
   planTool?: boolean
+  /** Bounded plan list kept on the durable tool record after arguments are dropped. */
+  planEntries?: unknown
+  /** Durable `merge: true` from TodoWrite / updateTodos. The tool name is not kept. */
+  planMerge?: boolean
 }
 
 export interface ResolvedPlanTool {
@@ -258,7 +262,7 @@ export function resolvePlanToolCall(
   if (!input) return null
   const incoming = listFromInput(input)
   if (!incoming) return null
-  const merge = usesMergeFlag(tool) && input.merge === true
+  const merge = input.merge === true && (usesMergeFlag(tool) || tool.planMerge === true)
   if (incoming.length === 0) {
     if (merge) return null
     if (tool.status !== 'completed' && tool.status !== 'failed') return null
@@ -266,6 +270,29 @@ export function resolvePlanToolCall(
   }
   const entries = merge ? mergePlan(current, incoming) : incoming
   return { entries, kind: classifyFullPlan(current, entries) }
+}
+
+const PLAN_LIST_KEYS = ['todos', 'plan', 'entries', 'tasks'] as const
+
+/** True when this event itself carries a plan list. Retained arguments do not count. */
+export function planEventHasList(tool: PlanToolFields): boolean {
+  const input = asRecord(tool.rawInput)
+  if (!input) return false
+  return PLAN_LIST_KEYS.some((key) => Array.isArray(input[key]))
+}
+
+/**
+ * A durable plan tool keeps `planEntries` after `rawInput` is dropped. Rebuild
+ * the list input so a reload can replay the call. A live event that already
+ * has a list is unchanged.
+ */
+export function withDurablePlanInput<T extends PlanToolFields>(tool: T): T {
+  if (planEventHasList(tool) || !Array.isArray(tool.planEntries)) return tool
+  return {
+    ...tool,
+    planMerge: tool.planMerge === true,
+    rawInput: { todos: tool.planEntries, merge: tool.planMerge === true }
+  }
 }
 
 /** Apply one plan tool call onto the session map. `null` when nothing changes. */
@@ -308,6 +335,53 @@ const PLAN_FENCE = /(?:^|\n)```termul-plan\r?\n[\s\S]*?\r?\n```\n?/g
  * be copied. The fence stays on the message so a reopened chat can restore
  * the panel. It is not part of the reply.
  */
+function entriesFromPlanUpdate(payload: unknown): PlanEntry[] | null {
+  const record = asRecord(payload)
+  const plan = asRecord(record?.plan)
+  if (!plan || !Array.isArray(plan.entries)) return null
+  return entriesFromValue(plan.entries) ?? []
+}
+
+/**
+ * Replay plan events from a reconnect snapshot, in order. `null` when the
+ * snapshot never mentions a plan, so the in-memory plan stays. A `plan_update`
+ * replaces the list. A plan tool applies only when that event carries a list
+ * (or the durable `planEntries`). A later `prompt_complete` returns running
+ * items to pending.
+ */
+export function foldRecoveredPlan(
+  events: ReadonlyArray<{ type: string; payload?: unknown }>
+): PlanEntry[] | null {
+  let entries: PlanEntry[] | undefined
+  let seen = false
+  for (const event of events) {
+    if (event.type === 'plan_update') {
+      const next = entriesFromPlanUpdate(event.payload)
+      if (next === null) continue
+      entries = next
+      seen = true
+      continue
+    }
+    if (event.type === 'tool_call' || event.type === 'tool_call_update') {
+      const payload = asRecord(event.payload)
+      const raw = event.type === 'tool_call' ? payload?.toolCall : payload?.update
+      const tool = asRecord(raw)
+      if (!tool) continue
+      const folded = withDurablePlanInput(tool as PlanToolFields)
+      if (!planEventHasList(folded)) continue
+      const next = plansAfterToolCall({ session: entries ?? [] }, 'session', folded)
+      if (!next) continue
+      entries = next.plans.session ?? []
+      seen = true
+      continue
+    }
+    if (event.type === 'prompt_complete' && seen) {
+      entries = settleRunningPlan(entries) ?? []
+    }
+  }
+  return seen ? (entries ?? []) : null
+}
+
 export function stripTermulPlanFences(text: string): string {
   if (!text.includes('termul-plan')) return text
   return text.replace(PLAN_FENCE, (match) => (match.startsWith('\n') ? '\n' : ''))

@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest'
 import type { PlanEntry } from '@/lib/acp-api'
 import {
   classifyFullPlan,
+  foldRecoveredPlan,
   isNewPlanList,
   isPlanToolCall,
   isSettledPlan,
+  planEventHasList,
   plansAfterToolCall,
   resolvePlanToolCall,
   settleRunningPlan,
@@ -118,6 +120,39 @@ describe('plan session rules', () => {
         { content: 'Skip', status: 'cancelled' }
       ])
     ).toBe(true)
+  })
+
+  it('ignores a status-only tool event and replays a recovered plan', () => {
+    expect(planEventHasList({ title: 'TodoWrite', status: 'completed' })).toBe(false)
+    expect(
+      planEventHasList({
+        title: 'TodoWrite',
+        rawInput: { todos: [{ content: 'Ship', status: 'pending' }] }
+      })
+    ).toBe(true)
+
+    const folded = foldRecoveredPlan([
+      {
+        type: 'plan_update',
+        payload: {
+          plan: {
+            entries: [
+              { content: 'Read', status: 'completed' },
+              { content: 'Edit', status: 'in_progress' }
+            ]
+          }
+        }
+      },
+      {
+        type: 'tool_call_update',
+        payload: { update: { toolCallId: 'a', status: 'completed', title: 'TodoWrite' } }
+      },
+      { type: 'prompt_complete', payload: { stopReason: 'end_turn' } }
+    ])
+    expect(folded).toEqual([
+      { content: 'Read', status: 'completed' },
+      { content: 'Edit', status: 'pending' }
+    ])
   })
 
   it('strips a plan fence from display text and leaves prose', () => {

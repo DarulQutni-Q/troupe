@@ -883,4 +883,37 @@ describe('ACP agent plan store', () => {
     expect(fence?.text).toContain('"status":"pending"')
     expect(fence?.text).not.toContain('in_progress')
   })
+
+  it('does not replay an older plan when a tool call later reports status only', () => {
+    seedSession('sess-1', 'agent-1', true)
+    useAcpStore.getState()._onToolCall({
+      agentId: 'agent-1',
+      sessionId: 'sess-1',
+      toolCall: {
+        toolCallId: 'todo-a',
+        title: 'TodoWrite',
+        status: 'completed',
+        rawInput: { merge: false, todos: [{ id: 'a', content: 'First list', status: 'pending' }] }
+      }
+    })
+    useAcpStore.getState()._onToolCall({
+      agentId: 'agent-1',
+      sessionId: 'sess-1',
+      toolCall: {
+        toolCallId: 'todo-b',
+        title: 'TodoWrite',
+        status: 'completed',
+        rawInput: { merge: false, todos: [{ id: 'b', content: 'Second list', status: 'pending' }] }
+      }
+    })
+    useAcpStore.getState()._onToolCallUpdate({
+      agentId: 'agent-1',
+      sessionId: 'sess-1',
+      update: { toolCallId: 'todo-a', status: 'completed' }
+    })
+    _flushCoalescedForTesting()
+    expect(useAcpStore.getState().plans['sess-1']).toEqual([
+      { id: 'b', content: 'Second list', status: 'pending' }
+    ])
+  })
 })
