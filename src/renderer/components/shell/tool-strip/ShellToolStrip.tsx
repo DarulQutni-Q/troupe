@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { ConnectionStatusIndicator } from '@/components/ConnectionStatusIndicator'
 import { FolderTree, GitBranch, Github, Globe, Terminal, type TermulIcon } from '@/components/icons'
 import { RemoteAccessPopover } from '@/components/RemoteAccessPopover'
+import { toolStripButtonId } from '@/components/shell/column-tab-focus'
 import { logShellEvent } from '@/components/shell/shell-log'
 import { useTopRowPlatform } from '@/components/shell/top-row-context'
 import { useColumnWorkingCopy } from '@/components/shell/use-column-working-copy'
@@ -97,6 +98,7 @@ export function ShellToolStrip({
           return (
             <ToolStrip.Button
               key={id}
+              id={toolStripButtonId(id)}
               label={label}
               active={open}
               aria-pressed={open}
