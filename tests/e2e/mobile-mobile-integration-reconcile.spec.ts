@@ -844,12 +844,14 @@ test.describe('toast offset', () => {
         .toBe(20)
     })
 
-    test('the changed-files popover renders no Git action', async ({ page }) => {
+    test('the changed-files popover offers Review changes for the Changes tab', async ({
+      page
+    }) => {
       await startDesktopChat(page, `[DOCK] ${LONG} desktop bar`)
-      // Only the mobile shell wires `onOpenGitChanges`.
+      // The desktop shell hands "Review changes" to the Side panel's Changes tab.
       await page.getByRole('button', { name: /^Changes:/ }).click()
       await expect(page.getByRole('dialog', { name: 'Changed files' })).toBeVisible()
-      await expect(page.getByRole('button', { name: 'Review changes', exact: true })).toHaveCount(0)
+      await expect(page.getByRole('button', { name: 'Review changes', exact: true })).toBeVisible()
     })
   })
 })

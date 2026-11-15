@@ -255,7 +255,7 @@ export function ChatInputBar({
   const agentIcon = useAgentIcon(session.agentId, glyphConfigId)
   const { connectors, host: connectorsHost } = useChatConnectors(session)
   const termulTools = useTermulTools(session.projectId)
-  const [value, setValue] = useComposerDraft({
+  const [value, setValue, draftHydrated] = useComposerDraft({
     projectId: session.projectId,
     sessionId: session.id,
     seedNonce
@@ -642,7 +642,7 @@ export function ChatInputBar({
                 onSendNow={onSendQueuedNow}
                 onMove={onMoveQueued}
                 onClear={onClearQueued}
-                onEdit={disabled || sending ? undefined : editQueued}
+                onEdit={disabled || sending || !draftHydrated ? undefined : editQueued}
                 defaultOpen={!isMobileShell}
               />
             )}
