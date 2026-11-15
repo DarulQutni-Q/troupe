@@ -1,6 +1,7 @@
 import { columnTabId } from '@/components/shell/ColumnTabs'
 import { logFrontendError } from '@/lib/log-api'
 import { type ShellLastColumnTab, useShellLayoutStore } from '@/stores/shell-layout-store'
+import { useSSHStore } from '@/stores/ssh-store'
 
 /** Frames to wait for the revealed Side panel to mount its tab bar. */
 const FOCUS_FRAMES = 10
@@ -18,10 +19,13 @@ export function focusPanelTab(tab: ShellLastColumnTab): void {
 
 /**
  * Shows the project's Changes tab in the Side panel (the desktop Git view)
- * and moves focus to the tab. Used by "Review changes" in the chat.
+ * for the chat's working copy and moves focus to the tab. Used by "Review changes" in the chat.
  */
-export function openChangesTab(projectId: string): void {
+export function openChangesTab(projectId: string, cwd: string): void {
+  // The SSH workspace hides the Side panel, so leave it first.
+  useSSHStore.getState().selectProfile(null)
   const layout = useShellLayoutStore.getState()
+  layout.setWorktreePick(projectId, cwd)
   layout.setLastColumnTab(projectId, 'changes')
   layout.setSidePanelVisible(true)
   void logFrontendError({
