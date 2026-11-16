@@ -1859,6 +1859,17 @@ impl AcpManager {
     /// answer wins; a later `answer_question` for the same id gets
     /// `"unknown question request"`, surfaced as `Ok(())` by the command
     /// wrapper).
+    /// Route a chat MCP-install decision to the parked host tool. Secret
+    /// values stay inside `decision` and are not logged here.
+    pub fn answer_mcp_install(
+        &self,
+        request_id: &str,
+        decision: crate::acp::host_mcp::mcp_install::McpInstallDecision,
+    ) -> bool {
+        self.host_plan_server
+            .answer_mcp_install(request_id, decision)
+    }
+
     pub async fn answer_question(
         &self,
         agent_id: &AgentId,

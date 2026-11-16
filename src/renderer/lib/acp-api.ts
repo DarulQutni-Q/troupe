@@ -41,6 +41,7 @@ import { waitUntilVisible } from '@/lib/command-visibility'
 import { hasConversationWire } from '@/lib/conversation-envelope'
 import { invokeIpc } from '@/lib/ipc/tauri'
 import { logFrontendError } from '@/lib/log-api'
+import type { McpInstallAnswer } from '@/lib/mcp-install-request'
 import { wireBlocksToDisplay } from '@/lib/skills-wire-reverse'
 import { isTauriContext } from '@/lib/tauri-runtime'
 import { randomUUID } from '@/lib/uuid'
@@ -822,6 +823,9 @@ export const ACP_EVENTS = {
   permissionRequest: 'acp:permission_request',
   questionRequest: 'acp:question_request',
   questionCancelled: 'acp:question_cancelled',
+  mcpInstallRequest: 'acp:mcp_install_request',
+  mcpInstallResolved: 'acp:mcp_install_resolved',
+  mcpRegistryChanged: 'acp:mcp_registry_changed',
   elicitationRequest: 'acp:elicitation_request',
   promptComplete: 'acp:prompt_complete',
   agentError: 'acp:agent_error',
@@ -1513,6 +1517,11 @@ export async function acpRespondPermission(
  * Answer a structured question (issue #411). `values == null`/empty cancels;
  * otherwise submits the selected option values exactly once.
  */
+/** Send the approval card's decision. Secret values are not logged or journaled. */
+export async function answerMcpInstall(request: McpInstallAnswer): Promise<void> {
+  await getAcpTransport().answerMcpInstall(request)
+}
+
 export async function acpAnswerQuestion(
   agentId: AgentId,
   questionId: string,

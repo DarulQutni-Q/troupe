@@ -33,6 +33,7 @@ use crate::web::EventSink;
 mod ask;
 mod automation;
 mod canvas;
+mod mcp_install;
 mod read_chat;
 pub use ask::IdleSignal;
 use ask::PendingAsk;
@@ -95,6 +96,11 @@ pub struct HostPlanServer {
     /// `ask_user` calls waiting for the user, keyed by their `q-` question id
     /// (the id the renderer answers with). Removed on answer, cancel or drop.
     pending_asks: Mutex<HashMap<String, PendingAsk>>,
+    /// `mcp_install` calls waiting for the approval card.
+    pending_installs: Mutex<HashMap<String, mcp_install::OpenMcpInstall>>,
+    /// Catalog install plus the host MCP list. Tests set this; production
+    /// uses the process-wide installer when it is empty.
+    mcp_installer: Mutex<Option<Arc<crate::acp::host_mcp::mcp_install::HostMcpInstall>>>,
     /// Per runtime agent: resets the idle deadline of one of its sessions. A
     /// pending `ask_user` calls it so a configured idle timeout does not cancel
     /// the turn while the user is still answering.
@@ -131,6 +137,8 @@ impl HostPlanServer {
             sessions: Mutex::new(HashMap::new()),
             active_turns: Mutex::new(HashMap::new()),
             pending_asks: Mutex::new(HashMap::new()),
+            pending_installs: Mutex::new(HashMap::new()),
+            mcp_installer: Mutex::new(None),
             idle_signals: Mutex::new(HashMap::new()),
             ask_heartbeat_override: Mutex::new(None),
             title_set_for_session: Mutex::new(HashSet::new()),
@@ -658,6 +666,13 @@ impl HostPlanServer {
                     return FrameReply::err("ask_user frame needs a question");
                 };
                 self.ask_user(&auth.agent_id, &real_session_id, input, hung_up)
+                    .await
+            }
+            FrameKind::McpInstall => {
+                let Some(request) = req.mcp_install else {
+                    return FrameReply::err("mcp_install frame needs a source");
+                };
+                self.mcp_install(&auth.agent_id, &real_session_id, request, hung_up)
                     .await
             }
             FrameKind::Plan => {

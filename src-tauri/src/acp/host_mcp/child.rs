@@ -33,11 +33,12 @@ use serde::Deserialize;
 use crate::acp::host_mcp::canvas_skill::{self, GetCanvasStyleInput, ReadCanvasGuideInput};
 use crate::acp::host_mcp::canvas_tools;
 use crate::acp::host_mcp::{
-    session_instructions, FrameKind, FrameReply, FrameRequest, TermulAskUserInput,
-    TermulPlanInput, TermulSetTitleInput, ENV_AGENT_ID, ENV_PORT, ENV_SESSION_ID, ENV_TOKEN,
+    session_instructions, FrameKind, FrameReply, FrameRequest, TermulAskUserInput, TermulPlanInput,
+    TermulSetTitleInput, ENV_AGENT_ID, ENV_PORT, ENV_SESSION_ID, ENV_TOKEN,
 };
 
 mod automation;
+mod mcp_install;
 mod read_chat;
 
 /// Env-derived configuration for the child. Extracted so the arg parser is
@@ -134,8 +135,10 @@ struct DescribedTool {
 
 impl TermulPlanServer {
     fn new(config: ChildConfig, browser: Option<DescribedTool>) -> Self {
-        let mut tool_router =
-            Self::tool_router() + Self::automation_tool_router() + Self::read_chat_tool_router();
+        let mut tool_router = Self::tool_router()
+            + Self::automation_tool_router()
+            + Self::read_chat_tool_router()
+            + Self::mcp_install_tool_router();
         for tool in canvas_tools::tools() {
             tool_router.add_route(canvas_route(tool));
         }
@@ -186,7 +189,8 @@ impl TermulPlanServer {
             browser_input: Some(serde_json::Value::Object(arguments.unwrap_or_default())),
             ..self.frame(FrameKind::Browser)
         };
-        let exchange = tokio::time::timeout(round_trip, exchange_frame(&self.config, request)).await;
+        let exchange =
+            tokio::time::timeout(round_trip, exchange_frame(&self.config, request)).await;
         let reply = match exchange {
             Err(_) => serde_json::json!({
                 "ok": false,
@@ -305,7 +309,8 @@ async fn describe_browser_tool(config: &ChildConfig) -> Option<DescribedTool> {
 /// question tool, which Troupe also shows.
 fn always_load() -> MetaObject {
     let mut meta = MetaObject::new();
-    meta.0.insert("anthropic/alwaysLoad".to_string(), Value::Bool(true));
+    meta.0
+        .insert("anthropic/alwaysLoad".to_string(), Value::Bool(true));
     meta
 }
 

@@ -148,6 +148,28 @@ Servers whose publisher lists a logo show it next to their name. A server with n
 3. Read the review. It shows the exact command and arguments, or the URL, that Troupe will save, with each environment variable and header. Click **Approve** to install, or **Cancel** to save nothing.
 4. Troupe adds the server to your list, turned on, and checks that it responds. If the server asks you to sign in, click **Sign in** to open its sign-in page in your browser.
 
+## Install from chat
+
+You can also ask the agent in a chat to install a server. Paste one of these and say "install this":
+
+- A docs link or a repository link
+- The registry name of a server, such as `io.github.org/server`
+- An `mcpServers` JSON snippet
+
+The agent reads the link and asks Troupe to install it. Troupe shows an approval card in the chat. The card shows the server name, how it connects, the exact command and arguments or the URL, and the fields the server needs.
+
+Type secret values, such as an API key, on the card. Those values stay on the card. The agent does not receive them, and they are not written into the chat.
+
+Choose **Install** to save the server, or **Decline** to save nothing. Nothing is saved before you choose **Install**.
+
+After you install, the card and the agent tell you what to do next:
+
+- Sign in, when the server asks for it. The card has a **Sign in** button.
+- Install a missing program, such as `npx`, `uvx`, `docker`, or `dotnet`, when the server needs it.
+- Start a new chat so the agent can use the new tools. The chat you are in keeps the tools it started with.
+
+The server then appears in **Settings > MCP Servers**, the same as a server you add there. If the server is already in the list, Troupe does not add it again.
+
 A server you installed shows **Installed** in the catalog. **Install** stays off for servers that aren't installable, and on a connection that can only view.
 
 If the review waits too long, or the server's details change before you approve, Troupe saves nothing and offers **Start over**.

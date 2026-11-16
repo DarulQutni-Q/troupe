@@ -280,7 +280,10 @@ pub(super) async fn handle_respond_permission(
 /// when it passed the host's web-token gate and is subscribed to the
 /// session (the desktop's own channel carrier is token-less; the desktop
 /// answers through its `main`-webview command instead).
-fn remote_approver(env: &HandlerEnv, session_id: Option<&str>) -> crate::acp::host_ticket::Approver {
+fn remote_approver(
+    env: &HandlerEnv,
+    session_id: Option<&str>,
+) -> crate::acp::host_ticket::Approver {
     crate::acp::host_ticket::Approver::Remote {
         token_authenticated: env.carrier == Carrier::Ws && env.web_auth.is_some(),
         subscribed: session_id.is_some_and(|sid| !env.subscriptions.clients_for(sid).is_empty()),
@@ -292,7 +295,11 @@ fn remote_approver(env: &HandlerEnv, session_id: Option<&str>) -> crate::acp::ho
 pub(super) fn handle_respond_host_ticket(id: String, payload: &Value, env: &HandlerEnv) -> WsReply {
     use crate::acp::host_ticket::AnswerError;
     let Some(rdz) = env.relay.rendezvous() else {
-        return WsReply::err(id, WsErrorCode::NotImplemented, "permission rendezvous is not attached");
+        return WsReply::err(
+            id,
+            WsErrorCode::NotImplemented,
+            "permission rendezvous is not attached",
+        );
     };
     let parsed: RespondPermissionPayload = match serde_json::from_value(payload.clone()) {
         Ok(p) => p,
@@ -310,7 +317,10 @@ pub(super) fn handle_respond_host_ticket(id: String, payload: &Value, env: &Hand
         Ok(_) => WsReply::ok(id, Some(json!({}))),
         Err(err) => {
             let (code, msg) = match err {
-                AnswerError::NotFound => (WsErrorCode::Stale, "no outstanding permission for this requestId"),
+                AnswerError::NotFound => (
+                    WsErrorCode::Stale,
+                    "no outstanding permission for this requestId",
+                ),
                 AnswerError::AlreadyResolved => (
                     WsErrorCode::AlreadyResolved,
                     "this permission was already resolved (first-response-wins)",
@@ -342,10 +352,11 @@ pub(super) struct BrowserStopPayload {
 /// `browser_stop`: the remote twin of the desktop `browser_stop` command,
 /// under the same approver rule as host tickets.
 pub(super) fn handle_browser_stop(id: String, payload: &Value, env: &HandlerEnv) -> WsReply {
-    let parsed: BrowserStopPayload = match serde_json::from_value::<BrowserStopPayload>(payload.clone()) {
-        Ok(p) if !p.session_id.is_empty() => p,
-        _ => return WsReply::err(id, WsErrorCode::Unsupported, "browser_stop needs sessionId"),
-    };
+    let parsed: BrowserStopPayload =
+        match serde_json::from_value::<BrowserStopPayload>(payload.clone()) {
+            Ok(p) if !p.session_id.is_empty() => p,
+            _ => return WsReply::err(id, WsErrorCode::Unsupported, "browser_stop needs sessionId"),
+        };
     let approver = remote_approver(env, Some(&parsed.session_id));
     if !approver.qualifies() {
         return WsReply::err(
@@ -468,4 +479,56 @@ pub(super) async fn handle_answer_question(
             WsReply::err(id, code, msg)
         }
     }
+}
+
+/// `answer_mcp_install`: the approval card's decision. `secretValues` are
+/// forwarded to the parked tool and are not logged.
+pub(super) fn handle_answer_mcp_install(
+    id: String,
+    payload: &Value,
+    acp: &Arc<crate::acp::AcpManager>,
+) -> WsReply {
+    let Some(request_id) = payload.get("requestId").and_then(Value::as_str) else {
+        return WsReply::err(id, WsErrorCode::Unsupported, "requestId is required");
+    };
+    if request_id.is_empty() {
+        return WsReply::err(id, WsErrorCode::Unsupported, "requestId is required");
+    }
+    let inputs = string_map(payload.get("inputs"));
+    let secret_values = string_map(payload.get("secretValues"));
+    let decision = match payload.get("decision").and_then(Value::as_str) {
+        Some("decline") => crate::acp::host_mcp::mcp_install::McpInstallDecision::Decline,
+        Some("preview") => {
+            crate::acp::host_mcp::mcp_install::McpInstallDecision::Preview { inputs }
+        }
+        Some("approve") => crate::acp::host_mcp::mcp_install::McpInstallDecision::Approve {
+            inputs,
+            secret_values,
+        },
+        _ => {
+            return WsReply::err(
+                id,
+                WsErrorCode::Unsupported,
+                "decision must be decline, preview, or approve",
+            );
+        }
+    };
+    if acp.answer_mcp_install(request_id, decision) {
+        WsReply::ok(id, Some(json!({})))
+    } else {
+        WsReply::err(
+            id,
+            WsErrorCode::AlreadyResolved,
+            "this install is no longer waiting",
+        )
+    }
+}
+
+fn string_map(value: Option<&Value>) -> std::collections::BTreeMap<String, String> {
+    let Some(Value::Object(map)) = value else {
+        return std::collections::BTreeMap::new();
+    };
+    map.iter()
+        .filter_map(|(key, item)| item.as_str().map(|text| (key.clone(), text.to_string())))
+        .collect()
 }
