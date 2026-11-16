@@ -789,8 +789,8 @@ describe('ChatMessageList scroll ownership', () => {
       anchorTo: 'end',
       followOnAppend: true,
       scrollEndThreshold: 48,
-      paddingStart: 16,
-      paddingEnd: 16
+      paddingStart: 24,
+      paddingEnd: 24
     })
     // The padding is the virtualizer's alone: CSS padding on the viewport
     // would move the DOM end away from the virtualizer's end.

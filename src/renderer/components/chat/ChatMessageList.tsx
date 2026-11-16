@@ -45,7 +45,7 @@ import { WorktreeCreationCard } from './WorktreeCreationCard'
  * virtualizer must see the same end as the DOM, or its pinned bottom and
  * `scrollHeight` differ by this amount and the two pull the scroll apart.
  */
-const LIST_PADDING_Y_PX = 16
+const LIST_PADDING_Y_PX = 24
 
 /** Reports the live item count to the scroller so the jump button can badge unread. */
 function ItemCountReporter({ count }: { count: number }): null {
@@ -376,10 +376,11 @@ export function ChatMessageList({
 
   return (
     <SelectionContextLayer className="relative min-h-0 flex-1" onAdd={onAddSelectionContext}>
-      {/* Top edge fade: content dissolves into the header. No bottom fade: a
-          strip above the composer reads as a drop shadow; the viewport clip
-          ends the list cleanly at the dock. */}
+      {/* Edge fades: content dissolves into the header and the composer dock.
+          Both use `terminal-bg`, the panel fill, so the bottom fade does not
+          read as a shadow above the composer. */}
       <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-6 bg-gradient-to-b from-terminal-bg to-transparent" />
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-6 bg-gradient-to-t from-terminal-bg to-transparent" />
       <MessageScrollerProvider autoScroll followContent={false}>
         <ItemCountReporter count={stableItems.length} />
         <MessageScroller>
