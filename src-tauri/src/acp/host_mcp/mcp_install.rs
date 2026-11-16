@@ -92,6 +92,8 @@ pub enum McpInstallAnswerError {
     AlreadyResolved,
     /// The answer names a different session from the parked install.
     SessionMismatch,
+    /// The answer arrived before the same floor host tickets use.
+    TooEarly,
 }
 
 impl std::fmt::Debug for McpInstallDecision {

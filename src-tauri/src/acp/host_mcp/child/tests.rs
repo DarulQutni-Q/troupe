@@ -1100,6 +1100,7 @@ async fn mcp_install_lists_and_a_declined_call_returns_declined() {
         },
     ));
     let parent = crate::acp::host_mcp::parent::HostPlanServer::start(vec![], None);
+    parent.set_mcp_install_answer_floor_for_tests(std::time::Duration::ZERO);
     parent.set_mcp_installer_for_tests(std::sync::Arc::new(
         crate::acp::host_mcp::mcp_install::HostMcpInstall::for_tests(catalog, store),
     ));

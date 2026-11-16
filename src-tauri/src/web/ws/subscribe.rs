@@ -558,6 +558,11 @@ pub(super) fn handle_answer_mcp_install(
                 "the install belongs to another session",
             )
         }
+        Err(crate::acp::host_mcp::mcp_install::McpInstallAnswerError::TooEarly) => WsReply::err(
+            id,
+            WsErrorCode::RateLimited,
+            "answered too soon after the prompt appeared; try again",
+        ),
     }
 }
 

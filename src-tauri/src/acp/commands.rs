@@ -661,6 +661,12 @@ pub fn acp_answer_mcp_install(
                     "MCP_INSTALL_SESSION",
                 )
             }
+            Err(crate::acp::host_mcp::mcp_install::McpInstallAnswerError::TooEarly) => {
+                IpcResult::error(
+                    "answered too soon after the prompt appeared; try again",
+                    "MCP_INSTALL_TOO_EARLY",
+                )
+            }
         },
     )
 }

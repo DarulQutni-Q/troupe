@@ -57,6 +57,7 @@ fn harness(rows: Vec<Value>, runners: RunnerAvailability) -> Harness {
         events: StdMutex::new(Vec::new()),
     });
     let server = HostPlanServer::start(vec![sink.clone()], None);
+    server.set_mcp_install_answer_floor_for_tests(Duration::ZERO);
     server.set_mcp_installer_for_tests(Arc::new(HostMcpInstall::for_tests(
         catalog,
         Arc::clone(&store),

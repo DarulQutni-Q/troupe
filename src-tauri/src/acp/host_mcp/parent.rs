@@ -101,6 +101,9 @@ pub struct HostPlanServer {
     /// Install ids that already finished, so a late answer is
     /// `AlreadyResolved` rather than an unknown id. Bounded.
     finished_installs: Mutex<VecDeque<String>>,
+    /// Minimum age of the card before an answer is accepted. Same floor as
+    /// host tickets.
+    mcp_install_answer_floor: Mutex<std::time::Duration>,
     /// Catalog install plus the host MCP list. Tests set this; production
     /// uses the process-wide installer when it is empty.
     mcp_installer: Mutex<Option<Arc<crate::acp::host_mcp::mcp_install::HostMcpInstall>>>,
@@ -142,6 +145,7 @@ impl HostPlanServer {
             pending_asks: Mutex::new(HashMap::new()),
             pending_installs: Mutex::new(HashMap::new()),
             finished_installs: Mutex::new(VecDeque::new()),
+            mcp_install_answer_floor: Mutex::new(crate::acp::host_ticket::ANSWER_FLOOR),
             mcp_installer: Mutex::new(None),
             idle_signals: Mutex::new(HashMap::new()),
             ask_heartbeat_override: Mutex::new(None),

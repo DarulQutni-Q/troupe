@@ -62,6 +62,7 @@ async fn only_an_authorized_subscriber_can_answer_and_the_first_answer_wins() {
     let acp = Arc::new(AcpManager::new(vec![]));
     let registry = Arc::new(ProjectRegistry::new());
     let server = acp.host_plan_server_for_tests();
+    server.set_mcp_install_answer_floor_for_tests(std::time::Duration::from_secs(60));
     let mut waiting = server.park_mcp_install_for_tests("mcp-1", SESSION);
 
     for (carrier, token, sessions) in [
@@ -106,7 +107,18 @@ async fn only_an_authorized_subscriber_can_answer_and_the_first_answer_wins() {
         &env(&acp, &relay, &registry, Carrier::Ws, true, &[SESSION]),
     )
     .await;
-    assert!(reply.ok, "{reply:?}");
+    assert_eq!(err_code(&reply), "rate_limited");
+    assert!(
+        waiting.try_recv().is_err(),
+        "an early answer leaves the install open"
+    );
+    server.set_mcp_install_answer_floor_for_tests(std::time::Duration::ZERO);
+    let reply = route(
+        &frame("mcp-1", SESSION, "decline"),
+        &env(&acp, &relay, &registry, Carrier::Ws, true, &[SESSION]),
+    )
+    .await;
+    assert!(reply.ok, "the subscribed client was refused");
     assert!(matches!(
         waiting.try_recv().unwrap(),
         McpInstallDecision::Decline

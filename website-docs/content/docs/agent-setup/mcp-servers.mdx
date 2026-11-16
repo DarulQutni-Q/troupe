@@ -166,7 +166,7 @@ The agent reads the link and asks Troupe to install it. Troupe shows an approval
 
 Type secret values, such as an API key, on the card. Those values stay on the card. The agent does not receive them, and they are not written into the chat.
 
-Choose **Install** to save the server, or **Decline** to save nothing. Nothing is saved before you choose **Install**.
+Choose **Install** to save the server, or **Decline** to save nothing. Nothing is saved before you choose **Install**. On troupe-server, a browser that has not passed the web token cannot answer the card. Troupe refuses that answer with `permission_denied`, the same rule as a host ticket. The desktop app answers from its own window.
 
 After you install, the card and the agent tell you what to do next:
 

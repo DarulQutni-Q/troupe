@@ -5,6 +5,11 @@
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Instant;
+
+mod answer;
+#[cfg(test)]
+mod test_support;
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -18,7 +23,7 @@ use crate::acp::host_mcp::mcp_install::{
     already_message, catalog_source_name, consent_transport, declined_message, default_inputs,
     find_duplicate, live, new_session_message, oauth_message, probe_config, reason_code,
     runner_of_command, runtime_message, step, stored_entry, tool_result, transport_label,
-    HostMcpInstall, LaunchKey, McpInstallAnswerError, McpInstallDecision, ToolOutcome,
+    HostMcpInstall, LaunchKey, McpInstallDecision, ToolOutcome,
 };
 use crate::acp::host_mcp::FrameReply;
 use crate::mcp_catalog::{
@@ -33,9 +38,10 @@ pub(super) struct OpenMcpInstall {
     /// A decline or an approve was accepted. A later answer is rejected
     /// until the loop reopens the card after a refused commit.
     answered: bool,
+    /// When the card was shown. An answer before the host-ticket floor is
+    /// refused and the card stays open.
+    shown_at: Instant,
 }
-
-const FINISHED_INSTALL_MEMORY: usize = 128;
 const CANCELLED_MESSAGE: &str = "The install was cancelled. Nothing was saved.";
 const STALE_REVIEW: &str = "This review is out of date. Read it, then choose Install.";
 const EXPIRED_REVIEW: &str = "The review expired. Read it again, then choose Install.";
@@ -84,121 +90,6 @@ struct Resolved<'a> {
 impl HostPlanServer {
     pub(super) fn installer(&self) -> Option<Arc<HostMcpInstall>> {
         self.mcp_installer.lock().clone().or_else(live)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_mcp_installer_for_tests(&self, installer: Arc<HostMcpInstall>) {
-        *self.mcp_installer.lock() = Some(installer);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn open_mcp_install_ids(&self) -> Vec<String> {
-        self.pending_installs.lock().keys().cloned().collect()
-    }
-
-    /// Drop a plan so the next approve finds it missing. The caller matches
-    /// the one `mcp_install` binds when it plans.
-    #[cfg(test)]
-    pub async fn forget_mcp_plan_for_tests(&self, request_id: &str, plan_id: &str) {
-        let Some(installer) = self.installer() else {
-            return;
-        };
-        let caller = crate::mcp_catalog::PlanCaller::Client(format!("host-mcp-{request_id}"));
-        installer.cancel(plan_id, &caller).await;
-    }
-
-    /// Park an install with no catalog, so a route test can answer it.
-    #[cfg(test)]
-    pub fn park_mcp_install_for_tests(
-        &self,
-        request_id: &str,
-        session_id: &str,
-    ) -> mpsc::UnboundedReceiver<McpInstallDecision> {
-        let (sender, receiver) = mpsc::unbounded_channel();
-        self.pending_installs.lock().insert(
-            request_id.to_string(),
-            OpenMcpInstall {
-                session_id: session_id.to_string(),
-                sender,
-                answered: false,
-            },
-        );
-        receiver
-    }
-
-    /// Send the user's decision to the parked install of `session_id`.
-    /// The first decline or approve wins. A preview can repeat until then.
-    /// An unknown id, a finished id, and a session that does not match are
-    /// rejected and leave the parked install as it was.
-    pub fn answer_mcp_install(
-        &self,
-        request_id: &str,
-        session_id: &str,
-        decision: McpInstallDecision,
-    ) -> Result<(), McpInstallAnswerError> {
-        let mut pending = self.pending_installs.lock();
-        let Some(open) = pending.get_mut(request_id) else {
-            drop(pending);
-            let finished = self.finished_installs.lock();
-            return Err(if finished.iter().any(|id| id == request_id) {
-                McpInstallAnswerError::AlreadyResolved
-            } else {
-                McpInstallAnswerError::NotFound
-            });
-        };
-        if open.session_id != session_id {
-            return Err(McpInstallAnswerError::SessionMismatch);
-        }
-        if open.answered {
-            return Err(McpInstallAnswerError::AlreadyResolved);
-        }
-        let terminal = !matches!(decision, McpInstallDecision::Preview { .. });
-        if open.sender.send(decision).is_err() {
-            return Err(McpInstallAnswerError::AlreadyResolved);
-        }
-        if terminal {
-            open.answered = true;
-        }
-        Ok(())
-    }
-
-    /// The refused approve did not finish the install. The user may answer
-    /// the card that was shown again.
-    fn reopen_install_answer(&self, request_id: &str) {
-        if let Some(open) = self.pending_installs.lock().get_mut(request_id) {
-            open.answered = false;
-        }
-    }
-
-    fn close_install(&self, request_id: &str) {
-        self.pending_installs.lock().remove(request_id);
-        let mut finished = self.finished_installs.lock();
-        finished.push_back(request_id.to_string());
-        while finished.len() > FINISHED_INSTALL_MEMORY {
-            finished.pop_front();
-        }
-    }
-
-    pub(super) fn cancel_mcp_installs_for_session(&self, session_id: &str) {
-        let senders: Vec<_> = {
-            let mut pending = self.pending_installs.lock();
-            let ids: Vec<String> = pending
-                .iter()
-                .filter(|(_, open)| open.session_id == session_id)
-                .map(|(id, _)| id.clone())
-                .collect();
-            let mut finished = self.finished_installs.lock();
-            ids.into_iter()
-                .filter_map(|id| {
-                    let open = pending.remove(&id)?;
-                    finished.push_back(id);
-                    Some(open.sender)
-                })
-                .collect()
-        };
-        for sender in senders {
-            let _ = sender.send(McpInstallDecision::Cancelled);
-        }
     }
 
     pub(super) async fn mcp_install(
@@ -250,6 +141,7 @@ impl HostPlanServer {
                 session_id: session_id.to_string(),
                 sender: tx,
                 answered: false,
+                shown_at: Instant::now(),
             },
         );
         self.emit_card(
