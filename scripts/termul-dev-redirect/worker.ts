@@ -19,6 +19,6 @@ export function redirectTarget(requestUrl: string): string {
 
 export default {
   fetch(request: Request): Response {
-    return Response.redirect(redirectTarget(request.url), 301)
+    return Response.redirect(redirectTarget(request.url), 308)
   }
 }

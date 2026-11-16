@@ -19,9 +19,11 @@ describe('termul.dev redirect', () => {
     expect(redirectTarget(from)).toBe(to)
   })
 
-  it('answers with a permanent redirect', () => {
-    const response = worker.fetch(new Request('https://docs.termul.dev/docs/agents'))
-    expect(response.status).toBe(301)
-    expect(response.headers.get('location')).toBe('https://usetroupe.dev/docs/agents')
+  it('answers with a permanent redirect that keeps the method, so a POST keeps its body', () => {
+    const response = worker.fetch(
+      new Request('https://termul.dev/api/testimonials', { method: 'POST', body: '{}' })
+    )
+    expect(response.status).toBe(308)
+    expect(response.headers.get('location')).toBe('https://usetroupe.dev/api/testimonials')
   })
 })
