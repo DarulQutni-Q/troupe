@@ -29,7 +29,12 @@ export function TopRowStartSlot(): React.JSX.Element | null {
       style={inset > 0 ? { paddingLeft: inset } : undefined}
       data-testid="top-row-start-slot"
     >
-      {railToggle && <RailToggleButton />}
+      {/* Fades in while the Rail's own toggle fades out (Rail collapse). */}
+      {railToggle && (
+        <span className="flex transition-opacity duration-150 ease-out starting:opacity-0 motion-reduce:transition-none">
+          <RailToggleButton />
+        </span>
+      )}
     </div>
   )
 }

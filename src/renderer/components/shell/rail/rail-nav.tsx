@@ -5,6 +5,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { cn } from '@/lib/utils'
 import { useRailCollapsed } from './rail-density'
 import { RailHoverTooltipContent } from './rail-hover-panel'
+import { RAIL_COLLAPSED_ROW_CLASS, RAIL_LABEL_FADE_CLASS } from './rail-motion'
 
 /**
  * Nav section at the top of the Rail (Sidebar V2): 8px top and sides, 10px
@@ -44,9 +45,11 @@ export interface RailNavRowProps
  * ellipsis. The tooltip on the right carries the name, the shortcut and the
  * hint. A disabled row keeps its tooltip through a wrapper span.
  *
- * Collapsed Rail: the same 28px row with only the icon, centred; hover takes
- * a 6% foreground fill (radius 6) and the tooltip is the hover panel tooltip
- * (label + shortcut keycap) at x = 52.
+ * Collapsed Rail: the same 28px row with only the icon in a 28px square fill
+ * on the icon column (the icon keeps its expanded x); hover takes a 6%
+ * foreground fill (radius 6) and the tooltip is the hover panel tooltip
+ * (label + shortcut keycap) at x = 52. The label fades out before it leaves
+ * and fades in when the Rail expands.
  */
 export const RailNavRow = forwardRef<HTMLButtonElement, RailNavRowProps>(function RailNavRow(
   { label, icon, name, hint, shortcut, pressed, disabled = false, className, onClick, ...props },
@@ -64,10 +67,10 @@ export const RailNavRow = forwardRef<HTMLButtonElement, RailNavRowProps>(functio
       }}
       className={cn(
         QUIET_ICON_BUTTON_CLASS,
-        'flex h-7 w-full shrink-0 text-xs leading-4 font-medium text-secondary-foreground',
+        'flex h-7 shrink-0 text-xs leading-4 font-medium whitespace-nowrap text-secondary-foreground',
         collapsed
-          ? 'justify-center rounded-md px-0 hover:bg-foreground/[0.06]'
-          : 'justify-start gap-2 rounded-lg px-3',
+          ? cn(RAIL_COLLAPSED_ROW_CLASS, 'rounded-md hover:bg-foreground/[0.06]')
+          : 'w-full justify-start gap-2 rounded-lg px-3',
         'disabled:pointer-events-none disabled:opacity-40',
         pressed && 'keycap text-foreground',
         className
@@ -87,7 +90,11 @@ export const RailNavRow = forwardRef<HTMLButtonElement, RailNavRowProps>(functio
       >
         {icon}
       </span>
-      {!collapsed && <span className="fade-end min-w-0 flex-1 text-left">{label}</span>}
+      {!collapsed && (
+        <span className={cn('fade-end min-w-0 flex-1 text-left', RAIL_LABEL_FADE_CLASS)}>
+          {label}
+        </span>
+      )}
     </button>
   )
   const trigger = (

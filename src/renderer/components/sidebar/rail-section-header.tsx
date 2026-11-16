@@ -1,4 +1,8 @@
 import { useRailCollapsed } from '@/components/shell/rail/rail-density'
+import {
+  RAIL_BLOCK_FADE_CLASS,
+  RAIL_COLLAPSED_ROW_CLASS
+} from '@/components/shell/rail/rail-motion'
 import { QUIET_ICON_BUTTON_CLASS } from '@/components/ui/panel-styles'
 import { cn } from '@/lib/utils'
 
@@ -42,7 +46,8 @@ export function RailSectionHeader({
     <div
       data-testid={`rail-section-${label.toLowerCase()}`}
       className={cn(
-        'flex h-10 w-full select-none items-center justify-between gap-2 pt-3 pr-1.5 pl-2.5',
+        'flex h-10 w-full select-none items-center justify-between gap-2 pt-3 pr-1.5 pl-2.5 whitespace-nowrap',
+        RAIL_BLOCK_FADE_CLASS,
         className
       )}
     >
@@ -54,7 +59,8 @@ export function RailSectionHeader({
 
 /**
  * A section header on the collapsed Rail: the 40px header row (12px on top)
- * with a centred 20×1 divider in `border`.
+ * with a 20×1 divider in `border`, centred on the icon column. It fades in
+ * when the Rail settles collapsed; the header it replaces fades out first.
  */
 export function RailSectionDivider({
   className,
@@ -63,7 +69,12 @@ export function RailSectionDivider({
   return (
     <div
       aria-hidden="true"
-      className={cn('flex h-10 w-full shrink-0 items-center justify-center pt-3', className)}
+      className={cn(
+        'flex h-10 shrink-0 items-center pt-3',
+        RAIL_COLLAPSED_ROW_CLASS,
+        RAIL_BLOCK_FADE_CLASS,
+        className
+      )}
       {...props}
     >
       <div data-rail-section-divider className="h-px w-5 bg-border" />

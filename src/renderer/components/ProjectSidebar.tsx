@@ -13,6 +13,7 @@ import { ConfirmDialog } from './ConfirmDialog'
 import { NewGroupModal } from './NewGroupModal'
 import { NewWorktreeModal } from './NewWorktreeModal'
 import { useRailCollapsed } from './shell/rail/rail-density'
+import { RAIL_BLOCK_FADE_CLASS } from './shell/rail/rail-motion'
 import { useOpenRailWorktreeSwitcher } from './shell/rail/worktree-switcher'
 import { AddProjectMenu } from './sidebar/add-project-menu'
 import { GroupContextMenuContent } from './sidebar/group-context-menu'
@@ -326,7 +327,10 @@ export function ProjectSidebar({
       {/* Header with inline + button. Collapsed Rail: a divider at its y. */}
       {!railSections && collapsed && <RailSectionDivider data-testid="rail-section-projects" />}
       {!railSections && !collapsed && (
-        <div className={cn(PANEL_HEADER_CLASS, 'pt-3 pl-4.5')} data-testid="rail-section-projects">
+        <div
+          className={cn(PANEL_HEADER_CLASS, 'pt-3 pl-4.5 whitespace-nowrap', RAIL_BLOCK_FADE_CLASS)}
+          data-testid="rail-section-projects"
+        >
           <span className="label-panel">Projects</span>
           <div className="flex items-center">
             <AddProjectMenu
@@ -384,11 +388,13 @@ export function ProjectSidebar({
 
       {/* SSH Connections - Resizable. Hidden on the collapsed Rail. */}
       {!collapsed && (
-        <SSHResizableSection
-          onSSHConnect={onSSHConnect}
-          onSelectProfile={onSelectSSHProfile}
-          activeProfileId={activeSSHProfileId}
-        />
+        <div className={cn('flex shrink-0 flex-col', RAIL_BLOCK_FADE_CLASS)}>
+          <SSHResizableSection
+            onSSHConnect={onSSHConnect}
+            onSelectProfile={onSelectSSHProfile}
+            activeProfileId={activeSSHProfileId}
+          />
+        </div>
       )}
 
       <OlderChatsGroup />

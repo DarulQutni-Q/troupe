@@ -2,6 +2,7 @@ import type { GitDiffStat } from '@shared/types/ipc.types'
 import { type KeyboardEvent, memo, useEffect, useRef } from 'react'
 import { ChevronRight, MoreHorizontal, Plus, Settings } from '@/components/icons'
 import { ProjectIcon } from '@/components/ProjectIcon'
+import { RAIL_LABEL_FADE_CLASS } from '@/components/shell/rail/rail-motion'
 import { RailTooltip } from '@/components/shell/rail-button'
 import { RAIL_ICON_BOX_CLASS, RAIL_ROW_INSET_CLASS } from '@/components/shell/rail-layout'
 import { ContextMenu, ContextMenuTrigger } from '@/components/ui/context-menu'
@@ -182,7 +183,12 @@ export const ProjectItem = memo(function ProjectItem({
               // Name and diff stat share one box whose width never changes on
               // hover: the actions sit on top of its end, over a fade, so
               // nothing reflows and the name is not cut again.
-              <span className="pointer-events-none relative flex min-w-0 flex-1 items-center gap-2">
+              <span
+                className={cn(
+                  'pointer-events-none relative flex min-w-0 flex-1 items-center gap-2',
+                  RAIL_LABEL_FADE_CLASS
+                )}
+              >
                 {/* Fills the row and fades its last 24px instead of an ellipsis. */}
                 <span
                   className="fade-end min-w-0 flex-1 font-medium text-secondary-foreground transition-colors duration-150 ease-out group-hover:text-foreground"
@@ -235,7 +241,12 @@ export const ProjectItem = memo(function ProjectItem({
             {/* Status marks stay outside the name box: always visible, and the
                 needs-you pill stays clickable. The activity spinner yields to
                 the rename input. */}
-            <span className="pointer-events-none relative flex shrink-0 items-center gap-2 empty:hidden [&_button]:pointer-events-auto">
+            <span
+              className={cn(
+                'pointer-events-none relative flex shrink-0 items-center gap-2 empty:hidden [&_button]:pointer-events-auto',
+                RAIL_LABEL_FADE_CLASS
+              )}
+            >
               <ProjectStatusMarks
                 status={
                   isEditing && status.live === 'activity' ? { ...status, live: null } : status
@@ -245,20 +256,22 @@ export const ProjectItem = memo(function ProjectItem({
             </span>
             {/* Always shown, unlike the hover actions. */}
             {!isEditing && (
-              <RailTooltip label={`New chat in ${project.name}`}>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onNewChat()
-                  }}
-                  className={cn(ROW_ACTION_CLASS, FOCUS_RING_CLASS)}
-                  aria-label={`New chat in ${project.name}`}
-                  data-testid="project-row-new-chat"
-                >
-                  <Plus size={12} aria-hidden="true" />
-                </button>
-              </RailTooltip>
+              <span className={cn('flex shrink-0', RAIL_LABEL_FADE_CLASS)}>
+                <RailTooltip label={`New chat in ${project.name}`}>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onNewChat()
+                    }}
+                    className={cn(ROW_ACTION_CLASS, FOCUS_RING_CLASS)}
+                    aria-label={`New chat in ${project.name}`}
+                    data-testid="project-row-new-chat"
+                  >
+                    <Plus size={12} aria-hidden="true" />
+                  </button>
+                </RailTooltip>
+              </span>
             )}
           </div>
         </ContextMenuTrigger>

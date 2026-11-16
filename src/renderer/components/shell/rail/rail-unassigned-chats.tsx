@@ -10,12 +10,12 @@ import {
   RailSectionHeader
 } from '@/components/sidebar/rail-section-header'
 import { FIELD_FOCUS_CLASS, FOCUS_RING_CLASS } from '@/components/ui/panel-styles'
-import { acpRenameQuickChat } from '@/lib/acp-api'
 import type { SessionIndexEntry } from '@/lib/acp-history-persistence'
 import { olderChats, quickSessions, UNTITLED_HOST_TITLE } from '@/lib/acp-history-persistence'
 import { isContextMenuKey, openContextMenuFrom } from '@/lib/context-menu-key'
 import { logFrontendError } from '@/lib/log-api'
 import { leaveQuickChatView, showNoProjectChat } from '@/lib/no-project-chat'
+import { renameQuickChat } from '@/lib/quick-chat-rename'
 import { cn } from '@/lib/utils'
 import { useAcpStore } from '@/stores/acp-store'
 import { useQuickChatStore } from '@/stores/quick-chat-store'
@@ -43,6 +43,11 @@ import {
   RailHoverPanelProjectRow,
   RailHoverPanelTrigger
 } from './rail-hover-panel'
+import {
+  RAIL_BLOCK_FADE_CLASS,
+  RAIL_COLLAPSED_ROW_CLASS,
+  RAIL_LABEL_FADE_CLASS
+} from './rail-motion'
 
 /** Newest first. A missing time sorts last. */
 function newestFirst(entries: SessionIndexEntry[]): SessionIndexEntry[] {
@@ -175,6 +180,7 @@ function UnassignedChatRow({
       actions={menuActions}
       onRename={rename ? onRenameStart : undefined}
       onRequestDelete={onRequestDelete}
+      noProject
     >
       <RailChatRowFrame>
         <RailChatRow
@@ -215,18 +221,6 @@ function UnassignedChatRow({
       </RailChatRowFrame>
     </RailChatMenu>
   )
-}
-
-/** Set a chat title in the index and in the open session record. */
-function setChatTitle(sessionId: string, title: string): void {
-  useAcpStore.setState((state) => ({
-    sessionIndex: state.sessionIndex.map((entry) =>
-      entry.id === sessionId ? { ...entry, title } : entry
-    ),
-    sessions: state.sessions[sessionId]
-      ? { ...state.sessions, [sessionId]: { ...state.sessions[sessionId], title } }
-      : state.sessions
-  }))
 }
 
 interface SectionProps {
@@ -301,21 +295,9 @@ function UnassignedSection({
   }
 
   const saveRename = (sessionId: string): void => {
-    const title = draft.trim()
     setEditingId(null)
     const previous = chats.find((chat) => chat.id === sessionId)?.title ?? ''
-    if (!title || title === previous) return
-    // Show the new title now. The host reply only confirms it.
-    setChatTitle(sessionId, title)
-    void acpRenameQuickChat(sessionId, title).catch((error: unknown) => {
-      setChatTitle(sessionId, previous)
-      void logFrontendError({
-        level: 'error',
-        source: 'quick-chat.rename',
-        message: `Could not rename quick chat ${sessionId}: ${error instanceof Error ? error.message : String(error)}`
-      })
-      toast.error('Could not rename the chat. Try again.')
-    })
+    renameQuickChat(sessionId, draft, previous)
   }
 
   const listProps = {
@@ -358,8 +340,9 @@ function UnassignedSection({
         <button
           type="button"
           className={cn(
-            'flex h-10 w-full items-center gap-1 text-left',
-            collapsed ? 'justify-center pt-3' : 'pt-3 pr-1.5 pl-2.5',
+            'flex h-10 items-center gap-1 text-left whitespace-nowrap',
+            collapsed ? cn(RAIL_COLLAPSED_ROW_CLASS, 'pt-3') : 'w-full pt-3 pr-1.5 pl-2.5',
+            RAIL_BLOCK_FADE_CLASS,
             FOCUS_RING_CLASS
           )}
           aria-expanded={open}
@@ -370,14 +353,14 @@ function UnassignedSection({
           {collapsed ? (
             <span aria-hidden="true" data-rail-section-divider className="h-px w-5 bg-border" />
           ) : (
-            <>
+            <span className={cn('flex min-w-0 items-center gap-1', RAIL_LABEL_FADE_CLASS)}>
               {open ? (
                 <ChevronDown size={14} aria-hidden="true" />
               ) : (
                 <ChevronRight size={14} aria-hidden="true" />
               )}
               <span className="label-panel min-w-0 truncate">{label}</span>
-            </>
+            </span>
           )}
         </button>
       ) : (

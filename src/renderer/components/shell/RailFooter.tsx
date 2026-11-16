@@ -7,6 +7,7 @@ import { cn } from '@/lib/utils'
 import { useReportBugStore } from '@/stores/report-bug-store'
 import { useSettingsModalStore, useSettingsModalView } from '@/stores/settings-modal-store'
 import { useRailCollapsed } from './rail/rail-density'
+import { RAIL_BLOCK_FADE_CLASS } from './rail/rail-motion'
 
 interface RailFooterProps {
   isShortcutsOpen: boolean
@@ -83,8 +84,9 @@ export function RailUtilityButtons({
  * Rail footer (Paper 2.2 "Rail footer"). Expanded: one row of 32px icon
  * buttons at the left, 2px apart: Settings, Report a bug, Theme picker,
  * Shortcuts. Collapsed: the same buttons stack upward from the bottom
- * (column-reverse, 4px apart, 6px top and bottom), so Settings keeps its
- * place at the bottom.
+ * (column-reverse, 4px apart, 6px top and bottom, 10px left like the
+ * expanded row), so Settings keeps its place at the bottom left. The footer fades out while the Rail collapses and the
+ * other layout fades in.
  */
 export function RailFooter({
   isShortcutsOpen,
@@ -98,9 +100,15 @@ export function RailFooter({
 
   return (
     <div
+      // A new node per density, so the other layout fades in from
+      // `@starting-style` instead of jumping from a row to a column.
+      key={collapsed ? 'collapsed' : 'expanded'}
       className={cn(
         'flex shrink-0 items-center',
-        collapsed ? 'flex-col-reverse gap-1 py-1.5' : 'gap-0.5 pb-2 pl-2.5 pr-1.5 pt-1'
+        collapsed
+          ? 'flex-col-reverse items-start gap-1 py-1.5 pl-2.5'
+          : 'gap-0.5 pb-2 pl-2.5 pr-1.5 pt-1',
+        RAIL_BLOCK_FADE_CLASS
       )}
       data-testid="rail-footer"
     >

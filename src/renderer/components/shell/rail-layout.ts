@@ -16,10 +16,10 @@ export const COLLAPSED_WIDTH = 48
 
 /**
  * Collapsed Rail hover panels (Sidebar V2) open 4px right of the Rail edge
- * (x = 52). A Rail row spans x = 8..40 (the 8px list inset), so the panel
- * sits 12px from its trigger row.
+ * (x = 52). A collapsed Rail row fill spans x = 14..42 (on the icon column,
+ * `RAIL_COLLAPSED_ROW_CLASS`), so the panel sits 10px from its trigger row.
  */
-export const RAIL_HOVER_PANEL_SIDE_OFFSET = 12
+export const RAIL_HOVER_PANEL_SIDE_OFFSET = 10
 
 /** Inner padding of a hover panel (`p-1`): its first row starts 4px down. */
 export const RAIL_HOVER_PANEL_PADDING = 4

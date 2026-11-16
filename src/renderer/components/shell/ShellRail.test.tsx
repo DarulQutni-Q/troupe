@@ -319,7 +319,10 @@ describe('ShellRail', () => {
         renderRail()
         const header = screen.getByTestId('rail-header')
         const clearance = within(header).getByTestId('traffic-light-clearance')
-        expect(clearance.nextElementSibling).toBe(within(header).getByTestId('shell-brand-mark'))
+        // The mark and the toggle share one fade wrapper after the clearance.
+        expect(clearance.nextElementSibling?.firstElementChild).toBe(
+          within(header).getByTestId('shell-brand-mark')
+        )
         expect(within(header).queryByTestId('rail-header-mark-slot')).not.toBeInTheDocument()
         expect(within(header).getByTestId('shell-brand-mark').nextElementSibling).toBe(
           screen.getByTestId('rail-toggle')
