@@ -37,15 +37,15 @@ pub(super) fn spawn_event_forwarder(mut stream: EventStream, out_tx: OutboundSen
 }
 
 /// Add the session's still-pending prompts to a subscribe or snapshot reply:
-/// `pendingPermissions` (queue order), `pendingQuestions` and
-/// `pendingElicitations` (registration order), each the request payloads as
-/// published. Read AFTER the subscription registered: a request published
-/// later is delivered live, and its ticket is registered before the publish,
-/// so none falls in between. A replay cannot restore these: a permission
-/// request is not in the durable log (issue #1595), and a question or
-/// elicitation the client's history already covers is dropped, since no event
-/// says it was answered. A list is present only when the host keeps its
-/// tickets; without one the client keeps what it has.
+/// `pendingPermissions` (queue order), `pendingQuestions`,
+/// `pendingElicitations` and `pendingMcpInstalls` (registration order), each
+/// the request payloads as published. Read AFTER the subscription registered:
+/// a request published later is delivered live, and its ticket is registered
+/// before the publish, so none falls in between. A replay cannot restore
+/// these: a permission request is not in the durable log (issue #1595), and a
+/// question, elicitation or MCP install the client's history already covers
+/// is dropped, since no event says it was answered. A list is present only
+/// when the host keeps its tickets; without one the client keeps what it has.
 pub(super) fn attach_pending_prompts(reply: &mut Value, relay: &WsRelaySink, session_id: &str) {
     let permissions = relay
         .rendezvous()
@@ -54,13 +54,15 @@ pub(super) fn attach_pending_prompts(reply: &mut Value, relay: &WsRelaySink, ses
         .question_rendezvous()
         .map(|rdz| rdz.pending_requests(session_id));
     let elicitations = relay.elicitations().pending_requests(session_id);
+    let mcp_installs = relay.mcp_installs().pending_requests(session_id);
     let count = |list: &Option<Vec<Value>>| list.as_ref().map_or(0, Vec::len);
-    if count(&permissions) + count(&questions) + elicitations.len() > 0 {
+    if count(&permissions) + count(&questions) + elicitations.len() + mcp_installs.len() > 0 {
         log::info!(
-            "[ws] subscription restores pending prompts permissions={} questions={} elicitations={} session_id={}",
+            "[ws] subscription restores pending prompts permissions={} questions={} elicitations={} mcp_installs={} session_id={}",
             count(&permissions),
             count(&questions),
             elicitations.len(),
+            mcp_installs.len(),
             crate::logging::redact_session_id(session_id)
         );
     }
@@ -71,6 +73,7 @@ pub(super) fn attach_pending_prompts(reply: &mut Value, relay: &WsRelaySink, ses
         reply["pendingQuestions"] = Value::Array(questions);
     }
     reply["pendingElicitations"] = Value::Array(elicitations);
+    reply["pendingMcpInstalls"] = Value::Array(mcp_installs);
 }
 
 /// Wire `subscribe` → [`WsRelaySink::subscribe`] + forward replay/live to this connection.
@@ -280,10 +283,7 @@ pub(super) async fn handle_respond_permission(
 /// when it passed the host's web-token gate and is subscribed to the
 /// session (the desktop's own channel carrier is token-less; the desktop
 /// answers through its `main`-webview command instead).
-fn remote_approver(
-    env: &HandlerEnv,
-    session_id: Option<&str>,
-) -> crate::acp::host_ticket::Approver {
+fn remote_approver(env: &HandlerEnv, session_id: Option<&str>) -> crate::acp::host_ticket::Approver {
     crate::acp::host_ticket::Approver::Remote {
         token_authenticated: env.carrier == Carrier::Ws && env.web_auth.is_some(),
         subscribed: session_id.is_some_and(|sid| !env.subscriptions.clients_for(sid).is_empty()),
@@ -295,11 +295,7 @@ fn remote_approver(
 pub(super) fn handle_respond_host_ticket(id: String, payload: &Value, env: &HandlerEnv) -> WsReply {
     use crate::acp::host_ticket::AnswerError;
     let Some(rdz) = env.relay.rendezvous() else {
-        return WsReply::err(
-            id,
-            WsErrorCode::NotImplemented,
-            "permission rendezvous is not attached",
-        );
+        return WsReply::err(id, WsErrorCode::NotImplemented, "permission rendezvous is not attached");
     };
     let parsed: RespondPermissionPayload = match serde_json::from_value(payload.clone()) {
         Ok(p) => p,
@@ -317,10 +313,7 @@ pub(super) fn handle_respond_host_ticket(id: String, payload: &Value, env: &Hand
         Ok(_) => WsReply::ok(id, Some(json!({}))),
         Err(err) => {
             let (code, msg) = match err {
-                AnswerError::NotFound => (
-                    WsErrorCode::Stale,
-                    "no outstanding permission for this requestId",
-                ),
+                AnswerError::NotFound => (WsErrorCode::Stale, "no outstanding permission for this requestId"),
                 AnswerError::AlreadyResolved => (
                     WsErrorCode::AlreadyResolved,
                     "this permission was already resolved (first-response-wins)",
@@ -352,11 +345,10 @@ pub(super) struct BrowserStopPayload {
 /// `browser_stop`: the remote twin of the desktop `browser_stop` command,
 /// under the same approver rule as host tickets.
 pub(super) fn handle_browser_stop(id: String, payload: &Value, env: &HandlerEnv) -> WsReply {
-    let parsed: BrowserStopPayload =
-        match serde_json::from_value::<BrowserStopPayload>(payload.clone()) {
-            Ok(p) if !p.session_id.is_empty() => p,
-            _ => return WsReply::err(id, WsErrorCode::Unsupported, "browser_stop needs sessionId"),
-        };
+    let parsed: BrowserStopPayload = match serde_json::from_value::<BrowserStopPayload>(payload.clone()) {
+        Ok(p) if !p.session_id.is_empty() => p,
+        _ => return WsReply::err(id, WsErrorCode::Unsupported, "browser_stop needs sessionId"),
+    };
     let approver = remote_approver(env, Some(&parsed.session_id));
     if !approver.qualifies() {
         return WsReply::err(
@@ -481,18 +473,33 @@ pub(super) async fn handle_answer_question(
     }
 }
 
-/// `answer_mcp_install`: the approval card's decision. `secretValues` are
-/// forwarded to the parked tool and are not logged.
+/// `answer_mcp_install`: the approval card's decision. Only an authorized
+/// client of the install's session may answer. `secretValues` are forwarded
+/// to the parked tool and are not logged.
 pub(super) fn handle_answer_mcp_install(
     id: String,
     payload: &Value,
-    acp: &Arc<crate::acp::AcpManager>,
+    env: &HandlerEnv,
 ) -> WsReply {
     let Some(request_id) = payload.get("requestId").and_then(Value::as_str) else {
         return WsReply::err(id, WsErrorCode::Unsupported, "requestId is required");
     };
-    if request_id.is_empty() {
-        return WsReply::err(id, WsErrorCode::Unsupported, "requestId is required");
+    let Some(session_id) = payload.get("sessionId").and_then(Value::as_str) else {
+        return WsReply::err(id, WsErrorCode::Unsupported, "sessionId is required");
+    };
+    if request_id.is_empty() || session_id.is_empty() {
+        return WsReply::err(
+            id,
+            WsErrorCode::Unsupported,
+            "requestId and sessionId are required",
+        );
+    }
+    if !remote_approver(env, Some(session_id)).qualifies() {
+        return WsReply::err(
+            id,
+            WsErrorCode::PermissionDenied,
+            "only an authenticated client of this session can answer it",
+        );
     }
     let inputs = string_map(payload.get("inputs"));
     let secret_values = string_map(payload.get("secretValues"));
@@ -501,10 +508,27 @@ pub(super) fn handle_answer_mcp_install(
         Some("preview") => {
             crate::acp::host_mcp::mcp_install::McpInstallDecision::Preview { inputs }
         }
-        Some("approve") => crate::acp::host_mcp::mcp_install::McpInstallDecision::Approve {
-            inputs,
-            secret_values,
-        },
+        Some("approve") => {
+            let Some(plan_id) = payload.get("planId").and_then(Value::as_str) else {
+                return WsReply::err(id, WsErrorCode::Unsupported, "planId is required");
+            };
+            let Some(launch_digest) = payload.get("launchDigest").and_then(Value::as_str) else {
+                return WsReply::err(id, WsErrorCode::Unsupported, "launchDigest is required");
+            };
+            if plan_id.is_empty() || launch_digest.is_empty() {
+                return WsReply::err(
+                    id,
+                    WsErrorCode::Unsupported,
+                    "planId and launchDigest are required",
+                );
+            }
+            crate::acp::host_mcp::mcp_install::McpInstallDecision::Approve {
+                inputs,
+                secret_values,
+                plan_id: plan_id.to_string(),
+                launch_digest: launch_digest.to_string(),
+            }
+        }
         _ => {
             return WsReply::err(
                 id,
@@ -513,14 +537,27 @@ pub(super) fn handle_answer_mcp_install(
             );
         }
     };
-    if acp.answer_mcp_install(request_id, decision) {
-        WsReply::ok(id, Some(json!({})))
-    } else {
-        WsReply::err(
+    match env.acp.answer_mcp_install(request_id, session_id, decision) {
+        Ok(()) => WsReply::ok(id, Some(json!({}))),
+        Err(crate::acp::host_mcp::mcp_install::McpInstallAnswerError::NotFound) => WsReply::err(
             id,
-            WsErrorCode::AlreadyResolved,
-            "this install is no longer waiting",
-        )
+            WsErrorCode::Stale,
+            "no outstanding install for this requestId",
+        ),
+        Err(crate::acp::host_mcp::mcp_install::McpInstallAnswerError::AlreadyResolved) => {
+            WsReply::err(
+                id,
+                WsErrorCode::AlreadyResolved,
+                "this install was already answered (first-response-wins)",
+            )
+        }
+        Err(crate::acp::host_mcp::mcp_install::McpInstallAnswerError::SessionMismatch) => {
+            WsReply::err(
+                id,
+                WsErrorCode::PermissionDenied,
+                "the install belongs to another session",
+            )
+        }
     }
 }
 

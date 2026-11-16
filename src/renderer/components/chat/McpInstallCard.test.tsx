@@ -90,11 +90,46 @@ describe('McpInstallCard', () => {
 
   it('shows the server, the URL, and the secret field', () => {
     render(<McpInstallCard install={install()} projectId="project-1" />)
-    expect(screen.getByRole('heading', { name: 'Keys' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'keys' })).toBeInTheDocument()
     expect(screen.getByText('https://example.com/mcp')).toBeInTheDocument()
     expect(screen.getByLabelText(/token/)).toHaveAttribute('type', 'password')
     expect(screen.getByRole('button', { name: 'Install' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Decline' })).toBeInTheDocument()
+  })
+
+  it('shows an imported environment variable such as NODE_OPTIONS', () => {
+    render(
+      <McpInstallCard
+        projectId={null}
+        install={install({
+          name: 'echo',
+          title: 'echo',
+          transport: 'stdio',
+          consent: {
+            transport: 'stdio',
+            command: 'node',
+            argv: ['node', 'server.js'],
+            url: null,
+            env: [
+              {
+                name: 'NODE_OPTIONS',
+                value: '--experimental-vm-modules',
+                isSecret: false,
+                origin: 'file'
+              }
+            ],
+            headers: [],
+            hostMounts: [],
+            warnings: [],
+            provenance: null
+          }
+        })}
+      />
+    )
+    expect(screen.getByRole('heading', { name: 'echo' })).toBeInTheDocument()
+    expect(screen.getByText('NODE_OPTIONS')).toBeInTheDocument()
+    expect(screen.getByText('--experimental-vm-modules')).toBeInTheDocument()
+    expect(screen.getByText(/Launch digest sha256:abc/)).toBeInTheDocument()
   })
 
   it('shows the command and arguments for a local server', () => {
@@ -130,7 +165,7 @@ describe('McpInstallCard', () => {
     render(<McpInstallCard install={install()} projectId="project-1" />)
     fireEvent.change(screen.getByLabelText(/token/), { target: { value: SECRET } })
     fireEvent.click(screen.getByRole('button', { name: 'Decline' }))
-    expect(answer).toHaveBeenCalledWith('mcp-1', 'decline', {}, undefined)
+    expect(answer).toHaveBeenCalledWith('mcp-1', 'decline', {}, undefined, null, null)
     expect(JSON.stringify(answer.mock.calls)).not.toContain(SECRET)
   })
 
@@ -142,7 +177,9 @@ describe('McpInstallCard', () => {
       'mcp-1',
       'approve',
       {},
-      { 'header/Authorization/token': SECRET }
+      { 'header/Authorization/token': SECRET },
+      'plan-1',
+      'sha256:abc'
     )
     expect(logFrontendError).not.toHaveBeenCalled()
   })

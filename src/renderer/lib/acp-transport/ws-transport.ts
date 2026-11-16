@@ -1644,9 +1644,12 @@ export class WsAcpTransport implements AcpTransport {
 
   async answerMcpInstall(request: {
     requestId: string
+    sessionId: string
     decision: 'decline' | 'preview' | 'approve'
     inputs?: Record<string, string>
     secretValues?: Record<string, string>
+    planId?: string | null
+    launchDigest?: string | null
   }): Promise<void> {
     await this.request('answer_mcp_install', request)
   }

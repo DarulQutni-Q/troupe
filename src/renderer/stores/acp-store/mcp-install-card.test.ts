@@ -97,9 +97,12 @@ describe('mcp install approval store', () => {
 
     expect(answerMcpInstall).toHaveBeenCalledWith({
       requestId: 'mcp-1',
+      sessionId: 'sess-1',
       decision: 'approve',
       inputs: {},
-      secretValues: { 'header/Authorization/token': SECRET }
+      secretValues: { 'header/Authorization/token': SECRET },
+      planId: 'plan-1',
+      launchDigest: 'sha256:abc'
     })
     expect(JSON.stringify(useAcpStore.getState().pendingMcpInstalls)).not.toContain(SECRET)
     expect(JSON.stringify(logFrontendError.mock.calls)).not.toContain(SECRET)

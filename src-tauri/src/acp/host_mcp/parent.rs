@@ -14,7 +14,7 @@
 //! the per-agent driver-thread model in `AcpManager`) — works on both the
 //! desktop binary and the standalone `termul-server` (no `AppHandle`).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::sync::Arc;
 
@@ -98,6 +98,9 @@ pub struct HostPlanServer {
     pending_asks: Mutex<HashMap<String, PendingAsk>>,
     /// `mcp_install` calls waiting for the approval card.
     pending_installs: Mutex<HashMap<String, mcp_install::OpenMcpInstall>>,
+    /// Install ids that already finished, so a late answer is
+    /// `AlreadyResolved` rather than an unknown id. Bounded.
+    finished_installs: Mutex<VecDeque<String>>,
     /// Catalog install plus the host MCP list. Tests set this; production
     /// uses the process-wide installer when it is empty.
     mcp_installer: Mutex<Option<Arc<crate::acp::host_mcp::mcp_install::HostMcpInstall>>>,
@@ -138,6 +141,7 @@ impl HostPlanServer {
             active_turns: Mutex::new(HashMap::new()),
             pending_asks: Mutex::new(HashMap::new()),
             pending_installs: Mutex::new(HashMap::new()),
+            finished_installs: Mutex::new(VecDeque::new()),
             mcp_installer: Mutex::new(None),
             idle_signals: Mutex::new(HashMap::new()),
             ask_heartbeat_override: Mutex::new(None),

@@ -1517,8 +1517,27 @@ export async function acpRespondPermission(
  * Answer a structured question (issue #411). `values == null`/empty cancels;
  * otherwise submits the selected option values exactly once.
  */
-/** Send the approval card's decision. Secret values are not logged or journaled. */
+/**
+ * Send the approval card's decision. Secret values are not logged or journaled.
+ * Desktop answers through the `main` webview command. A remote client answers
+ * over `/ws`, and only when that connection is an authorized subscriber of the session.
+ */
 export async function answerMcpInstall(request: McpInstallAnswer): Promise<void> {
+  if (isTauriContext()) {
+    const result = await invokeIpc<null>('acp_answer_mcp_install', {
+      answer: {
+        requestId: request.requestId,
+        sessionId: request.sessionId,
+        decision: request.decision,
+        inputs: request.inputs ?? {},
+        secretValues: request.secretValues ?? {},
+        planId: request.planId ?? null,
+        launchDigest: request.launchDigest ?? null
+      }
+    })
+    if (!result.success) throw new Error(result.error)
+    return
+  }
   await getAcpTransport().answerMcpInstall(request)
 }
 

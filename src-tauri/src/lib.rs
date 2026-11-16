@@ -2281,6 +2281,7 @@ pub fn run() {
             acp::commands::acp_get_agent_idle_window,
             acp::commands::acp_probe_mcp_server,
             acp::commands::acp_mcp_oauth_start,
+            acp::commands::acp_answer_mcp_install,
             acp::commands::acp_mcp_oauth_has_token,
             acp::commands::acp_mcp_oauth_disconnect,
             acp_registry_snapshot::acp_fetch_registry_snapshot,

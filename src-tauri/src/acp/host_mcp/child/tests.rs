@@ -1131,6 +1131,10 @@ async fn mcp_install_lists_and_a_declined_call_returns_declined() {
         assert!(description.contains("import"), "{description}");
         assert!(description.contains("approves"), "{description}");
         assert!(description.contains("secret"), "{description}");
+        assert!(
+            description.contains("`attached` is always false for now"),
+            "{description}"
+        );
 
         let call = r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"mcp_install","arguments":{"source":{"kind":"import","json":"{\"mcpServers\":{\"echo\":{\"command\":\"echo\",\"args\":[\"hi\"]}}}"}}}}"#;
         send_line(&mut writer, call).await;
@@ -1138,10 +1142,13 @@ async fn mcp_install_lists_and_a_declined_call_returns_declined() {
         tokio::spawn(async move {
             for _ in 0..200 {
                 if let Some(id) = parent.open_mcp_install_ids().into_iter().next() {
-                    assert!(parent.answer_mcp_install(
-                        &id,
-                        crate::acp::host_mcp::mcp_install::McpInstallDecision::Decline,
-                    ));
+                    assert!(parent
+                        .answer_mcp_install(
+                            &id,
+                            "sess-server",
+                            crate::acp::host_mcp::mcp_install::McpInstallDecision::Decline,
+                        )
+                        .is_ok());
                     return;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;

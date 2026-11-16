@@ -549,9 +549,12 @@ export interface AcpTransport {
   /** Chat MCP install decision. `secretValues` stay off the command journal. */
   answerMcpInstall(request: {
     requestId: string
+    sessionId: string
     decision: 'decline' | 'preview' | 'approve'
     inputs?: Record<string, string>
     secretValues?: Record<string, string>
+    planId?: string | null
+    launchDigest?: string | null
   }): Promise<void>
   /** Stop agent browsing for a session until the user's next message. */
   stopBrowserAgent(sessionId: string): Promise<void>

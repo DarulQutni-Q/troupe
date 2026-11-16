@@ -1,7 +1,7 @@
 import type { McpInstallField } from '@shared/types/mcp-install.types'
 import { useEffect, useId, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { CONSENT_WARNING_COPY } from '@/components/settings/McpConsentDialog'
+import { McpConsentReview } from '@/components/settings/McpConsentDialog'
 import {
   initialInstallValues,
   McpInstallForm,
@@ -68,7 +68,9 @@ export function McpInstallCard({ install, projectId }: McpInstallCardProps): Rea
       install.requestId,
       decision,
       split.inputs,
-      decision === 'approve' ? split.secretValues : undefined
+      decision === 'approve' ? split.secretValues : undefined,
+      decision === 'approve' ? install.planId : null,
+      decision === 'approve' ? install.launchDigest : null
     ).catch((error: unknown) => {
       void logFrontendError({
         level: 'warn',
@@ -103,26 +105,14 @@ export function McpInstallCard({ install, projectId }: McpInstallCardProps): Rea
           className={cn('grid gap-3 overflow-y-auto p-4', QUESTION_PANEL_MAX_H, 'scroller-thin')}
         >
           <div>
-            <p className="text-xs text-muted-foreground">Install MCP server</p>
+            <p className="text-xs text-muted-foreground">
+              {install.title !== install.name ? install.title : 'Install MCP server'}
+            </p>
             <h2 id={titleId} className="text-sm font-medium text-foreground">
-              {install.title}
+              {install.name}
             </h2>
           </div>
-          {consent && (
-            <Launch
-              transport={consent.transport}
-              command={consent.command}
-              argv={consent.argv}
-              url={consent.url}
-            />
-          )}
-          {consent && consent.warnings.length > 0 && (
-            <ul className="grid gap-1 text-xs text-muted-foreground">
-              {consent.warnings.map((warning) => (
-                <li key={warning}>{CONSENT_WARNING_COPY[warning]}</li>
-              ))}
-            </ul>
-          )}
+          {consent && <McpConsentReview view={consent} launchDigest={install.launchDigest} />}
           {install.form.fields.length > 0 && !result && (
             <McpInstallForm
               fields={install.form.fields}
@@ -191,41 +181,6 @@ export function McpInstallCard({ install, projectId }: McpInstallCardProps): Rea
           )}
         </div>
       </section>
-    </div>
-  )
-}
-
-function Launch({
-  transport,
-  command,
-  argv,
-  url
-}: {
-  transport: string
-  command: string | null
-  argv: string[]
-  url: string | null
-}): React.JSX.Element {
-  if (transport !== 'stdio') {
-    return (
-      <p className="break-all font-mono text-xs text-foreground">
-        <span className="text-muted-foreground">{transport} </span>
-        {url}
-      </p>
-    )
-  }
-  return (
-    <div className="grid gap-1">
-      <p className="break-all font-mono text-xs text-foreground">{command}</p>
-      {argv.length > 0 && (
-        <ol className="grid gap-0.5 rounded-lg border border-border/60 bg-muted/40 px-3 py-2">
-          {argv.map((arg, index) => (
-            <li key={`${index}-${arg}`} className="break-all font-mono text-xs text-foreground">
-              {arg}
-            </li>
-          ))}
-        </ol>
-      )}
     </div>
   )
 }

@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
-use super::mcp_install::{tool_result, HostMcpInstall, McpInstallDecision};
+use super::mcp_install::{tool_result, HostMcpInstall, McpInstallDecision, ToolOutcome};
 use super::parent::HostPlanServer;
 use crate::mcp_catalog::{McpCatalogService, RunnerAvailability};
 use crate::web::mcp_registry::STORE_KEY;
@@ -148,6 +148,38 @@ fn contains_secret(value: &impl std::fmt::Display) -> bool {
     value.to_string().contains(SECRET)
 }
 
+fn latest_card(sink: &Capture) -> Value {
+    sink.events
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|(kind, _)| kind == "acp:mcp_install_request")
+        .map(|(_, payload)| payload.clone())
+        .expect("approval card")
+}
+
+fn approve(
+    server: &HostPlanServer,
+    sink: &Capture,
+    request_id: &str,
+    secret_values: std::collections::BTreeMap<String, String>,
+) {
+    let card = latest_card(sink);
+    server
+        .answer_mcp_install(
+            request_id,
+            "sess-real",
+            McpInstallDecision::Approve {
+                inputs: Default::default(),
+                secret_values,
+                plan_id: card["planId"].as_str().unwrap().to_string(),
+                launch_digest: card["launchDigest"].as_str().unwrap().to_string(),
+            },
+        )
+        .unwrap();
+}
+
 fn stored_list(store: &WebStore) -> Value {
     store.peek(STORE_KEY).unwrap().unwrap_or(Value::Null)
 }
@@ -172,7 +204,8 @@ fn decline_saves_nothing_and_returns_declined() {
         );
         assert!(harness
             .server
-            .answer_mcp_install(&request_id, McpInstallDecision::Decline));
+            .answer_mcp_install(&request_id, "sess-real", McpInstallDecision::Decline)
+            .is_ok());
         let reply = call.await.unwrap();
         assert_eq!(reply["ok"], true);
         assert_eq!(reply["result"]["outcome"], "declined");
@@ -225,13 +258,12 @@ fn approve_installs_and_keeps_the_secret_out_of_the_result_events_and_logs() {
             .find(|field| field["isSecret"] == true)
             .expect("secret field");
         let field_id = secret_field["id"].as_str().unwrap().to_string();
-        assert!(harness.server.answer_mcp_install(
+        approve(
+            &harness.server,
+            &harness.sink,
             &request_id,
-            McpInstallDecision::Approve {
-                inputs: Default::default(),
-                secret_values: [(field_id, SECRET.to_string())].into(),
-            },
-        ));
+            [(field_id, SECRET.to_string())].into(),
+        );
         let reply = call.await.unwrap();
         assert_eq!(reply["result"]["outcome"], "installed", "{reply}");
         assert_eq!(reply["result"]["attached"], false);
@@ -285,13 +317,7 @@ fn a_second_install_of_the_same_server_does_not_duplicate() {
         let port = harness.port;
         let call = tokio::spawn(async move { send(port, &first).await });
         let request_id = wait_for_install(&harness.server).await;
-        assert!(harness.server.answer_mcp_install(
-            &request_id,
-            McpInstallDecision::Approve {
-                inputs: Default::default(),
-                secret_values: Default::default(),
-            },
-        ));
+        approve(&harness.server, &harness.sink, &request_id, Default::default());
         let reply = call.await.unwrap();
         assert_eq!(reply["result"]["outcome"], "installed", "{reply}");
 
@@ -345,13 +371,7 @@ fn an_import_whose_runtime_is_missing_still_installs_and_says_so() {
         let port = harness.port;
         let call = tokio::spawn(async move { send(port, &frame).await });
         let request_id = wait_for_install(&harness.server).await;
-        assert!(harness.server.answer_mcp_install(
-            &request_id,
-            McpInstallDecision::Approve {
-                inputs: Default::default(),
-                secret_values: Default::default(),
-            },
-        ));
+        approve(&harness.server, &harness.sink, &request_id, Default::default());
         let reply = call.await.unwrap();
         assert_eq!(reply["result"]["outcome"], "installed", "{reply}");
         assert!(reply["result"]["nextSteps"]
@@ -369,18 +389,254 @@ fn an_import_whose_runtime_is_missing_still_installs_and_says_so() {
 
 #[test]
 fn the_tool_result_builder_omits_secret_values() {
-    let result = tool_result(
-        "installed",
-        Some("keys"),
-        Some("id-1"),
-        None,
-        None,
-        false,
-        true,
-        vec![json!({"kind": "new_session", "message": "Start a new chat."})],
-    );
+    let result = tool_result(ToolOutcome {
+        outcome: "installed",
+        name: Some("keys"),
+        server_id: Some("id-1"),
+        config: None,
+        reason: None,
+        attached: false,
+        new_session_needed: true,
+        next_steps: vec![json!({"kind": "new_session", "message": "Start a new chat."})],
+    });
     assert!(!result.to_string().contains(SECRET));
     assert_eq!(result["outcome"], "installed");
     assert!(result.get("secrets").is_none());
     assert!(result.get("env").is_none());
+}
+
+#[test]
+fn the_tool_description_says_attached_is_always_false() {
+    assert!(
+        super::mcp_install::MCP_INSTALL_DESCRIPTION.contains("`attached` is always false for now"),
+        "the agent must not treat attached as a live connection"
+    );
+}
+
+#[test]
+fn an_import_shows_its_environment_on_the_card_and_refuses_node_options() {
+    let harness = harness(Vec::new(), ALL_RUNNERS);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let blocked = frame(
+            &harness,
+            json!({
+                "kind": "import",
+                "json": r#"{"mcpServers":{"echo":{"command":"node","args":["server.js"],"env":{"NODE_OPTIONS":"--experimental-vm-modules"}}}}"#,
+            }),
+        );
+        let reply = send(harness.port, &blocked).await;
+        assert_eq!(reply["result"]["reason"]["code"], "denied-env", "{reply}");
+        assert_eq!(reply["result"]["reason"]["name"], "NODE_OPTIONS");
+        assert!(harness.server.open_mcp_install_ids().is_empty());
+
+        let frame = frame(
+            &harness,
+            json!({
+                "kind": "import",
+                "json": r#"{"mcpServers":{"echo":{"command":"node","args":["server.js"],"env":{"LOG_LEVEL":"debug"}}}}"#,
+            }),
+        );
+        let port = harness.port;
+        let call = tokio::spawn(async move { send(port, &frame).await });
+        let request_id = wait_for_install(&harness.server).await;
+        let card = latest_card(&harness.sink);
+        let env = card["consent"]["env"].to_string();
+        assert!(env.contains("LOG_LEVEL"), "{card}");
+        assert!(env.contains("debug"), "{card}");
+        assert_eq!(card["name"], "echo");
+        harness
+            .server
+            .answer_mcp_install(&request_id, "sess-real", McpInstallDecision::Decline)
+            .unwrap();
+        let _ = call.await.unwrap();
+        assert!(
+            stored_list(&harness.store).get("data").is_none()
+                || stored_list(&harness.store)["data"].as_array().unwrap().is_empty()
+        );
+    });
+}
+
+#[test]
+fn a_wrong_launch_digest_does_not_commit() {
+    let harness = harness(Vec::new(), ALL_RUNNERS);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let frame = frame(
+            &harness,
+            json!({
+                "kind": "import",
+                "json": r#"{"mcpServers":{"echo":{"command":"echo","args":["hi"]}}}"#,
+            }),
+        );
+        let port = harness.port;
+        let call = tokio::spawn(async move { send(port, &frame).await });
+        let request_id = wait_for_install(&harness.server).await;
+        let card = latest_card(&harness.sink);
+        harness
+            .server
+            .answer_mcp_install(
+                &request_id,
+                "sess-real",
+                McpInstallDecision::Approve {
+                    inputs: Default::default(),
+                    secret_values: Default::default(),
+                    plan_id: card["planId"].as_str().unwrap().to_string(),
+                    launch_digest: "sha256:not-the-card".to_string(),
+                },
+            )
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!call.is_finished(), "a mismatched digest must not finish the install");
+        assert!(
+            stored_list(&harness.store).get("data").is_none()
+                || stored_list(&harness.store)["data"].as_array().unwrap().is_empty()
+        );
+        let again = latest_card(&harness.sink);
+        assert!(again["error"].as_str().unwrap_or("").contains("out of date"));
+        approve(&harness.server, &harness.sink, &request_id, Default::default());
+        let reply = call.await.unwrap();
+        assert_eq!(reply["result"]["outcome"], "installed", "{reply}");
+    });
+}
+
+#[test]
+fn a_missing_plan_is_planned_again_instead_of_an_error() {
+    let harness = harness(Vec::new(), ALL_RUNNERS);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let frame = frame(
+            &harness,
+            json!({
+                "kind": "import",
+                "json": r#"{"mcpServers":{"echo":{"command":"echo","args":["hi"]}}}"#,
+            }),
+        );
+        let port = harness.port;
+        let call = tokio::spawn(async move { send(port, &frame).await });
+        let request_id = wait_for_install(&harness.server).await;
+        let card = latest_card(&harness.sink);
+        let old_plan = card["planId"].as_str().unwrap().to_string();
+        harness
+            .server
+            .forget_mcp_plan_for_tests(&request_id, &old_plan)
+            .await;
+        harness
+            .server
+            .answer_mcp_install(
+                &request_id,
+                "sess-real",
+                McpInstallDecision::Approve {
+                    inputs: Default::default(),
+                    secret_values: Default::default(),
+                    plan_id: old_plan.clone(),
+                    launch_digest: card["launchDigest"].as_str().unwrap().to_string(),
+                },
+            )
+            .unwrap();
+        let mut refreshed = None;
+        for _ in 0..100 {
+            let next = latest_card(&harness.sink);
+            if next["planId"].as_str() != Some(old_plan.as_str()) {
+                refreshed = Some(next);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let refreshed = refreshed.expect("the card was shown again with a new plan");
+        assert!(refreshed["error"].as_str().unwrap_or("").contains("expired"));
+        assert!(!call.is_finished());
+        approve(&harness.server, &harness.sink, &request_id, Default::default());
+        let reply = call.await.unwrap();
+        assert_eq!(reply["result"]["outcome"], "installed", "{reply}");
+    });
+}
+
+#[test]
+fn the_first_answer_wins_and_a_wrong_session_does_not() {
+    let harness = harness(Vec::new(), ALL_RUNNERS);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let frame = frame(
+            &harness,
+            json!({
+                "kind": "import",
+                "json": r#"{"mcpServers":{"echo":{"command":"echo","args":["hi"]}}}"#,
+            }),
+        );
+        let port = harness.port;
+        let call = tokio::spawn(async move { send(port, &frame).await });
+        let request_id = wait_for_install(&harness.server).await;
+        let wrong = harness.server.answer_mcp_install(
+            &request_id,
+            "other-session",
+            McpInstallDecision::Decline,
+        );
+        assert_eq!(
+            wrong,
+            Err(super::mcp_install::McpInstallAnswerError::SessionMismatch)
+        );
+        assert!(!call.is_finished(), "the wrong session left the install open");
+        harness
+            .server
+            .answer_mcp_install(&request_id, "sess-real", McpInstallDecision::Decline)
+            .unwrap();
+        let second = harness.server.answer_mcp_install(
+            &request_id,
+            "sess-real",
+            McpInstallDecision::Decline,
+        );
+        assert_eq!(
+            second,
+            Err(super::mcp_install::McpInstallAnswerError::AlreadyResolved)
+        );
+        let unknown = harness.server.answer_mcp_install(
+            "mcp-missing",
+            "sess-real",
+            McpInstallDecision::Decline,
+        );
+        assert_eq!(
+            unknown,
+            Err(super::mcp_install::McpInstallAnswerError::NotFound)
+        );
+        let reply = call.await.unwrap();
+        assert_eq!(reply["result"]["outcome"], "declined");
+        let finished = harness.server.answer_mcp_install(
+            &request_id,
+            "sess-real",
+            McpInstallDecision::Decline,
+        );
+        assert_eq!(
+            finished,
+            Err(super::mcp_install::McpInstallAnswerError::AlreadyResolved)
+        );
+    });
+}
+
+#[test]
+fn two_saves_at_once_keep_both_servers() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(
+        WebStore::open(dir.path().join("store.json"), StorePolicy::default()).unwrap(),
+    );
+    let catalog = Arc::new(McpCatalogService::service_for_rows(Vec::new(), ALL_RUNNERS));
+    let installer = Arc::new(HostMcpInstall::for_tests(catalog, Arc::clone(&store)));
+    std::thread::scope(|scope| {
+        for index in 0..16 {
+            let installer = Arc::clone(&installer);
+            scope.spawn(move || {
+                let entry = json!({
+                    "id": format!("id-{index}"),
+                    "name": format!("server-{index}"),
+                    "type": "stdio",
+                    "command": "echo",
+                    "args": [],
+                    "enabled": true
+                });
+                installer.save(&entry).unwrap();
+            });
+        }
+    });
+    let saved = stored_list(&store)["data"].as_array().cloned().unwrap_or_default();
+    assert_eq!(saved.len(), 16, "{saved:?}");
 }

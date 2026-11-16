@@ -18,7 +18,7 @@ use crate::acp::host_mcp::mcp_install::{
     already_message, catalog_source_name, consent_transport, declined_message, default_inputs,
     find_duplicate, live, new_session_message, oauth_message, probe_config, reason_code,
     runner_of_command, runtime_message, step, stored_entry, tool_result, transport_label,
-    HostMcpInstall, LaunchKey, McpInstallDecision,
+    HostMcpInstall, LaunchKey, McpInstallAnswerError, McpInstallDecision, ToolOutcome,
 };
 use crate::acp::host_mcp::FrameReply;
 use crate::mcp_catalog::{
@@ -30,7 +30,15 @@ use crate::mcp_catalog::{
 pub(super) struct OpenMcpInstall {
     pub session_id: String,
     sender: mpsc::UnboundedSender<McpInstallDecision>,
+    /// A decline or an approve was accepted. A later answer is rejected
+    /// until the loop reopens the card after a refused commit.
+    answered: bool,
 }
+
+const FINISHED_INSTALL_MEMORY: usize = 128;
+const CANCELLED_MESSAGE: &str = "The install was cancelled. Nothing was saved.";
+const STALE_REVIEW: &str = "This review is out of date. Read it, then choose Install.";
+const EXPIRED_REVIEW: &str = "The review expired. Read it again, then choose Install.";
 
 struct Planned {
     plan_id: String,
@@ -88,14 +96,87 @@ impl HostPlanServer {
         self.pending_installs.lock().keys().cloned().collect()
     }
 
-    /// Send the user's decision to a parked install. `false` when nothing is
-    /// waiting (already answered, declined, or cancelled).
-    pub fn answer_mcp_install(&self, request_id: &str, decision: McpInstallDecision) -> bool {
-        let pending = self.pending_installs.lock();
-        let Some(open) = pending.get(request_id) else {
-            return false;
+    /// Drop a plan so the next approve finds it missing. The caller matches
+    /// the one `mcp_install` binds when it plans.
+    #[cfg(test)]
+    pub async fn forget_mcp_plan_for_tests(&self, request_id: &str, plan_id: &str) {
+        let Some(installer) = self.installer() else {
+            return;
         };
-        open.sender.send(decision).is_ok()
+        let caller = crate::mcp_catalog::PlanCaller::Client(format!("host-mcp-{request_id}"));
+        installer.cancel(plan_id, &caller).await;
+    }
+
+    /// Park an install with no catalog, so a route test can answer it.
+    #[cfg(test)]
+    pub fn park_mcp_install_for_tests(
+        &self,
+        request_id: &str,
+        session_id: &str,
+    ) -> mpsc::UnboundedReceiver<McpInstallDecision> {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        self.pending_installs.lock().insert(
+            request_id.to_string(),
+            OpenMcpInstall {
+                session_id: session_id.to_string(),
+                sender,
+                answered: false,
+            },
+        );
+        receiver
+    }
+
+    /// Send the user's decision to the parked install of `session_id`.
+    /// The first decline or approve wins. A preview can repeat until then.
+    /// An unknown id, a finished id, and a session that does not match are
+    /// rejected and leave the parked install as it was.
+    pub fn answer_mcp_install(
+        &self,
+        request_id: &str,
+        session_id: &str,
+        decision: McpInstallDecision,
+    ) -> Result<(), McpInstallAnswerError> {
+        let mut pending = self.pending_installs.lock();
+        let Some(open) = pending.get_mut(request_id) else {
+            drop(pending);
+            let finished = self.finished_installs.lock();
+            return Err(if finished.iter().any(|id| id == request_id) {
+                McpInstallAnswerError::AlreadyResolved
+            } else {
+                McpInstallAnswerError::NotFound
+            });
+        };
+        if open.session_id != session_id {
+            return Err(McpInstallAnswerError::SessionMismatch);
+        }
+        if open.answered {
+            return Err(McpInstallAnswerError::AlreadyResolved);
+        }
+        let terminal = !matches!(decision, McpInstallDecision::Preview { .. });
+        if open.sender.send(decision).is_err() {
+            return Err(McpInstallAnswerError::AlreadyResolved);
+        }
+        if terminal {
+            open.answered = true;
+        }
+        Ok(())
+    }
+
+    /// The refused approve did not finish the install. The user may answer
+    /// the card that was shown again.
+    fn reopen_install_answer(&self, request_id: &str) {
+        if let Some(open) = self.pending_installs.lock().get_mut(request_id) {
+            open.answered = false;
+        }
+    }
+
+    fn close_install(&self, request_id: &str) {
+        self.pending_installs.lock().remove(request_id);
+        let mut finished = self.finished_installs.lock();
+        finished.push_back(request_id.to_string());
+        while finished.len() > FINISHED_INSTALL_MEMORY {
+            finished.pop_front();
+        }
     }
 
     pub(super) fn cancel_mcp_installs_for_session(&self, session_id: &str) {
@@ -106,9 +187,13 @@ impl HostPlanServer {
                 .filter(|(_, open)| open.session_id == session_id)
                 .map(|(id, _)| id.clone())
                 .collect();
+            let mut finished = self.finished_installs.lock();
             ids.into_iter()
-                .filter_map(|id| pending.remove(&id))
-                .map(|open| open.sender)
+                .filter_map(|id| {
+                    let open = pending.remove(&id)?;
+                    finished.push_back(id);
+                    Some(open.sender)
+                })
                 .collect()
         };
         for sender in senders {
@@ -164,6 +249,7 @@ impl HostPlanServer {
             OpenMcpInstall {
                 session_id: session_id.to_string(),
                 sender: tx,
+                answered: false,
             },
         );
         self.emit_card(
@@ -199,7 +285,7 @@ impl HostPlanServer {
                             session_id,
                             &request_id,
                             "cancelled",
-                            "The install was cancelled. Nothing was saved.",
+                            CANCELLED_MESSAGE,
                         );
                     };
                     match decision {
@@ -218,7 +304,7 @@ impl HostPlanServer {
                                 session_id,
                                 &request_id,
                                 "cancelled",
-                                "The install was cancelled. Nothing was saved.",
+                                CANCELLED_MESSAGE,
                             );
                         }
                         McpInstallDecision::Preview { inputs } => {
@@ -234,7 +320,7 @@ impl HostPlanServer {
                                 }
                             }
                         }
-                        McpInstallDecision::Approve { inputs, secret_values } => {
+                        McpInstallDecision::Approve { inputs, secret_values, plan_id, launch_digest } => {
                             let same = planned.as_ref().is_some_and(|plan| plan.inputs == inputs);
                             if !same {
                                 match self.plan_for(&installer, &request, &caller, inputs, planned.as_ref()).await {
@@ -248,9 +334,21 @@ impl HostPlanServer {
                                         self.emit_card(agent_id, session_id, &request_id, &form, None, Some(FIELD_ERROR));
                                     }
                                 }
+                                self.reopen_install_answer(&request_id);
                                 continue;
                             }
-                            let Some(plan) = planned.as_ref() else { continue };
+                            let matches = planned.as_ref().is_some_and(|plan| {
+                                plan.plan_id == plan_id && plan.digest == launch_digest
+                            });
+                            if !matches {
+                                self.emit_card(agent_id, session_id, &request_id, &form, planned.as_ref(), Some(STALE_REVIEW));
+                                self.reopen_install_answer(&request_id);
+                                continue;
+                            }
+                            let Some(plan) = planned.as_ref() else {
+                                self.reopen_install_answer(&request_id);
+                                continue;
+                            };
                             match installer.commit(&CommitRequest {
                                 plan_id: plan.plan_id.clone(),
                                 launch_digest: plan.digest.clone(),
@@ -261,12 +359,36 @@ impl HostPlanServer {
                                 }
                                 Err(error) if error.code == "VALIDATION_ERROR" => {
                                     self.emit_card(agent_id, session_id, &request_id, &form, planned.as_ref(), Some(FIELD_ERROR));
+                                    self.reopen_install_answer(&request_id);
+                                }
+                                Err(error) if error.code == "MCP_PLAN_EXPIRED" || error.code == "MCP_PLAN_NOT_FOUND" => {
+                                    match self.plan_for(&installer, &request, &caller, inputs, planned.as_ref()).await {
+                                        PlanFor::Ready(next) => {
+                                            planned = Some(next);
+                                            self.emit_card(agent_id, session_id, &request_id, &form, planned.as_ref(), Some(EXPIRED_REVIEW));
+                                        }
+                                        PlanFor::Reply(reply) => break self.reply_and_close(agent_id, session_id, &request_id, reply),
+                                        PlanFor::Stay(_) => {
+                                            planned = None;
+                                            self.emit_card(agent_id, session_id, &request_id, &form, None, Some(FIELD_ERROR));
+                                        }
+                                    }
+                                    self.reopen_install_answer(&request_id);
                                 }
                                 Err(error) => {
                                     if let Some(plan) = planned.as_ref() {
                                         installer.cancel(&plan.plan_id, &caller).await;
                                     }
-                                    self.emit_resolved(agent_id, session_id, &request_id, "error", None, None, &[], false);
+                                    self.emit_resolved(&Resolved {
+                                        agent_id,
+                                        session_id,
+                                        request_id: &request_id,
+                                        outcome: "error",
+                                        name: None,
+                                        server_id: None,
+                                        next_steps: &[],
+                                        oauth: false,
+                                    });
                                     break FrameReply::ok_with(catalog_error(&error));
                                 }
                             }
@@ -284,7 +406,7 @@ impl HostPlanServer {
                         session_id,
                         &request_id,
                         "cancelled",
-                        "The install was cancelled. Nothing was saved.",
+                        CANCELLED_MESSAGE,
                     );
                 }
                 () = tokio::time::sleep(heartbeat) => {
@@ -294,7 +416,7 @@ impl HostPlanServer {
                 }
             }
         };
-        self.pending_installs.lock().remove(&request_id);
+        self.close_install(&request_id);
         reply
     }
 
@@ -436,16 +558,16 @@ impl HostPlanServer {
             .and_then(|value| value.get("serverId"))
             .and_then(Value::as_str)
             .map(str::to_string);
-        self.emit_resolved(
+        self.emit_resolved(&Resolved {
             agent_id,
             session_id,
             request_id,
             outcome,
-            name.as_deref(),
-            server_id.as_deref(),
-            &steps,
-            false,
-        );
+            name: name.as_deref(),
+            server_id: server_id.as_deref(),
+            next_steps: &steps,
+            oauth: false,
+        });
         reply
     }
 
@@ -458,12 +580,26 @@ impl HostPlanServer {
         message: &str,
     ) -> FrameReply {
         let steps = vec![step(outcome, None, message)];
-        self.emit_resolved(
-            agent_id, session_id, request_id, outcome, None, None, &steps, false,
-        );
-        FrameReply::ok_with(tool_result(
-            outcome, None, None, None, None, false, false, steps,
-        ))
+        self.emit_resolved(&Resolved {
+            agent_id,
+            session_id,
+            request_id,
+            outcome,
+            name: None,
+            server_id: None,
+            next_steps: &steps,
+            oauth: false,
+        });
+        FrameReply::ok_with(tool_result(ToolOutcome {
+            outcome,
+            name: None,
+            server_id: None,
+            config: None,
+            reason: None,
+            attached: false,
+            new_session_needed: false,
+            next_steps: steps,
+        }))
     }
 
     async fn finish_installed(
@@ -478,16 +614,16 @@ impl HostPlanServer {
             Ok(listed) => listed,
             Err(_) => {
                 log::warn!("[host-mcp] mcp_install could not read the server list");
-                self.emit_resolved(
+                self.emit_resolved(&Resolved {
                     agent_id,
                     session_id,
                     request_id,
-                    "error",
-                    None,
-                    None,
-                    &[],
-                    false,
-                );
+                    outcome: "error",
+                    name: None,
+                    server_id: None,
+                    next_steps: &[],
+                    oauth: false,
+                });
                 return FrameReply::ok_with(error_result("MCP_INSTALL_LIST"));
             }
         };
@@ -504,16 +640,16 @@ impl HostPlanServer {
                 .and_then(Value::as_array)
                 .cloned()
                 .unwrap_or_default();
-            self.emit_resolved(
+            self.emit_resolved(&Resolved {
                 agent_id,
                 session_id,
                 request_id,
-                "already_exists",
-                Some(&existing.name),
-                Some(&existing.id),
-                &steps,
-                false,
-            );
+                outcome: "already_exists",
+                name: Some(&existing.name),
+                server_id: Some(&existing.id),
+                next_steps: &steps,
+                oauth: false,
+            });
             return FrameReply::ok_with(result);
         }
         let server_id = Uuid::new_v4().to_string();
@@ -521,31 +657,31 @@ impl HostPlanServer {
             Ok(entry) => entry,
             Err(()) => {
                 log::warn!("[host-mcp] mcp_install commit was missing a stored value");
-                self.emit_resolved(
+                self.emit_resolved(&Resolved {
                     agent_id,
                     session_id,
                     request_id,
-                    "error",
-                    None,
-                    None,
-                    &[],
-                    false,
-                );
+                    outcome: "error",
+                    name: None,
+                    server_id: None,
+                    next_steps: &[],
+                    oauth: false,
+                });
                 return FrameReply::ok_with(error_result("MCP_INSTALL_SAVE"));
             }
         };
         if installer.save(&entry).is_err() {
             log::warn!("[host-mcp] mcp_install could not save the server list");
-            self.emit_resolved(
+            self.emit_resolved(&Resolved {
                 agent_id,
                 session_id,
                 request_id,
-                "error",
-                None,
-                None,
-                &[],
-                false,
-            );
+                outcome: "error",
+                name: None,
+                server_id: None,
+                next_steps: &[],
+                oauth: false,
+            });
             return FrameReply::ok_with(error_result("MCP_INSTALL_SAVE"));
         }
         events::fan_out(
@@ -580,26 +716,26 @@ impl HostPlanServer {
             transport_label(&committed.config),
             oauth
         );
-        self.emit_resolved(
+        self.emit_resolved(&Resolved {
             agent_id,
             session_id,
             request_id,
-            "installed",
-            Some(&committed.name),
-            Some(&server_id),
-            &steps,
+            outcome: "installed",
+            name: Some(&committed.name),
+            server_id: Some(&server_id),
+            next_steps: &steps,
             oauth,
-        );
-        FrameReply::ok_with(tool_result(
-            "installed",
-            Some(&committed.name),
-            Some(&server_id),
-            Some(&committed.config),
-            None,
-            false,
-            true,
-            steps,
-        ))
+        });
+        FrameReply::ok_with(tool_result(ToolOutcome {
+            outcome: "installed",
+            name: Some(&committed.name),
+            server_id: Some(&server_id),
+            config: Some(&committed.config),
+            reason: None,
+            attached: false,
+            new_session_needed: true,
+            next_steps: steps,
+        }))
     }
 
     async fn oauth_needed(
@@ -621,32 +757,12 @@ impl HostPlanServer {
         .is_ok_and(|result| result.status == crate::acp::mcp_probe::ProbeStatus::AuthRequired)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn emit_resolved(
-        &self,
-        agent_id: &str,
-        session_id: &str,
-        request_id: &str,
-        outcome: &str,
-        name: Option<&str>,
-        server_id: Option<&str>,
-        next_steps: &[Value],
-        oauth: bool,
-    ) {
+    fn emit_resolved(&self, body: &Resolved<'_>) {
         events::fan_out(
             &self.sinks,
-            Some(session_id),
+            Some(body.session_id),
             events::EVENT_MCP_INSTALL_RESOLVED,
-            &Resolved {
-                agent_id,
-                session_id,
-                request_id,
-                outcome,
-                name,
-                server_id,
-                next_steps,
-                oauth,
-            },
+            body,
         );
     }
 }
@@ -678,16 +794,16 @@ fn name_duplicate(
 
 fn already_result(existing: &crate::acp::host_mcp::mcp_install::ListedServer) -> Value {
     let message = already_message(&existing.name);
-    tool_result(
-        "already_exists",
-        Some(&existing.name),
-        Some(&existing.id),
-        None,
-        None,
-        false,
-        false,
-        vec![step("already_installed", None, &message)],
-    )
+    tool_result(ToolOutcome {
+        outcome: "already_exists",
+        name: Some(&existing.name),
+        server_id: Some(&existing.id),
+        config: None,
+        reason: None,
+        attached: false,
+        new_session_needed: false,
+        next_steps: vec![step("already_installed", None, &message)],
+    })
 }
 
 fn unsupported_result(reason: &McpCatalogReason) -> Value {
@@ -710,16 +826,16 @@ fn unsupported_result(reason: &McpCatalogReason) -> Value {
             "Troupe cannot install this server. The reason explains why. Nothing was saved.",
         ));
     }
-    tool_result(
-        "unsupported",
-        None,
-        None,
-        None,
-        Some(reason),
-        false,
-        false,
-        steps,
-    )
+    tool_result(ToolOutcome {
+        outcome: "unsupported",
+        name: None,
+        server_id: None,
+        config: None,
+        reason: Some(reason),
+        attached: false,
+        new_session_needed: false,
+        next_steps: steps,
+    })
 }
 
 fn catalog_error(error: &McpCatalogError) -> Value {

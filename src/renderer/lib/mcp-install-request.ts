@@ -45,9 +45,12 @@ export type McpInstallDecisionName = 'decline' | 'preview' | 'approve'
 
 export interface McpInstallAnswer {
   requestId: string
+  sessionId: string
   decision: McpInstallDecisionName
   inputs?: Record<string, string>
   secretValues?: Record<string, string>
+  planId?: string | null
+  launchDigest?: string | null
 }
 
 export interface PendingMcpInstall {

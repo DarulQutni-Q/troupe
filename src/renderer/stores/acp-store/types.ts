@@ -973,7 +973,9 @@ export interface AcpState {
     requestId: string,
     decision: McpInstallDecisionName,
     inputs?: Record<string, string>,
-    secretValues?: Record<string, string>
+    secretValues?: Record<string, string>,
+    planId?: string | null,
+    launchDigest?: string | null
   ) => Promise<void>
   dismissMcpInstall: (requestId: string) => void
   _onMcpInstallRequest: (event: McpInstallRequestEvent) => void

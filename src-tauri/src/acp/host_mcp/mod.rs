@@ -99,8 +99,7 @@ JSON, read it with your own tools and call `mcp_install`. The user approves on a
 pub const CLAUDE_INSTRUCTIONS_BUDGET: usize = 4096;
 
 /// Markdown affordances of the chat renderer.
-pub const TERMUL_CHAT_INSTRUCTIONS: &str =
-    "Troupe renders your markdown replies in a rich chat UI. \
+pub const TERMUL_CHAT_INSTRUCTIONS: &str = "Troupe renders your markdown replies in a rich chat UI. \
 Embed images and videos inline with `![alt](path)`, for generated charts, screenshots, diagrams, \
 and screen recordings: paths relative to the session working directory, absolute paths, \
 `file://` URLs, and https URLs render in the desktop app and on the web. A markdown link to an \
@@ -277,14 +276,14 @@ fn reject(text: String) -> Result<TermulBrowserInput, String> {
     Err(text)
 }
 
-fn string_field(value: Option<serde_json::Value>, key: &str) -> Result<Option<String>, String> {
+fn string_field(
+    value: Option<serde_json::Value>,
+    key: &str,
+) -> Result<Option<String>, String> {
     match value {
         None | Some(serde_json::Value::Null) => Ok(None),
         Some(serde_json::Value::String(s)) => Ok(Some(s)),
-        Some(other) => Err(format!(
-            "'{key}' must be a string, not {}",
-            json_type_name(&other)
-        )),
+        Some(other) => Err(format!("'{key}' must be a string, not {}", json_type_name(&other))),
     }
 }
 

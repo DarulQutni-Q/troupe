@@ -19,7 +19,7 @@ use crate::web::store::{unix_ms, WebStore};
 
 /// What the agent must do before it calls the tool. The card, not the agent,
 /// collects secrets.
-pub const MCP_INSTALL_DESCRIPTION: &str = "Install an MCP server the user asked for. You resolve the link first. Troupe installs only a source it already accepts, and only after the user approves on a card in the chat.\n\nRead the page or the JSON with your own tools, then call this once:\n- Catalog: `{ \"source\": { \"kind\": \"catalog\", \"name\": \"io.github.org/server\", \"version\": \"1.2.3\" } }`. `name` and `version` are the official registry name and version (registry.modelcontextprotocol.io or the server's registry page). Optional `choice` is `{ \"kind\": \"remote\" | \"package\", \"index\": 0 }` when the page lists more than one install option. Omit `choice` for the default option.\n- Import: `{ \"source\": { \"kind\": \"import\", \"json\": \"<mcpServers JSON or one server object>\", \"server\": \"<key>\" } }`. `server` picks the entry when the JSON has more than one. The JSON is the launch config (command, args, url), not an API key.\n\nDo not put API keys, tokens, or other secrets in this call. The user types those on the approval card. They never come back to you.\n\nWait for the JSON result. `declined` means the user said no; do not install again unless they ask. `unsupported` carries the host reason; explain it. `already_exists` means that server is already installed; do not add another. `installed` carries `nextSteps`. Tell the user each one: OAuth sign-in, a missing runtime (npx, uvx, docker, or dotnet), and whether this chat can see the new tools or a new chat is needed. This chat does not gain the new tools until a new chat starts.";
+pub const MCP_INSTALL_DESCRIPTION: &str = "Install an MCP server the user asked for. You resolve the link first. Troupe installs only a source it already accepts, and only after the user approves on a card in the chat.\n\nRead the page or the JSON with your own tools, then call this once:\n- Catalog: `{ \"source\": { \"kind\": \"catalog\", \"name\": \"io.github.org/server\", \"version\": \"1.2.3\" } }`. `name` and `version` are the official registry name and version (registry.modelcontextprotocol.io or the server's registry page). Optional `choice` is `{ \"kind\": \"remote\" | \"package\", \"index\": 0 }` when the page lists more than one install option. Omit `choice` for the default option.\n- Import: `{ \"source\": { \"kind\": \"import\", \"json\": \"<mcpServers JSON or one server object>\", \"server\": \"<key>\" } }`. `server` picks the entry when the JSON has more than one. The JSON is the launch config (command, args, url), not an API key.\n\nDo not put API keys, tokens, or other secrets in this call. The user types those on the approval card. They never come back to you.\n\nWait for the JSON result. `declined` means the user said no; do not install again unless they ask. `unsupported` carries the host reason; explain it. `already_exists` means that server is already installed; do not add another. `installed` carries `nextSteps`. Tell the user each one: OAuth sign-in, a missing runtime (npx, uvx, docker, or dotnet), and that a new chat is needed. This chat does not gain the new tools until a new chat starts. `attached` is always false for now.";
 
 /// Arguments of the `mcp_install` tool. Only `catalog` and `import`.
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
@@ -76,7 +76,22 @@ pub enum McpInstallDecision {
     Approve {
         inputs: BTreeMap<String, String>,
         secret_values: BTreeMap<String, String>,
+        /// The plan id on the card the user approved.
+        plan_id: String,
+        /// The launch digest on that same card.
+        launch_digest: String,
     },
+}
+
+/// Why an answer was not delivered to the parked install.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpInstallAnswerError {
+    /// No install is waiting under this id.
+    NotFound,
+    /// This id was already answered or cancelled.
+    AlreadyResolved,
+    /// The answer names a different session from the parked install.
+    SessionMismatch,
 }
 
 impl std::fmt::Debug for McpInstallDecision {
@@ -88,6 +103,8 @@ impl std::fmt::Debug for McpInstallDecision {
             Self::Approve {
                 inputs,
                 secret_values,
+                plan_id: _,
+                launch_digest: _,
             } => write!(
                 f,
                 "Approve {{ inputs: {}, secrets: {} }}",
@@ -256,18 +273,17 @@ impl HostMcpInstall {
             .collect())
     }
 
-    /// Append `entry` to the host list. `entry` holds env and header values;
-    /// this function does not log it.
+    /// Append `entry` to the host list under one store lock, so a second
+    /// install or a settings save cannot drop this row. `entry` holds env
+    /// and header values; this function does not log it.
     pub(crate) fn save(&self, entry: &Value) -> Result<(), String> {
-        let current = self
-            .store
-            .peek(STORE_KEY)
-            .map_err(|_| "list unreadable".to_string())?;
-        let mut items = current.as_ref().map(registry_items).unwrap_or_default();
-        items.push(entry.clone());
-        let wrapped = json!({ "_version": 1u64, "data": items });
+        let entry = entry.clone();
         self.store
-            .replace_as_host(STORE_KEY, wrapped, unix_ms())
+            .update_as_host(STORE_KEY, unix_ms(), |current| {
+                let mut items = current.map(registry_items).unwrap_or_default();
+                items.push(entry);
+                json!({ "_version": 1u64, "data": items })
+            })
             .map_err(|_| "list not saved".to_string())
     }
 }
@@ -388,33 +404,34 @@ pub(crate) fn reason_code(reason: &McpCatalogReason) -> String {
 
 /// The tool result. It never includes env values, header values, or the
 /// `secrets` list from a commit.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn tool_result(
-    outcome: &str,
-    name: Option<&str>,
-    server_id: Option<&str>,
-    config: Option<&ResolvedConfig>,
-    reason: Option<&McpCatalogReason>,
-    attached: bool,
-    new_session_needed: bool,
-    next_steps: Vec<Value>,
-) -> Value {
+pub(crate) struct ToolOutcome<'a> {
+    pub outcome: &'a str,
+    pub name: Option<&'a str>,
+    pub server_id: Option<&'a str>,
+    pub config: Option<&'a ResolvedConfig>,
+    pub reason: Option<&'a McpCatalogReason>,
+    pub attached: bool,
+    pub new_session_needed: bool,
+    pub next_steps: Vec<Value>,
+}
+
+pub(crate) fn tool_result(outcome: ToolOutcome<'_>) -> Value {
     let mut result = json!({
-        "outcome": outcome,
-        "attached": attached,
-        "newSessionNeeded": new_session_needed,
-        "nextSteps": next_steps,
+        "outcome": outcome.outcome,
+        "attached": outcome.attached,
+        "newSessionNeeded": outcome.new_session_needed,
+        "nextSteps": outcome.next_steps,
     });
-    if let Some(name) = name {
+    if let Some(name) = outcome.name {
         result["name"] = json!(name);
     }
-    if let Some(server_id) = server_id {
+    if let Some(server_id) = outcome.server_id {
         result["serverId"] = json!(server_id);
     }
-    if let Some(reason) = reason {
+    if let Some(reason) = outcome.reason {
         result["reason"] = serde_json::to_value(reason).unwrap_or(Value::Null);
     }
-    if let Some(config) = config {
+    if let Some(config) = outcome.config {
         match config {
             ResolvedConfig::Stdio { command, args, .. } => {
                 result["transport"] = json!("stdio");
