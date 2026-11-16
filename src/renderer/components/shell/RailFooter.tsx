@@ -66,7 +66,7 @@ export function RailUtilityButtons({
         disabled={!onToggleThemePicker}
         onClick={() => onToggleThemePicker?.()}
       >
-        <Palette size={16} />
+        <Palette size={14} />
       </RailButton>
 
       <TitleBarShortcutsPopover
@@ -112,7 +112,7 @@ export function RailFooter({
         pressed={settingsView === 'app'}
         onClick={() => useSettingsModalStore.getState().openApp()}
       >
-        <SlidersHorizontal size={16} />
+        <SlidersHorizontal size={14} />
       </RailButton>
       <RailButton
         label="Report a bug"
@@ -120,7 +120,7 @@ export function RailFooter({
         aria-label="Report a bug"
         onClick={() => useReportBugStore.getState().openReport()}
       >
-        <Bug size={16} />
+        <Bug size={14} />
       </RailButton>
       <RailUtilityButtons
         isShortcutsOpen={isShortcutsOpen}

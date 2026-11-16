@@ -80,7 +80,7 @@ function RailGroupIconRow({
             )}
           >
             <Folder
-              size={16}
+              size={14}
               className={group.color ? getColorClasses(group.color).text : 'text-muted-foreground'}
             />
           </span>
@@ -176,7 +176,7 @@ function RailGroupLabelRow({
                   )}
                 >
                   <Folder
-                    size={16}
+                    size={14}
                     className={
                       group.color ? getColorClasses(group.color).text : 'text-muted-foreground'
                     }
