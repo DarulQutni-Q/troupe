@@ -3,7 +3,6 @@ import type {
   ElicitationRequestEvent,
   PermissionRequestEvent
 } from '@/lib/acp-api'
-import type { McpInstallRequestEvent } from '@/lib/mcp-install-request'
 
 /**
  * The host's still-pending prompts of one session, from a `subscribe` or
@@ -16,7 +15,6 @@ export interface PendingPrompts {
   permissions: PermissionRequestEvent[] | null
   questions: AskUserQuestionEvent[] | null
   elicitations: ElicitationRequestEvent[] | null
-  mcpInstalls: McpInstallRequestEvent[] | null
 }
 
 export type PendingPromptKind = keyof PendingPrompts
@@ -27,8 +25,7 @@ export type PendingPromptsHandler = (sessionId: string, prompts: PendingPrompts)
 const KIND_OF_EVENT = new Map<string, PendingPromptKind>([
   ['permission_request', 'permissions'],
   ['question_request', 'questions'],
-  ['elicitation_request', 'elicitations'],
-  ['mcp_install_request', 'mcpInstalls']
+  ['elicitation_request', 'elicitations']
 ])
 
 type Fields = Record<string, unknown>
@@ -51,17 +48,6 @@ function isQuestionRequest(value: unknown, sessionId: string): value is AskUserQ
     isId(value.questionId) &&
     typeof value.question === 'string' &&
     Array.isArray(value.options)
-  )
-}
-
-function isMcpInstallRequest(value: unknown, sessionId: string): value is McpInstallRequestEvent {
-  return (
-    ofSession(value, sessionId) &&
-    isId(value.requestId) &&
-    typeof value.name === 'string' &&
-    typeof value.title === 'string' &&
-    value.form !== null &&
-    typeof value.form === 'object'
   )
 }
 
@@ -96,8 +82,7 @@ export function readPendingPrompts(sessionId: string, reply: unknown): PendingPr
   return {
     permissions: readList(reply, 'pendingPermissions', sessionId, isPermissionRequest),
     questions: readList(reply, 'pendingQuestions', sessionId, isQuestionRequest),
-    elicitations: readList(reply, 'pendingElicitations', sessionId, isElicitationRequest),
-    mcpInstalls: readList(reply, 'pendingMcpInstalls', sessionId, isMcpInstallRequest)
+    elicitations: readList(reply, 'pendingElicitations', sessionId, isElicitationRequest)
   }
 }
 
@@ -131,8 +116,6 @@ function promptId(kind: PendingPromptKind, payload: unknown): unknown {
 function listedIds(kind: PendingPromptKind, prompts: PendingPrompts): Set<unknown> | undefined {
   if (kind === 'questions') return new Set(prompts.questions?.map((q) => q.questionId))
   if (kind === 'elicitations') return new Set(prompts.elicitations?.map((e) => e.requestId))
-  if (kind === 'mcpInstalls')
-    return new Set(prompts.mcpInstalls?.map((install) => install.requestId))
   return undefined
 }
 

@@ -56,12 +56,7 @@ function elicitation(requestId: string, sessionId = SID): ElicitationRequestEven
   }
 }
 
-const NO_LISTS: PendingPrompts = {
-  permissions: null,
-  questions: null,
-  elicitations: null,
-  mcpInstalls: null
-}
+const NO_LISTS: PendingPrompts = { permissions: null, questions: null, elicitations: null }
 
 describe('readPendingPrompts', () => {
   it('reads every absent list as null', () => {
@@ -82,8 +77,7 @@ describe('readPendingPrompts', () => {
     expect(readPendingPrompts(SID, reply)).toEqual({
       permissions: [request('perm-1')],
       questions: [question('q-1')],
-      elicitations: [elicitation('el-1')],
-      mcpInstalls: null
+      elicitations: [elicitation('el-1')]
     })
   })
 
@@ -91,8 +85,7 @@ describe('readPendingPrompts', () => {
     expect(readPendingPrompts(SID, { pendingPermissions: [], pendingElicitations: [] })).toEqual({
       permissions: [],
       questions: null,
-      elicitations: [],
-      mcpInstalls: null
+      elicitations: []
     })
   })
 })
@@ -131,7 +124,7 @@ describe('PendingPromptCoverage', () => {
     expect(coverage.covers(SID, at('elicitation_request', 4, 'el-1'))).toBe(true)
     expect(coverage.covers(SID, at('question_request', 4, 'q-1'))).toBe(false)
     expect(coverage.covers(SID, at('permission_request', 4))).toBe(false)
-    coverage.note(SID, 5, { permissions: [], questions: [], elicitations: [], mcpInstalls: null })
+    coverage.note(SID, 5, { permissions: [], questions: [], elicitations: [] })
     expect(coverage.covers(SID, at('question_request', 4, 'q-1'))).toBe(true)
     expect(coverage.covers(SID, at('elicitation_request', 6, 'el-1'))).toBe(false)
   })
@@ -390,8 +383,7 @@ describe('WsAcpTransport pending approvals (issue #1595)', () => {
         prompts: {
           permissions: [],
           questions: [question('q-1')],
-          elicitations: [elicitation('el-1')],
-          mcpInstalls: null
+          elicitations: [elicitation('el-1')]
         }
       }
     ])
@@ -410,12 +402,7 @@ describe('WsAcpTransport pending approvals (issue #1595)', () => {
     expect(PendingHost.last?.sent.map((req) => req.type)).toContain('recover_session_snapshot')
     expect(prompts.at(-1)).toEqual({
       sessionId: SID,
-      prompts: {
-        permissions: null,
-        questions: [],
-        elicitations: [elicitation('el-1')],
-        mcpInstalls: null
-      }
+      prompts: { permissions: null, questions: [], elicitations: [elicitation('el-1')] }
     })
     transport.dispose()
   })
@@ -454,10 +441,7 @@ describe('WsAcpTransport pending approvals (issue #1595)', () => {
     transport.seedSessionCursor(SID, { lastSeq: 2, logEpoch: 'epoch-A' })
     await transport.subscribeSession(SID)
     expect(prompts).toEqual([
-      {
-        sessionId: SID,
-        prompts: { permissions: [], questions: null, elicitations: null, mcpInstalls: null }
-      }
+      { sessionId: SID, prompts: { permissions: [], questions: null, elicitations: null } }
     ])
     const host = PendingHost.last as PendingHost
     host.emit({ sid: SID, seq: 3, type: 'question_request', payload: question('q-1') })
