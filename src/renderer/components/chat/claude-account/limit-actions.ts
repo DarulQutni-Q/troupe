@@ -47,25 +47,28 @@ function followAgent(e: FollowEvent): 'followed' | 'waiting' | 'stale' {
   return 'followed'
 }
 
+/** How long a follow waits for the host's new agent to connect here. */
+export const FOLLOW_WAIT_MS = 60_000
+
 /** Follows waiting for their new agent to connect, by chat. */
-const pendingFollows = new Map<string, FollowEvent>()
+const pendingFollows = new Map<
+  string,
+  { event: FollowEvent; timer: ReturnType<typeof setTimeout> }
+>()
 let stopWatching: (() => void) | null = null
 
-function follow(e: FollowEvent): void {
-  pendingFollows.delete(e.sessionId)
-  const outcome = followAgent(e)
-  if (outcome === 'waiting') {
-    pendingFollows.set(e.sessionId, e)
-    stopWatching ??= useAcpStore.subscribe(() => {
-      for (const pending of [...pendingFollows.values()]) follow(pending)
-      if (pendingFollows.size === 0) {
-        stopWatching?.()
-        stopWatching = null
-      }
-    })
-    return
+function dropPending(sessionId: string): void {
+  const pending = pendingFollows.get(sessionId)
+  if (!pending) return
+  clearTimeout(pending.timer)
+  pendingFollows.delete(sessionId)
+  if (pendingFollows.size === 0) {
+    stopWatching?.()
+    stopWatching = null
   }
-  if (outcome === 'stale') return
+}
+
+function followed(e: FollowEvent): void {
   void logFrontendError({
     level: 'info',
     source: 'claudeLimit.follow',
@@ -75,6 +78,34 @@ function follow(e: FollowEvent): void {
     renewAgentCredentials(CLAUDE_AGENT_CONFIG_ID, e.projectId)
     toast.success(`${e.from.name} reached its limit. Continued on ${e.to.name}.`)
   }
+}
+
+/** A closed chat, or one that moved elsewhere first, reads `stale`. */
+function retryPending(): void {
+  for (const { event } of [...pendingFollows.values()]) {
+    const outcome = followAgent(event)
+    if (outcome === 'waiting') continue
+    dropPending(event.sessionId)
+    if (outcome === 'followed') followed(event)
+  }
+}
+
+function follow(e: FollowEvent): void {
+  dropPending(e.sessionId)
+  const outcome = followAgent(e)
+  if (outcome === 'followed') followed(e)
+  if (outcome !== 'waiting') return
+  const timer = setTimeout(() => {
+    if (pendingFollows.get(e.sessionId)?.event !== e) return
+    dropPending(e.sessionId)
+    void logFrontendError({
+      level: 'warn',
+      source: 'claudeLimit.follow',
+      message: `Chat ${e.sessionId}: host agent ${e.newAgentId} did not connect here within ${FOLLOW_WAIT_MS} ms; stopped waiting`
+    })
+  }, FOLLOW_WAIT_MS)
+  pendingFollows.set(e.sessionId, { event: e, timer })
+  stopWatching ??= useAcpStore.subscribe(retryPending)
 }
 
 /** Failures already shown, by chat and session log position. */

@@ -3,7 +3,7 @@ import { toast } from 'sonner'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAcpStore } from '@/stores/acp-store'
 import { FRESH } from '@/stores/acp-store/testkit'
-import { applyClaudeLimitAction, useClaudeResumeAt } from './limit-actions'
+import { applyClaudeLimitAction, FOLLOW_WAIT_MS, useClaudeResumeAt } from './limit-actions'
 
 vi.mock('@/lib/log-api', () => ({ logFrontendError: vi.fn() }))
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), warning: vi.fn() } }))
@@ -100,6 +100,20 @@ describe('applyClaudeLimitAction', () => {
     expect(useAcpStore.getState().sessions.s1.agentId).toBe('new')
     expect(useAcpStore.getState().sessionUsage.s1.rateLimit).toBeUndefined()
     expect(toast.success).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops waiting for a new agent that never connects here', () => {
+    vi.useFakeTimers()
+    try {
+      seed('old', [])
+      applyClaudeLimitAction(switched)
+      vi.advanceTimersByTime(FOLLOW_WAIT_MS)
+      useAcpStore.setState((s) => ({ agentStatus: { ...s.agentStatus, new: 'connected' } }))
+      expect(useAcpStore.getState().sessions.s1.agentId).toBe('old')
+      expect(toast.success).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('drops a waiting follow when the chat moved to another agent first', () => {
