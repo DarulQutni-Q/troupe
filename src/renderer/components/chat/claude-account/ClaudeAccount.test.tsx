@@ -10,13 +10,14 @@ import { ClaudeAccountChip } from './ClaudeAccountChip'
 import { ClaudeLimitNotice } from './ClaudeLimitNotice'
 import { ClaudeLimitWarning } from './ClaudeLimitWarning'
 import { ClaudeSignInAction } from './ClaudeSignInAction'
-import { setSwitchingTo, useClaudeResumeStore } from './use-claude-limit'
+import { applyClaudeLimitAction, useClaudeResumeAt } from './limit-actions'
+import { setSwitchingTo } from './use-claude-limit'
 
 const { api, switcher, openApp, admits } = vi.hoisted(() => ({
   openApp: vi.fn(),
   admits: { value: true },
-  api: { list: vi.fn(), usage: vi.fn() },
-  switcher: { switchProjectClaudeAccount: vi.fn(), restartClaudeSession: vi.fn() }
+  api: { list: vi.fn(), usage: vi.fn(), setResume: vi.fn() },
+  switcher: { switchProjectClaudeAccount: vi.fn() }
 }))
 
 vi.mock('@/lib/claude-accounts-api', () => ({ claudeAccountsApi: api }))
@@ -112,12 +113,11 @@ beforeEach(() => {
   })
   api.usage.mockResolvedValue([read('default', 100), read('ab12', 4), read('cd34', 40)])
   switcher.switchProjectClaudeAccount.mockResolvedValue(undefined)
-  switcher.restartClaudeSession.mockResolvedValue(true)
+  api.setResume.mockResolvedValue(undefined)
 })
 
 afterEach(() => {
-  useClaudeResumeStore.getState().cancel('s1')
-  vi.useRealTimers()
+  useClaudeResumeAt.setState({}, true)
 })
 
 describe('ClaudeLimitNotice', () => {
@@ -165,22 +165,31 @@ describe('ClaudeLimitNotice', () => {
     expect(await screen.findByRole('button', { name: 'Switch and continue' })).toBeInTheDocument()
   })
 
-  it('offers to continue when the window resets when no account has room', async () => {
+  it('asks the host to continue when the window resets, and shows the time it scheduled', async () => {
     api.usage.mockResolvedValue([read('default', 100), read('ab12', 100), read('cd34', 100)])
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-    const resetsAt = Math.floor(Date.now() / 1000) + 60
+    const resetsAt = 1_900_000_000
     seed(limit('rejected', 100, resetsAt))
     render(<ClaudeLimitNotice sessionId="s1" />)
     expect(await screen.findByText(/No other account has room left/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /continue when it resets/i }))
+    expect(api.setResume).toHaveBeenCalledWith('s1', resetsAt * 1000)
+
+    act(() =>
+      applyClaudeLimitAction({
+        sessionId: 's1',
+        projectId: 'office',
+        action: 'resume_scheduled',
+        at: resetsAt * 1000
+      })
+    )
     expect(screen.getByText(/Continues at/)).toBeInTheDocument()
-    await act(async () => {
-      vi.advanceTimersByTime(80_000)
-    })
-    expect(switcher.restartClaudeSession).toHaveBeenCalledWith('s1', {
-      resend: true,
-      cancelTurn: true
-    })
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(api.setResume).toHaveBeenLastCalledWith('s1', null)
+
+    act(() =>
+      applyClaudeLimitAction({ sessionId: 's1', projectId: 'office', action: 'resume_cancelled' })
+    )
+    expect(screen.queryByText(/Continues at/)).toBeNull()
   })
 
   it('offers to add an account when no account has room, except on a view-only connection', async () => {

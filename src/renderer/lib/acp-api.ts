@@ -835,6 +835,7 @@ export const ACP_EVENTS = {
   sessionInfoUpdate: 'acp:session_info_update',
   agentSwitch: 'acp:agent_switch',
   usageUpdate: 'acp:usage_update',
+  claudeLimitAction: 'acp:claude_limit_action',
   agentWorking: 'acp:agent_working',
   backgroundCommands: 'acp:background_commands',
   browserOpenRequest: 'acp:browser_open_request',
