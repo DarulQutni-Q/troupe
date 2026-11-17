@@ -1965,3 +1965,19 @@
     }
   }
 }
+
+/* Translucent Rail (macOS desktop, opt-in, `use-translucent-rail.ts`): the
+   window is transparent and the native sidebar material sits behind the
+   webview. The page and the shell frame let it through only while the shell
+   is on screen; the shell row paints its own solid surface, so the Rail is the
+   only glass. A 60% background tint keeps Rail text and row states readable on
+   any wallpaper. Unlayered so it wins over the `bg-background` utilities. */
+html[data-translucent-rail]:has([data-shell-frame]),
+html[data-translucent-rail]:has([data-shell-frame]) body,
+html[data-translucent-rail] [data-shell-frame] {
+  background-color: transparent;
+}
+
+html[data-translucent-rail] [data-shell-frame] [data-rail-surface] {
+  background-color: oklch(var(--background) / 0.6);
+}

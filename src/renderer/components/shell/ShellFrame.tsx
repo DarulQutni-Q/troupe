@@ -150,7 +150,7 @@ export function ShellFrame({
 
   return (
     <ShellTopRowProvider roles={roles} platform={platform} railExpanded={railExpanded}>
-      <div className="h-screen flex flex-col overflow-hidden bg-background">
+      <div className="h-screen flex flex-col overflow-hidden bg-background" data-shell-frame="">
         <ResizeEdges />
         <div className="flex-1 flex overflow-hidden min-h-0 h-full">
           <ShellRail
@@ -170,9 +170,10 @@ export function ShellFrame({
             onToggleThemePicker={handleToggleThemePicker}
           />
 
-          {/* Shell row: main area | right panel | tool strip. */}
+          {/* Shell row: main area | right panel | tool strip. It paints its
+              own surface so a translucent Rail (macOS) stays the only glass. */}
           <div
-            className="relative flex-1 flex overflow-hidden min-h-0 min-w-0 h-full"
+            className="relative flex-1 flex overflow-hidden min-h-0 min-w-0 h-full bg-background"
             data-testid="shell-row"
           >
             <PaneDndProvider>
