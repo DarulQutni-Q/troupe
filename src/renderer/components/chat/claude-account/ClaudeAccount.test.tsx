@@ -22,7 +22,7 @@ const { api, switcher, openApp, admits } = vi.hoisted(() => ({
 
 vi.mock('@/lib/claude-accounts-api', () => ({ claudeAccountsApi: api }))
 vi.mock('@/lib/log-api', () => ({ logFrontendError: vi.fn() }))
-vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
+vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }))
 vi.mock('@/hooks/use-server-admits-remote-writes', () => ({
   useServerAdmitsRemoteWrites: () => admits.value
 }))
@@ -150,9 +150,24 @@ describe('ClaudeLimitNotice', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Switch and continue' }))
     await waitFor(() =>
       expect(switcher.switchProjectClaudeAccount).toHaveBeenCalledWith('office', 'ab12', {
-        continueSessionIds: ['s1']
+        continueSessionIds: ['s1'],
+        expectedAccountId: 'default'
       })
     )
+    expect(toast.success).toHaveBeenCalledWith('Switched to Work')
+  })
+
+  it('leaves a project the host already moved, and says so', async () => {
+    switcher.switchProjectClaudeAccount.mockResolvedValue(null)
+    seed(limit('rejected', 100))
+    render(<ClaudeLimitNotice sessionId="s1" />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Switch and continue' }))
+    await waitFor(() =>
+      expect(toast.info).toHaveBeenCalledWith('The account of this project already changed', {
+        description: 'Troupe or another device switched it first.'
+      })
+    )
+    expect(toast.success).not.toHaveBeenCalled()
   })
 
   it('shows a switch that automatic switching started, without the offer', async () => {
@@ -241,7 +256,8 @@ describe('ClaudeLimitWarning', () => {
     fireEvent.click(await screen.findByRole('menuitem', { name: /work/i }))
     await waitFor(() =>
       expect(switcher.switchProjectClaudeAccount).toHaveBeenCalledWith('office', 'ab12', {
-        continueSessionIds: undefined
+        continueSessionIds: undefined,
+        expectedAccountId: 'default'
       })
     )
   })

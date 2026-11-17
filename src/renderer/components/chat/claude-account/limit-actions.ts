@@ -17,33 +17,74 @@ function setResumeAt(sessionId: string, at: number | null): void {
   }, true)
 }
 
-function followAgent(sessionId: string, fromAgentId: string | null, newAgentId: string): boolean {
-  let followed = false
+type FollowEvent = Extract<ClaudeLimitActionEvent, { action: 'switched' | 'resumed' }>
+
+/**
+ * Point the chat at the agent the host moved it to. `waiting` when the chat
+ * still runs on the replaced agent but this client has not seen the new one
+ * connect yet (that status arrives on its own channel).
+ */
+function followAgent(e: FollowEvent): 'followed' | 'waiting' | 'stale' {
+  const state = useAcpStore.getState()
+  const session = state.sessions[e.sessionId]
+  if (!session || e.fromAgentId === null || session.agentId !== e.fromAgentId) return 'stale'
+  if (state.agentStatus[e.newAgentId] !== 'connected') return 'waiting'
   useAcpStore.setState((s) => {
-    const session = s.sessions[sessionId]
-    if (!session || fromAgentId === null || session.agentId !== fromAgentId) return {}
-    if (s.agentStatus[newAgentId] !== 'connected') return {}
-    followed = true
     let sessionUsage = s.sessionUsage
-    const usage = s.sessionUsage[sessionId]
+    const usage = s.sessionUsage[e.sessionId]
     if (usage?.rateLimit) {
       const { rateLimit: _cleared, ...rest } = usage
-      sessionUsage = { ...s.sessionUsage, [sessionId]: rest }
+      sessionUsage = { ...s.sessionUsage, [e.sessionId]: rest }
     }
     return {
       sessions: {
         ...s.sessions,
-        [sessionId]: { ...session, agentId: newAgentId, status: 'active' }
+        [e.sessionId]: { ...session, agentId: e.newAgentId, status: 'active' }
       },
       sessionUsage
     }
   })
-  return followed
+  return 'followed'
 }
 
+/** Follows waiting for their new agent to connect, by chat. */
+const pendingFollows = new Map<string, FollowEvent>()
+let stopWatching: (() => void) | null = null
+
+function follow(e: FollowEvent): void {
+  pendingFollows.delete(e.sessionId)
+  const outcome = followAgent(e)
+  if (outcome === 'waiting') {
+    pendingFollows.set(e.sessionId, e)
+    stopWatching ??= useAcpStore.subscribe(() => {
+      for (const pending of [...pendingFollows.values()]) follow(pending)
+      if (pendingFollows.size === 0) {
+        stopWatching?.()
+        stopWatching = null
+      }
+    })
+    return
+  }
+  if (outcome === 'stale') return
+  void logFrontendError({
+    level: 'info',
+    source: 'claudeLimit.follow',
+    message: `Chat ${e.sessionId} follows host agent ${e.newAgentId} (${e.action})`
+  })
+  if (e.action === 'switched') {
+    renewAgentCredentials(CLAUDE_AGENT_CONFIG_ID, e.projectId)
+    toast.success(`${e.from.name} reached its limit. Continued on ${e.to.name}.`)
+  }
+}
+
+/** Failures already shown, by chat and session log position. */
 const reportedFailures = new Set<string>()
 
-export function applyClaudeLimitAction(e: ClaudeLimitActionEvent): void {
+/**
+ * `eventSeq` is the event's position in the chat's log; a replayed failure
+ * keeps it, so it toasts once.
+ */
+export function applyClaudeLimitAction(e: ClaudeLimitActionEvent, eventSeq?: number): void {
   switch (e.action) {
     case 'resume_scheduled':
       setResumeAt(e.sessionId, e.at)
@@ -53,33 +94,28 @@ export function applyClaudeLimitAction(e: ClaudeLimitActionEvent): void {
       return
     case 'failed': {
       setResumeAt(e.sessionId, null)
-      const key = `${e.sessionId}:${e.reason}`
-      if (reportedFailures.has(key)) return
-      reportedFailures.add(key)
+      if (eventSeq !== undefined) {
+        const key = `${e.sessionId}:${eventSeq}`
+        if (reportedFailures.has(key)) return
+        reportedFailures.add(key)
+      }
       toast.warning('Troupe could not continue the chat', { description: e.reason })
       return
     }
     case 'switched':
-    case 'resumed': {
+    case 'resumed':
       setResumeAt(e.sessionId, null)
-      if (!followAgent(e.sessionId, e.fromAgentId, e.newAgentId)) return
-      void logFrontendError({
-        level: 'info',
-        source: 'claudeLimit.follow',
-        message: `Chat ${e.sessionId} follows host agent ${e.newAgentId} (${e.action})`
-      })
-      if (e.action === 'switched') {
-        renewAgentCredentials(CLAUDE_AGENT_CONFIG_ID, e.projectId)
-        toast.success(`${e.from.name} reached its limit. Continued on ${e.to.name}.`)
-      }
-    }
+      follow(e)
   }
 }
 
 /** Mount once per renderer root. */
 export function useClaudeLimitActions(): void {
   useEffect(
-    () => onAcpEvent<ClaudeLimitActionEvent>(ACP_EVENTS.claudeLimitAction, applyClaudeLimitAction),
+    () =>
+      onAcpEvent<ClaudeLimitActionEvent>(ACP_EVENTS.claudeLimitAction, (e, eventSeq) =>
+        applyClaudeLimitAction(e, eventSeq)
+      ),
     []
   )
 }

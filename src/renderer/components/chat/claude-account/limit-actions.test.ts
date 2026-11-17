@@ -90,10 +90,27 @@ describe('applyClaudeLimitAction', () => {
     expect(toast.success).not.toHaveBeenCalled()
   })
 
-  it('leaves a chat alone when the new agent is not live here', () => {
+  it('follows the new agent once it connects here after the event', () => {
     seed('old', [])
     applyClaudeLimitAction(switched)
     expect(useAcpStore.getState().sessions.s1.agentId).toBe('old')
+    expect(toast.success).not.toHaveBeenCalled()
+
+    useAcpStore.setState((s) => ({ agentStatus: { ...s.agentStatus, new: 'connected' } }))
+    expect(useAcpStore.getState().sessions.s1.agentId).toBe('new')
+    expect(useAcpStore.getState().sessionUsage.s1.rateLimit).toBeUndefined()
+    expect(toast.success).toHaveBeenCalledTimes(1)
+  })
+
+  it('drops a waiting follow when the chat moved to another agent first', () => {
+    seed('old', [])
+    applyClaudeLimitAction(switched)
+    useAcpStore.setState((s) => ({
+      sessions: { ...s.sessions, s1: { ...s.sessions.s1, agentId: 'mine' } }
+    }))
+    useAcpStore.setState((s) => ({ agentStatus: { ...s.agentStatus, new: 'connected' } }))
+    expect(useAcpStore.getState().sessions.s1.agentId).toBe('mine')
+    expect(toast.success).not.toHaveBeenCalled()
   })
 
   it('follows the agent a resume at the reset started, and clears the scheduled time', () => {
@@ -116,7 +133,7 @@ describe('applyClaudeLimitAction', () => {
     expect(useClaudeResumeAt.getState()).toEqual({})
   })
 
-  it('reports a failed continue once', () => {
+  it('reports each failed continue once, even when a later one has the same reason', () => {
     seed('old', [])
     const failed = {
       sessionId: 's1',
@@ -124,11 +141,13 @@ describe('applyClaudeLimitAction', () => {
       action: 'failed' as const,
       reason: 'The host restarted while this chat waited for its limit to reset.'
     }
-    applyClaudeLimitAction(failed)
-    applyClaudeLimitAction(failed)
+    applyClaudeLimitAction(failed, 7)
+    applyClaudeLimitAction(failed, 7)
     expect(toast.warning).toHaveBeenCalledTimes(1)
     expect(toast.warning).toHaveBeenCalledWith('Troupe could not continue the chat', {
       description: 'The host restarted while this chat waited for its limit to reset.'
     })
+    applyClaudeLimitAction(failed, 12)
+    expect(toast.warning).toHaveBeenCalledTimes(2)
   })
 })

@@ -76,16 +76,24 @@ export function useClaudeLimit(sessionId: string): ClaudeLimit | null {
   if (dismissed.has(key)) return null
 
   const projectId = ctx.projectId
+  const currentId = ctx.current.account.id
   const reloadAccounts = ctx.accounts.reload
   async function switchTo(target: AccountChoice): Promise<void> {
     if (useClaudeSwitchingStore.getState()[sessionId]) return
     setSwitchingTo(sessionId, target.account.name)
     if (resumeAt !== null) void claudeAccountsApi.setResume(sessionId, null).catch(() => undefined)
     try {
-      await switchProjectClaudeAccount(projectId, target.account.id, {
-        continueSessionIds: limit.status === 'rejected' ? [sessionId] : undefined
+      const continued = await switchProjectClaudeAccount(projectId, target.account.id, {
+        continueSessionIds: limit.status === 'rejected' ? [sessionId] : undefined,
+        expectedAccountId: currentId
       })
       await reloadAccounts()
+      if (continued === null) {
+        toast.info('The account of this project already changed', {
+          description: 'Troupe or another device switched it first.'
+        })
+        return
+      }
       toast.success(`Switched to ${target.account.name}`)
     } catch (err) {
       toastAccountChoiceError(err, 'Could not switch')
