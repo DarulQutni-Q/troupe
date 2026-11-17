@@ -7,6 +7,7 @@ fn resume(session_id: &str, at: i64) -> ScheduledResume {
         at,
         account_id: Some("a1".to_string()),
         window: Some("five_hour".to_string()),
+        turn_mark: 0,
     }
 }
 
@@ -20,8 +21,8 @@ fn a_resume_survives_a_reload_and_fires_once() {
 
     let mut reloaded = Schedule::load(Some(path.clone()));
     assert_eq!(reloaded.next_at(), Some(100));
-    assert_eq!(reloaded.take_due(200), vec![resume("s1", 100)]);
-    assert_eq!(reloaded.take_due(200), Vec::<ScheduledResume>::new());
+    assert_eq!(reloaded.take_next_due(200), Some(resume("s1", 100)));
+    assert_eq!(reloaded.take_next_due(200), None);
 
     let after_fire = Schedule::load(Some(path));
     assert_eq!(after_fire.next_at(), Some(300));

@@ -150,7 +150,10 @@ for line in sys.stdin:
                         "rateLimitType": "five_hour", "utilization": 1.0}}}}})
         elif text.startswith("Troupe "):
             chunk("config_dir=" + os.environ.get("CLAUDE_CONFIG_DIR", ""), msg["params"]["sessionId"])
-            send({"jsonrpc": "2.0", "id": rid, "result": {"stopReason": "end_turn"}})
+            if os.environ.get("MOCK_NOTICE_HANG") == "1":
+                hung = rid
+            else:
+                send({"jsonrpc": "2.0", "id": rid, "result": {"stopReason": "end_turn"}})
         elif text.startswith("elicit-url:"):
             elicit_prompt = rid
             send({"jsonrpc": "2.0", "id": 960, "method": "elicitation/create", "params": {
@@ -180,6 +183,7 @@ for line in sys.stdin:
     elif method == "session/close":
         send({"jsonrpc": "2.0", "id": rid, "result": {}})
     elif method == "session/resume" and os.environ.get("MOCK_RESUME_OK") == "1":
+        time.sleep(float(os.environ.get("MOCK_RESUME_DELAY", "0")))
         send({"jsonrpc": "2.0", "id": rid, "result": {}})
     elif method in ("session/load", "session/resume"):
         send({"jsonrpc": "2.0", "id": rid,

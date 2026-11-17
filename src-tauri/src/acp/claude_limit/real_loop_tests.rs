@@ -113,7 +113,14 @@ impl Host {
         acp.set_claude_limit(handle);
         let schedule = Schedule::load(Some(state.join(super::SCHEDULE_FILE)));
         tokio::spawn(
-            Supervisor::new(acp.clone(), relay.clone(), schedule, Duration::ZERO).run(inbox.0),
+            Supervisor::new(
+                acp.clone(),
+                relay.clone(),
+                schedule,
+                Duration::ZERO,
+                inbox.clock,
+            )
+            .run(inbox.rx),
         );
         Some(Self {
             dir,
@@ -130,30 +137,56 @@ impl Host {
     }
 
     async fn open_chat(&self) -> OpenChat {
+        self.open_chat_with(&[]).await
+    }
+
+    /// A chat on a new agent whose mock reads `env`; a host relaunch of the
+    /// chat inherits it.
+    async fn open_chat_with(&self, env: &[(&str, &str)]) -> OpenChat {
+        let agent_id = self.spawn_agent(env).await;
+        let session_id = self.open_session(&agent_id).await;
+        OpenChat {
+            agent_id,
+            session_id,
+        }
+    }
+
+    async fn spawn_agent(&self, env: &[(&str, &str)]) -> AgentId {
         let entrypoint = self
             .state()
             .join("acp-registry-binaries/claude-acp/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js");
+        let mut vars = HashMap::from([
+            ("MOCK_RESUME_OK".to_string(), "1".to_string()),
+            ("MOCK_SESSION_IDS".to_string(), "1".to_string()),
+        ]);
+        vars.extend(env.iter().map(|(k, v)| ((*k).to_string(), (*v).to_string())));
         let config = AgentConfig {
             config_id: Some(super::CLAUDE_CONFIG_ID.to_string()),
             name: "Claude Agent".to_string(),
             command: "node".to_string(),
             args: vec![entrypoint.to_string_lossy().to_string()],
-            env: HashMap::from([
-                ("MOCK_RESUME_OK".to_string(), "1".to_string()),
-                ("MOCK_SESSION_IDS".to_string(), "1".to_string()),
-            ]),
+            env: vars,
             allow_terminal: false,
         };
-        let spawned = self
-            .acp
+        self.acp
             .spawn_with_command_id(config, None, Some(PROJECT.to_string()))
             .await
-            .expect("managed mock agent spawns");
-        let session_id = self.open_session(&spawned.agent_id).await;
-        OpenChat {
-            agent_id: spawned.agent_id,
-            session_id,
-        }
+            .expect("managed mock agent spawns")
+            .agent_id
+    }
+
+    fn cwd(&self) -> String {
+        self.dir.path().to_string_lossy().to_string()
+    }
+
+    async fn set_resume(&self, session_id: &SessionId, at: Option<i64>) {
+        let at = at.map(|secs| UNIX_EPOCH + Duration::from_secs(u64::try_from(secs).unwrap()));
+        self.acp
+            .claude_limit()
+            .unwrap()
+            .set_resume(session_id.clone(), at)
+            .await
+            .unwrap();
     }
 
     /// Another chat on the same agent.
@@ -161,7 +194,7 @@ impl Host {
         self.acp
             .new_session_with_context(
                 agent_id,
-                self.dir.path().to_string_lossy().to_string(),
+                self.cwd(),
                 vec![],
                 SessionCreationContext {
                     project_id: Some(PROJECT.to_string()),
@@ -478,8 +511,9 @@ async fn a_resume_due_after_a_restart_marks_the_chat_for_its_client() {
             relay,
             Schedule::load(Some(path.clone())),
             Duration::ZERO,
+            inbox.clock,
         )
-        .run(inbox.0),
+        .run(inbox.rx),
     );
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     let event = loop {
@@ -506,4 +540,220 @@ async fn a_resume_due_after_a_restart_marks_the_chat_for_its_client() {
     );
     assert_eq!(Schedule::load(Some(path)).next_at(), None);
     drop(handle);
+}
+
+fn schedule_file(host: &Host) -> Value {
+    serde_json::from_slice(&std::fs::read(host.state().join(super::SCHEDULE_FILE)).unwrap())
+        .unwrap()
+}
+
+/// Poll `found` until it returns a value.
+async fn eventually<T, F, Fut>(what: &str, found: F) -> T
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Option<T>>,
+{
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        if let Some(value) = found().await {
+            return value;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "never saw: {what}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_chat_waiting_for_its_reset_continues_when_a_sibling_moves_the_agent_to_room() {
+    let Some(host) = Host::start(
+        &[("default", 90.0), ("Work", 100.0), ("Spare", 10.0)],
+        "Work",
+    )
+    .await
+    else {
+        return;
+    };
+    let OpenChat {
+        agent_id: old_agent,
+        session_id: limited,
+    } = host.open_chat().await;
+    let waiting = host.open_session(&old_agent).await;
+    let waits_until = now_secs() + 3600;
+    host.set_resume(&waiting, Some(waits_until)).await;
+    let resets_at = now_secs() + 3600;
+    host.prompt_and_leave(&old_agent, &limited, &format!("limit:{resets_at}"));
+
+    let records = host.log_until(&waiting, has_config_dir_chunk).await;
+
+    let live_agents = host.acp.list_agents();
+    assert_eq!(live_agents.len(), 1);
+    let new_agent = live_agents[0].clone();
+    let (work, spare) = (&host.accounts["Work"], &host.accounts["Spare"]);
+    assert_eq!(
+        actions(&records),
+        vec![
+            serde_json::json!({
+                "sessionId": waiting.0,
+                "projectId": PROJECT,
+                "action": "resume_scheduled",
+                "at": waits_until * 1000,
+            }),
+            serde_json::json!({
+                "sessionId": waiting.0,
+                "projectId": PROJECT,
+                "action": "switched",
+                "from": {"id": work, "name": "Work"},
+                "to": {"id": spare, "name": "Spare"},
+                "fromAgentId": old_agent.0,
+                "newAgentId": new_agent.0,
+            }),
+        ]
+    );
+    assert_eq!(
+        texts(&records, "user_prompt"),
+        vec![switch_notice("Work", "Spare", "5-hour").as_str()]
+    );
+    let spare_dir = host.state().join("claude-accounts").join(spare);
+    assert_eq!(
+        texts(&records, "message_chunk"),
+        vec![format!("config_dir={}", spare_dir.display()).as_str()]
+    );
+    assert_eq!(schedule_file(&host)["resumes"], serde_json::json!([]));
+    let _ = host.acp.kill(&new_agent).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_client_reopening_a_chat_the_host_resumes_finds_it_on_the_hosts_agent() {
+    let Some(host) = Host::start(&[("default", 100.0), ("Work", 100.0)], "Work").await else {
+        return;
+    };
+    let slow = [("MOCK_RESUME_DELAY", "2"), ("MOCK_NOTICE_HANG", "1")];
+    let client = host.spawn_agent(&slow).await;
+    let OpenChat {
+        agent_id: old_agent,
+        session_id,
+    } = host.open_chat_with(&slow).await;
+    host.set_resume(&session_id, Some(now_secs() + 3)).await;
+    host.acp.reap_agent(&old_agent).await.unwrap();
+
+    let host_agent = eventually("the host's new agent", || async {
+        host.acp
+            .list_agents()
+            .into_iter()
+            .find(|agent| *agent != client)
+    })
+    .await;
+    let reopened = host
+        .acp
+        .resume_session(&client, session_id.clone(), host.cwd(), Vec::new(), None)
+        .await;
+
+    let refusal = reopened.expect_err("a second agent took the chat");
+    assert!(
+        refusal.starts_with(crate::acp::manager::ACP_SESSION_OWNED_BY_OTHER),
+        "{refusal}"
+    );
+    assert!(host
+        .acp
+        .owns_session(&host_agent, session_id.clone())
+        .await
+        .unwrap());
+    assert!(!host.acp.owns_session(&client, session_id).await.unwrap());
+    let _ = host.acp.kill(&host_agent).await;
+    let _ = host.acp.kill(&client).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_chat_a_client_reopened_after_its_own_switch_stays_on_the_clients_agent() {
+    let Some(host) = Host::start(
+        &[("default", 90.0), ("Work", 100.0), ("Spare", 10.0)],
+        "Work",
+    )
+    .await
+    else {
+        return;
+    };
+    let OpenChat {
+        agent_id: old_agent,
+        session_id,
+    } = host.open_chat().await;
+    host.acp
+        .claude_agent()
+        .set_project_account(
+            PROJECT,
+            Some(&host.accounts["Spare"]),
+            None,
+            SignInCheck::Skip,
+        )
+        .await
+        .unwrap();
+    let client = host.spawn_agent(&[("MOCK_RESUME_DELAY", "2")]).await;
+    let reopen = tokio::spawn({
+        let (acp, client, session_id, cwd) = (
+            host.acp.clone(),
+            client.clone(),
+            session_id.clone(),
+            host.cwd(),
+        );
+        async move {
+            acp.resume_session(&client, session_id, cwd, Vec::new(), None)
+                .await
+        }
+    });
+    eventually("the client's reopen in flight", || async {
+        let activity = host.acp.agent_activity(&client).await.ok()?;
+        (activity.reopens_in_flight > 0).then_some(())
+    })
+    .await;
+    let resets_at = now_secs() + 3600;
+    host.prompt_and_leave(&old_agent, &session_id, &format!("limit:{resets_at}"));
+
+    reopen.await.unwrap().expect("the client reopens the chat");
+    host.log_until(&session_id, |records| {
+        records
+            .iter()
+            .any(|(kind, payload)| kind == "usage_update" && payload.get("limitReached").is_some())
+    })
+    .await;
+    // Answered after the supervisor handled the limit.
+    host.set_resume(&session_id, None).await;
+
+    let mut live_agents = host.acp.list_agents();
+    live_agents.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut expected = vec![old_agent.clone(), client.clone()];
+    expected.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(live_agents, expected);
+    assert!(host
+        .acp
+        .owns_session(&client, session_id.clone())
+        .await
+        .unwrap());
+    let _ = host.acp.kill(&old_agent).await;
+    let _ = host.acp.kill(&client).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stopped_agent_leaves_a_recipe_only_for_a_chat_that_waits_for_its_reset() {
+    let Some(host) = Host::start(&[("default", 100.0), ("Work", 100.0)], "Work").await else {
+        return;
+    };
+    let OpenChat {
+        agent_id,
+        session_id: idle,
+    } = host.open_chat().await;
+    let waiting = host.open_session(&agent_id).await;
+    host.set_resume(&waiting, Some(now_secs() + 3600)).await;
+
+    host.acp.reap_agent(&agent_id).await.unwrap();
+
+    eventually("the idle chat's recipe forgotten", || async {
+        host.acp.launch_recipe(&idle).is_none().then_some(())
+    })
+    .await;
+    assert_eq!(
+        host.acp
+            .launch_recipe(&waiting)
+            .map(|recipe| recipe.agent_id),
+        Some(agent_id)
+    );
 }

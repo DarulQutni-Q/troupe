@@ -80,6 +80,8 @@ mod import_steps;
 mod native_subagents;
 mod project_binding;
 mod reopen;
+mod reopen_gate;
+pub use reopen_gate::HostMove;
 mod sign_in;
 mod spawn_error;
 pub(crate) mod stderr_ring;
@@ -542,6 +544,7 @@ pub struct AcpManager {
     launches: Mutex<HashMap<AgentId, AgentLaunch>>,
     recipes: Mutex<HashMap<SessionId, LaunchRecipe>>,
     claude_limit: std::sync::OnceLock<crate::acp::claude_limit::ClaudeLimitHandle>,
+    reopen_gates: Arc<reopen_gate::ReopenGates>,
 }
 
 impl AcpManager {
@@ -588,6 +591,7 @@ impl AcpManager {
             launches: Mutex::new(HashMap::new()),
             recipes: Mutex::new(HashMap::new()),
             claude_limit: std::sync::OnceLock::new(),
+            reopen_gates: Arc::default(),
         }
     }
 
@@ -645,6 +649,7 @@ impl AcpManager {
             launches: Mutex::new(HashMap::new()),
             recipes: Mutex::new(HashMap::new()),
             claude_limit: std::sync::OnceLock::new(),
+            reopen_gates: Arc::default(),
         }
     }
 
@@ -1148,6 +1153,7 @@ impl AcpManager {
     /// driver stopped mid-query degrades to an empty set (logged) rather than
     /// failing the whole listing.
     pub async fn list_agent_summaries_with_ownership(&self) -> Vec<AgentSummary> {
+        self.host_moves_settled().await;
         let mut summaries = self.list_agent_summaries();
         for summary in &mut summaries {
             match self.agent_session_ids(&summary.id).await {
@@ -1345,10 +1351,34 @@ impl AcpManager {
             additional_directories,
             mcp_servers,
             false,
+            None,
         )
         .await
     }
 
+    /// [`Self::load_session`] of a chat `moving` holds.
+    pub async fn load_session_in_move(
+        &self,
+        moving: &HostMove,
+        agent_id: &AgentId,
+        session_id: SessionId,
+        cwd: String,
+        additional_directories: Vec<String>,
+        mcp_servers: Option<Vec<McpServer>>,
+    ) -> Result<SessionReopenOutcome, String> {
+        self.load_session_with(
+            agent_id,
+            session_id,
+            cwd,
+            additional_directories,
+            mcp_servers,
+            false,
+            Some(moving),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn load_session_with(
         &self,
         agent_id: &AgentId,
@@ -1357,7 +1387,9 @@ impl AcpManager {
         additional_directories: Vec<String>,
         mcp_servers: Option<Vec<McpServer>>,
         import_history: bool,
+        moving: Option<&HostMove>,
     ) -> Result<SessionReopenOutcome, String> {
+        let _held = self.hold_unless_moving(moving, &session_id).await;
         self.reject_session_owned_by_other_mid_turn(agent_id, &session_id)
             .await?;
         let caps = self.capabilities(agent_id)?;
@@ -1406,6 +1438,48 @@ impl AcpManager {
         additional_directories: Vec<String>,
         mcp_servers: Option<Vec<McpServer>>,
     ) -> Result<SessionReopenOutcome, String> {
+        self.resume_session_with(
+            agent_id,
+            session_id,
+            cwd,
+            additional_directories,
+            mcp_servers,
+            None,
+        )
+        .await
+    }
+
+    /// [`Self::resume_session`] of a chat `moving` holds.
+    pub async fn resume_session_in_move(
+        &self,
+        moving: &HostMove,
+        agent_id: &AgentId,
+        session_id: SessionId,
+        cwd: String,
+        additional_directories: Vec<String>,
+        mcp_servers: Option<Vec<McpServer>>,
+    ) -> Result<SessionReopenOutcome, String> {
+        self.resume_session_with(
+            agent_id,
+            session_id,
+            cwd,
+            additional_directories,
+            mcp_servers,
+            Some(moving),
+        )
+        .await
+    }
+
+    async fn resume_session_with(
+        &self,
+        agent_id: &AgentId,
+        session_id: SessionId,
+        cwd: String,
+        additional_directories: Vec<String>,
+        mcp_servers: Option<Vec<McpServer>>,
+        moving: Option<&HostMove>,
+    ) -> Result<SessionReopenOutcome, String> {
+        let _held = self.hold_unless_moving(moving, &session_id).await;
         self.reject_session_owned_by_other_mid_turn(agent_id, &session_id)
             .await?;
         let caps = self.capabilities(agent_id)?;

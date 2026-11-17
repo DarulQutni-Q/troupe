@@ -4,6 +4,7 @@
 //! continues it when the limit resets. The renderer only shows what happened
 //! (`acp:claude_limit_action`).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -12,12 +13,13 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::acp::claude_accounts::usage::ClaudeRateLimit;
 use crate::acp::config::{AgentId, SessionId};
-use crate::acp::events::EVENT_USAGE_UPDATE;
+use crate::acp::events::{EVENT_AGENT_DISCONNECTED, EVENT_USAGE_UPDATE};
 use crate::acp::AcpManager;
 use crate::web::sink::{AcpEvent, EventSink};
 use crate::web::WsRelaySink;
 
 pub mod decide;
+mod relaunch;
 mod schedule;
 mod supervisor;
 
@@ -38,25 +40,83 @@ enum Input {
         at: Option<SystemTime>,
         reply: oneshot::Sender<Result<(), String>>,
     },
-    /// The chat started a turn. Sent from the driver before the agent sees
-    /// the prompt, so it arrives ahead of any limit that turn reaches.
-    TurnStarted { session_id: SessionId },
+    /// The chat started turn `seq` of the [`TurnClock`]. Sent from the driver
+    /// before the agent sees the prompt, so it arrives ahead of any limit
+    /// that turn reaches.
+    TurnStarted { session_id: SessionId, seq: u64 },
     /// The chat was closed, or deleted with its log.
     Closed { session_id: SessionId, deleted: bool },
+    /// The agent stopped (killed, reaped or crashed).
+    AgentStopped { agent_id: AgentId },
+}
+
+/// Numbers the turns of every chat. The supervisor acts on one input at a
+/// time, so a `TurnStarted` can wait in its inbox while it resumes another
+/// chat; it reads the clock instead, which the driver sets before the agent
+/// sees the prompt.
+#[derive(Default)]
+pub(crate) struct TurnClock {
+    /// The last turn number, and the last turn of each chat whose
+    /// `TurnStarted` the supervisor has not handled yet.
+    turns: parking_lot::Mutex<(u64, HashMap<String, u64>)>,
+}
+
+impl TurnClock {
+    fn start(&self, session_id: &str) -> u64 {
+        let mut turns = self.turns.lock();
+        turns.0 += 1;
+        let seq = turns.0;
+        turns.1.insert(session_id.to_string(), seq);
+        seq
+    }
+
+    /// The last turn number of any chat.
+    pub(crate) fn now(&self) -> u64 {
+        self.turns.lock().0
+    }
+
+    /// A turn of the chat started after `mark` (a [`Self::now`] reading).
+    pub(crate) fn started_since(&self, session_id: &str, mark: u64) -> bool {
+        self.turns
+            .lock()
+            .1
+            .get(session_id)
+            .is_some_and(|seq| *seq > mark)
+    }
+
+    /// The supervisor handled turn `seq`. A later turn keeps its entry until
+    /// its own `TurnStarted` is handled.
+    pub(crate) fn settle(&self, session_id: &str, seq: u64) {
+        let mut turns = self.turns.lock();
+        if turns.1.get(session_id) == Some(&seq) {
+            turns.1.remove(session_id);
+        }
+    }
 }
 
 #[derive(Clone)]
 pub struct ClaudeLimitHandle {
     tx: mpsc::UnboundedSender<Input>,
+    clock: Arc<TurnClock>,
 }
 
-pub struct ClaudeLimitInbox(mpsc::UnboundedReceiver<Input>);
+pub struct ClaudeLimitInbox {
+    rx: mpsc::UnboundedReceiver<Input>,
+    clock: Arc<TurnClock>,
+}
 
 impl ClaudeLimitHandle {
     #[must_use]
     pub fn channel() -> (Self, ClaudeLimitInbox) {
         let (tx, rx) = mpsc::unbounded_channel();
-        (Self { tx }, ClaudeLimitInbox(rx))
+        let clock = Arc::new(TurnClock::default());
+        (
+            Self {
+                tx,
+                clock: Arc::clone(&clock),
+            },
+            ClaudeLimitInbox { rx, clock },
+        )
     }
 
     /// The event sink that forwards limit signals. Add it to the manager's
@@ -89,7 +149,8 @@ impl ClaudeLimitHandle {
 
     /// A turn of the chat started: its scheduled resume no longer applies.
     pub fn turn_started(&self, session_id: SessionId) {
-        let _ = self.tx.send(Input::TurnStarted { session_id });
+        let seq = self.clock.start(&session_id.0);
+        let _ = self.tx.send(Input::TurnStarted { session_id, seq });
     }
 
     /// The chat closed, or was deleted with its log: drop its scheduled
@@ -108,6 +169,14 @@ struct LimitSignalSink {
 
 impl EventSink for LimitSignalSink {
     fn emit(&self, event: &AcpEvent) {
+        if event.type_ == EVENT_AGENT_DISCONNECTED {
+            if let Some(agent_id) = event.payload.get("agentId").and_then(|id| id.as_str()) {
+                let _ = self.tx.send(Input::AgentStopped {
+                    agent_id: AgentId(agent_id.to_string()),
+                });
+            }
+            return;
+        }
         if event.type_ != EVENT_USAGE_UPDATE {
             return;
         }
@@ -145,13 +214,15 @@ pub fn start(
         .state_dir()
         .map(|dir| dir.join(SCHEDULE_FILE));
     acp.set_claude_limit(handle);
+    let ClaudeLimitInbox { rx, clock } = inbox;
     let supervisor = supervisor::Supervisor::new(
         Arc::clone(acp),
         Arc::clone(relay),
         schedule::Schedule::load(path),
         RESUME_GRACE,
+        clock,
     );
-    runtime.spawn(supervisor.run(inbox.0));
+    runtime.spawn(supervisor.run(rx));
     log::info!("[claude-limit] supervisor started");
 }
 

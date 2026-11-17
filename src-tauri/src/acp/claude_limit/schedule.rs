@@ -11,6 +11,10 @@ pub struct ScheduledResume {
     pub at: i64,
     pub account_id: Option<String>,
     pub window: Option<String>,
+    /// The turn clock when the resume was scheduled. The clock restarts with
+    /// the host, so a loaded entry reads 0.
+    #[serde(skip)]
+    pub turn_mark: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -77,25 +81,25 @@ impl Schedule {
         removed
     }
 
+    pub fn get(&self, session_id: &str) -> Option<&ScheduledResume> {
+        self.entries.get(session_id)
+    }
+
     pub fn next_at(&self) -> Option<i64> {
         self.entries.values().map(|entry| entry.at).min()
     }
 
-    pub fn take_due(&mut self, now: i64) -> Vec<ScheduledResume> {
-        let due: Vec<String> = self
+    /// Remove and return the earliest resume due at `now`. One at a time, so
+    /// the entries still waiting stay visible while the first one acts.
+    pub fn take_next_due(&mut self, now: i64) -> Option<ScheduledResume> {
+        let due = self
             .entries
             .values()
             .filter(|entry| entry.at <= now)
-            .map(|entry| entry.session_id.clone())
-            .collect();
-        let taken: Vec<ScheduledResume> = due
-            .iter()
-            .filter_map(|id| self.entries.remove(id))
-            .collect();
-        if !taken.is_empty() {
-            self.save();
-        }
-        taken
+            .min_by_key(|entry| entry.at)?
+            .session_id
+            .clone();
+        self.remove(&due)
     }
 
     fn save(&self) {

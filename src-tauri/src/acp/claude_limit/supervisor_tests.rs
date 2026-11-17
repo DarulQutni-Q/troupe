@@ -10,7 +10,7 @@ use super::super::{ClaudeLimitHandle, CLAUDE_CONFIG_ID, SCHEDULE_FILE};
 use super::{Schedule, Supervisor};
 use crate::acp::claude_agent::ClaudeLaunchAuth;
 use crate::acp::config::{AgentConfig, AgentId, SessionId};
-use crate::acp::manager::AgentLaunch;
+use crate::acp::manager::{AgentLaunch, FakeTurn};
 use crate::acp::AcpManager;
 use crate::web::sink::{AcpEvent, EventSink};
 use crate::web::WsRelaySink;
@@ -52,8 +52,9 @@ fn start() -> Host {
             relay,
             Schedule::load(Some(path.clone())),
             Duration::ZERO,
+            inbox.clock,
         )
-        .run(inbox.0),
+        .run(inbox.rx),
     );
     Host {
         _dir: dir,
@@ -212,4 +213,56 @@ async fn closing_a_chat_drops_its_scheduled_resume() {
         .acp
         .launch_recipe(&SessionId("s1".to_string()))
         .is_none());
+}
+
+#[tokio::test]
+async fn a_due_resume_leaves_alone_a_turn_that_started_after_it_was_taken() {
+    let dir = tempfile::tempdir().unwrap();
+    let actions = Arc::new(Recorded::default());
+    let relay = Arc::new(WsRelaySink::new());
+    let (handle, inbox) = ClaudeLimitHandle::channel();
+    let acp = Arc::new(AcpManager::new(vec![
+        relay.clone(),
+        handle.sink(),
+        actions.clone(),
+    ]));
+    acp.set_claude_limit(handle);
+    let agent = AgentId("agent-b".to_string());
+    let (release, release_rx) = tokio::sync::oneshot::channel();
+    let (entered, entered_rx) = tokio::sync::oneshot::channel();
+    acp.install_test_agent_with_turns(
+        agent.clone(),
+        ["b".to_string()].into(),
+        vec![FakeTurn::Hold {
+            release: release_rx,
+            entered,
+        }],
+        false,
+    );
+    acp.record_launch_for_test(&agent, "b", work());
+    let mut supervisor = Supervisor::new(
+        acp.clone(),
+        relay,
+        Schedule::load(Some(dir.path().join(SCHEDULE_FILE))),
+        Duration::ZERO,
+        inbox.clock,
+    );
+    let chat = SessionId("b".to_string());
+    supervisor
+        .set_resume(&chat, Some(SystemTime::now()))
+        .unwrap();
+    let due = supervisor.schedule.take_next_due(i64::MAX).unwrap();
+
+    let content = vec![ContentBlock::Text(TextContent::new("a new question"))];
+    let started = acp
+        .start_prompt(&agent, chat.clone(), content, None, Some(Box::new(|| {})))
+        .await
+        .unwrap();
+    entered_rx.await.unwrap();
+    supervisor.resume(due).await;
+
+    assert!(acp.is_turn_active(&agent, chat.clone()).await.unwrap());
+    assert_eq!(actions.0.lock().last(), Some(&cancelled("b")));
+    let _ = release.send(());
+    let _ = acp.wait_prompt(started).await;
 }
