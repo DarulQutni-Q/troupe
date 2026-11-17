@@ -22,14 +22,15 @@ def send(obj):
     sys.stdout.write(json.dumps(obj) + "\n")
     sys.stdout.flush()
 
-def chunk(text):
+def chunk(text, sid="mock-1"):
     send({"jsonrpc": "2.0", "method": "session/update", "params": {
-        "sessionId": "mock-1",
+        "sessionId": sid,
         "update": {"sessionUpdate": "agent_message_chunk",
                    "content": {"type": "text", "text": text}}}})
 
 hung = None
 auth = None
+sessions = 0
 elicit_prompt = None
 for line in sys.stdin:
     line = line.strip()
@@ -65,7 +66,9 @@ for line in sys.stdin:
                                   "sessionCapabilities": {"close": {}, "resume": {}}},
             "authMethods": []}})
     elif method == "session/new":
-        send({"jsonrpc": "2.0", "id": rid, "result": {"sessionId": "mock-1"}})
+        sessions += 1
+        sid = "mock-%d" % sessions if os.environ.get("MOCK_SESSION_IDS") == "1" else "mock-1"
+        send({"jsonrpc": "2.0", "id": rid, "result": {"sessionId": sid}})
     elif method == "session/prompt":
         text = msg["params"]["prompt"][0].get("text", "")
         if text == "ok":
@@ -140,13 +143,13 @@ for line in sys.stdin:
             # rejected, and the turn stays open until it is cancelled.
             hung = rid
             send({"jsonrpc": "2.0", "method": "session/update", "params": {
-                "sessionId": "mock-1", "update": {
+                "sessionId": msg["params"]["sessionId"], "update": {
                     "sessionUpdate": "usage_update", "used": 10, "size": 100,
                     "_meta": {"_claude/rateLimit": {
                         "status": "rejected", "resetsAt": int(text[len("limit:"):]),
                         "rateLimitType": "five_hour", "utilization": 1.0}}}}})
         elif text.startswith("Troupe "):
-            chunk("config_dir=" + os.environ.get("CLAUDE_CONFIG_DIR", ""))
+            chunk("config_dir=" + os.environ.get("CLAUDE_CONFIG_DIR", ""), msg["params"]["sessionId"])
             send({"jsonrpc": "2.0", "id": rid, "result": {"stopReason": "end_turn"}})
         elif text.startswith("elicit-url:"):
             elicit_prompt = rid

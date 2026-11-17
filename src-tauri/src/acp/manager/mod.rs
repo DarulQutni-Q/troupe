@@ -1537,6 +1537,8 @@ impl AcpManager {
         agent_id: &AgentId,
         session_id: SessionId,
     ) -> Result<(), String> {
+        // The client treats the chat as closed whatever the agent answers.
+        self.forget_launch_recipe(&session_id.0, Some(agent_id));
         let caps = self.capabilities(agent_id)?;
         gate_close_session(&caps)?;
         let tx = self.command_tx(agent_id)?;
@@ -1637,6 +1639,19 @@ impl AcpManager {
             return Err("prompt content must not be empty".to_string());
         }
         let tx = self.command_tx(agent_id)?;
+        // A turn of a durable chat (one with an accept hook) ends its
+        // scheduled resume. The driver runs the hook before the agent sees
+        // the prompt, so the signal precedes any limit the turn reaches.
+        let on_accept = match (on_accept, self.claude_limit.get()) {
+            (Some(hook), Some(limit)) => {
+                let (limit, session) = (limit.clone(), session_id.clone());
+                Some(Box::new(move || {
+                    limit.turn_started(session);
+                    hook();
+                }) as PromptAcceptHook)
+            }
+            (hook, _) => hook,
+        };
         let (accepted_tx, accepted_rx) = oneshot::channel();
         let (completion_tx, completion_rx) = oneshot::channel();
         tx.send(AcpCommand::SendPrompt {
@@ -2017,6 +2032,7 @@ impl AcpManager {
         persistence: &SessionPersistence,
         session_id: &str,
     ) -> Result<(), SessionPersistenceError> {
+        self.forget_launch_recipe(session_id, None);
         if let Ok(metadata) = persistence.metadata(session_id) {
             if metadata.kind == crate::acp::session_persistence::SessionKind::Quick {
                 // `runtime_agent_id` is the agent from create. Reopen starts a

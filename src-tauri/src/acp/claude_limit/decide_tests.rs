@@ -184,3 +184,21 @@ fn decision_table() {
         assert_eq!(decision, case.expected, "{}", case.name);
     }
 }
+
+#[test]
+fn a_due_resume_never_touches_a_chat_that_left_the_limited_account() {
+    type Case<'a> = (&'a str, ChatHolder<'a>, Option<&'a str>, Option<&'a str>, ResumePlan);
+    let cases: [Case<'_>; 8] = [
+        ("nobody holds the chat", ChatHolder::Nobody, Some("work"), Some("work"), ResumePlan::Start),
+        ("nobody holds it, lookup failed", ChatHolder::Nobody, Some("work"), None, ResumePlan::Start),
+        ("the limited account, still the project's", ChatHolder::Account("work"), Some("work"), Some("work"), ResumePlan::Continue),
+        ("the limited account, project moved on", ChatHolder::Account("work"), Some("work"), Some("spare"), ResumePlan::Replace),
+        ("the lookup failed", ChatHolder::Account("work"), Some("work"), None, ResumePlan::Continue),
+        ("the chat moved to another account", ChatHolder::Account("spare"), Some("work"), Some("spare"), ResumePlan::Skip),
+        ("an agent the host cannot switch", ChatHolder::Other, Some("work"), Some("work"), ResumePlan::Skip),
+        ("an entry with no account", ChatHolder::Account("spare"), None, Some("work"), ResumePlan::Replace),
+    ];
+    for (name, holder, limited, project, want) in cases {
+        assert_eq!(plan_resume(holder, limited, project), want, "{name}");
+    }
+}

@@ -5,7 +5,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use agent_client_protocol::schema::v1::{ContentBlock, TextContent};
 use tokio::sync::mpsc;
 
-use super::decide::{self, Candidate, LimitContext, LimitDecision, SHORTEST_WINDOW};
+use super::decide::{
+    self, Candidate, ChatHolder, LimitContext, LimitDecision, ResumePlan, SHORTEST_WINDOW,
+};
 use super::schedule::{Schedule, ScheduledResume};
 use super::{
     resume_notice, switch_notice, window_name, AccountRef, ClaudeLimitAction,
@@ -27,6 +29,19 @@ struct Attempt {
     session_id: String,
     resets_at: Option<i64>,
     account_id: String,
+}
+
+/// Another chat the stopped agent held.
+struct Sibling {
+    session_id: SessionId,
+    /// A turn of it was running when the agent stopped.
+    interrupted: bool,
+    reopened: Result<(), String>,
+}
+
+struct Relaunched {
+    agent_id: AgentId,
+    siblings: Vec<Sibling>,
 }
 
 pub(super) struct Supervisor {
@@ -85,6 +100,31 @@ impl Supervisor {
             } => {
                 let _ = reply.send(self.set_resume(&session_id, at));
             }
+            Input::TurnStarted { session_id } => {
+                self.drop_resume(&session_id, "a turn of the chat started", true);
+            }
+            Input::Closed {
+                session_id,
+                deleted,
+            } => self.drop_resume(&session_id, "the chat was closed", !deleted),
+        }
+    }
+
+    /// Drop the chat's scheduled resume; `announce` tells its clients.
+    fn drop_resume(&mut self, session_id: &SessionId, why: &str, announce: bool) {
+        let Some(entry) = self.schedule.remove(&session_id.0) else {
+            return;
+        };
+        log::info!(
+            "[claude-limit] scheduled resume of chat {} dropped: {why}",
+            redact_session_id(&session_id.0)
+        );
+        if announce {
+            self.emit(
+                session_id,
+                &entry.project_id,
+                ClaudeLimitAction::ResumeCancelled,
+            );
         }
     }
 
@@ -171,7 +211,10 @@ impl Supervisor {
                         "[claude-limit] project of chat {chat} changed its account first; the chat continues there"
                     ),
                     Err(error) => {
-                        log::warn!("[claude-limit] switching the project of chat {chat} failed: {error}");
+                        log::warn!(
+                            "[claude-limit] switching the project of chat {chat} failed: {}",
+                            scrub(&error, &session_id)
+                        );
                         self.emit(&session_id, &project_id, ClaudeLimitAction::Failed { reason: error });
                     }
                 }
@@ -211,34 +254,69 @@ impl Supervisor {
         notice: String,
     ) {
         match self.relaunch(session_id, Some(old_agent)).await {
-            Ok(new_agent) => {
-                self.emit(
-                    session_id,
-                    project_id,
-                    ClaudeLimitAction::Switched {
-                        from,
-                        to,
-                        from_agent_id: old_agent.0.clone(),
-                        new_agent_id: new_agent.0.clone(),
-                    },
-                );
-                self.send_notice(new_agent, session_id.clone(), notice);
+            Ok(relaunched) => {
+                let switched = ClaudeLimitAction::Switched {
+                    from,
+                    to,
+                    from_agent_id: old_agent.0.clone(),
+                    new_agent_id: relaunched.agent_id.0.clone(),
+                };
+                self.emit(session_id, project_id, switched.clone());
+                self.send_notice(relaunched.agent_id.clone(), session_id.clone(), notice.clone());
+                self.follow_siblings(project_id, relaunched, &switched, &notice);
             }
             Err(reason) => {
                 log::warn!(
-                    "[claude-limit] chat {} did not continue on the new account: {reason}",
-                    redact_session_id(&session_id.0)
+                    "[claude-limit] chat {} did not continue on the new account: {}",
+                    redact_session_id(&session_id.0),
+                    scrub(&reason, session_id)
                 );
                 self.emit(session_id, project_id, ClaudeLimitAction::Failed { reason });
             }
         }
     }
 
+    /// Tell the clients of every other chat the stopped agent held where it
+    /// continues, and continue the ones whose turn the stop cut off.
+    fn follow_siblings(
+        &self,
+        project_id: &str,
+        relaunched: Relaunched,
+        action: &ClaudeLimitAction,
+        notice: &str,
+    ) {
+        for sibling in relaunched.siblings {
+            match sibling.reopened {
+                Ok(()) => {
+                    self.emit(&sibling.session_id, project_id, action.clone());
+                    if sibling.interrupted {
+                        self.send_notice(
+                            relaunched.agent_id.clone(),
+                            sibling.session_id,
+                            notice.to_string(),
+                        );
+                    }
+                }
+                Err(error) => self.emit(
+                    &sibling.session_id,
+                    project_id,
+                    ClaudeLimitAction::Failed {
+                        reason: format!(
+                            "Troupe restarted this chat's agent for another chat at its Claude limit, and this chat did not reopen ({error}). Send a message to continue."
+                        ),
+                    },
+                ),
+            }
+        }
+    }
+
+    /// Stop `old_agent` (every chat it held) and open the chat, and the other
+    /// durable chats the old agent held, on a new agent from the recipe.
     async fn relaunch(
         &self,
         session_id: &SessionId,
         old_agent: Option<&AgentId>,
-    ) -> Result<AgentId, String> {
+    ) -> Result<Relaunched, String> {
         let recipe = self
             .acp
             .launch_recipe(session_id)
@@ -252,7 +330,10 @@ impl Supervisor {
                 .unwrap_or(false)
             {
                 if let Err(error) = self.acp.cancel_prompt(old, session_id.clone()).await {
-                    log::warn!("[claude-limit] cancelling the held turn failed: {error}");
+                    log::warn!(
+                        "[claude-limit] cancelling the held turn failed: {}",
+                        scrub(&error, session_id)
+                    );
                 }
             }
             for other in self.acp.agent_session_ids(old).await.unwrap_or_default() {
@@ -262,9 +343,15 @@ impl Supervisor {
                     .is_ephemeral_session(old, other.clone())
                     .await
                     .unwrap_or(true);
-                if other != *session_id && !ephemeral {
-                    others.push(other);
+                if other == *session_id || ephemeral {
+                    continue;
                 }
+                let interrupted = self
+                    .acp
+                    .is_turn_active(old, other.clone())
+                    .await
+                    .unwrap_or(false);
+                others.push((other, interrupted));
             }
             if let Err(error) = self.acp.kill(old).await {
                 log::warn!("[claude-limit] stopping agent {old} failed: {error}");
@@ -280,19 +367,27 @@ impl Supervisor {
             .await?;
         let agent_id = spawned.agent_id;
         self.reopen(&agent_id, session_id).await?;
-        for other in others {
-            match self.reopen(&agent_id, &other).await {
+        let mut siblings = Vec::new();
+        for (other, interrupted) in others {
+            let reopened = self.reopen(&agent_id, &other).await;
+            match &reopened {
                 Ok(()) => log::info!(
-                    "[claude-limit] chat {} moved with the agent",
+                    "[claude-limit] chat {} moved with the agent (turn cut off: {interrupted})",
                     redact_session_id(&other.0)
                 ),
                 Err(error) => log::warn!(
-                    "[claude-limit] chat {} of the stopped agent did not reopen: {error}",
-                    redact_session_id(&other.0)
+                    "[claude-limit] chat {} of the stopped agent did not reopen: {}",
+                    redact_session_id(&other.0),
+                    scrub(error, &other)
                 ),
             }
+            siblings.push(Sibling {
+                session_id: other,
+                interrupted,
+                reopened,
+            });
         }
-        Ok(agent_id)
+        Ok(Relaunched { agent_id, siblings })
     }
 
     async fn reopen(&self, agent_id: &AgentId, session_id: &SessionId) -> Result<(), String> {
@@ -313,7 +408,11 @@ impl Supervisor {
         let Err(resume_error) = resumed else {
             return Ok(());
         };
-        log::info!("[claude-limit] resume failed ({resume_error}); loading the chat instead");
+        log::info!(
+            "[claude-limit] resuming chat {} failed ({}); loading it instead",
+            redact_session_id(&session_id.0),
+            scrub(&resume_error, session_id)
+        );
         self.acp
             .load_session(
                 agent_id,
@@ -346,8 +445,8 @@ impl Supervisor {
                 }
                 Ok(_) => log::info!("[claude-limit] chat {chat} continued"),
                 Err(error) => log::warn!(
-                    "[claude-limit] the continuation prompt of chat {chat} failed: {}",
-                    error.into_message()
+                    "[claude-limit] the continuation prompt of chat {chat} failed ({})",
+                    error.kind()
                 ),
             }
         });
@@ -361,17 +460,19 @@ impl Supervisor {
                     .acp
                     .launch_recipe(session_id)
                     .ok_or_else(|| "This chat is not open on the host.".to_string())?;
-                let project_id = recipe.launch.project_id.clone().unwrap_or_default();
-                let account_id = match recipe.launch.claude {
-                    ClaudeLaunchAuth::Account(id) => Some(id),
-                    _ => None,
+                let ClaudeLaunchAuth::Account(account_id) = recipe.launch.claude else {
+                    return Err("This chat does not run on a Claude account Troupe manages.".to_string());
                 };
+                if recipe.launch.config.config_id.as_deref() != Some(CLAUDE_CONFIG_ID) {
+                    return Err("This chat does not run on a Claude account Troupe manages.".to_string());
+                }
+                let project_id = recipe.launch.project_id.clone().unwrap_or_default();
                 let at = epoch_secs(at);
                 self.schedule.insert(ScheduledResume {
                     session_id: session_id.0.clone(),
                     project_id: project_id.clone(),
                     at,
-                    account_id,
+                    account_id: Some(account_id),
                     window: None,
                 });
                 log::info!("[claude-limit] chat {chat} continues at {at} (asked by a client)");
@@ -381,16 +482,7 @@ impl Supervisor {
                     ClaudeLimitAction::ResumeScheduled { at: at * 1000 },
                 );
             }
-            None => {
-                if let Some(entry) = self.schedule.remove(&session_id.0) {
-                    log::info!("[claude-limit] scheduled resume of chat {chat} cancelled");
-                    self.emit(
-                        session_id,
-                        &entry.project_id,
-                        ClaudeLimitAction::ResumeCancelled,
-                    );
-                }
-            }
+            None => self.drop_resume(session_id, "a client cancelled it", true),
         }
         Ok(())
     }
@@ -432,27 +524,51 @@ impl Supervisor {
                 .ok()?
                 .runtime_agent_id
         });
-        let reusable = owner.as_ref().filter(|owner| {
-            self.acp.agent_launch(owner).map(|launch| launch.claude)
-                == project_account.clone().map(ClaudeLaunchAuth::Account)
-        });
-        let agent_id = match reusable {
-            Some(agent) => {
+        let launch = owner.as_ref().and_then(|agent| self.acp.agent_launch(agent));
+        let holder = match (&owner, &launch) {
+            (None, _) => ChatHolder::Nobody,
+            (Some(_), Some(launch))
+                if launch.config.config_id.as_deref() == Some(CLAUDE_CONFIG_ID) =>
+            {
+                match &launch.claude {
+                    ClaudeLaunchAuth::Account(id) => ChatHolder::Account(id),
+                    _ => ChatHolder::Other,
+                }
+            }
+            (Some(_), _) => ChatHolder::Other,
+        };
+        let plan = decide::plan_resume(
+            holder,
+            entry.account_id.as_deref(),
+            project_account.as_deref(),
+        );
+        log::info!("[claude-limit] chat {chat} is due to continue: {plan:?}");
+        let (agent_id, siblings) = match (plan, owner) {
+            (ResumePlan::Skip, _) => {
+                self.emit(
+                    &session_id,
+                    &entry.project_id,
+                    ClaudeLimitAction::ResumeCancelled,
+                );
+                return;
+            }
+            (ResumePlan::Continue, Some(agent)) => {
                 if self
                     .acp
-                    .is_turn_active(agent, session_id.clone())
+                    .is_turn_active(&agent, session_id.clone())
                     .await
                     .unwrap_or(false)
                 {
-                    let _ = self.acp.cancel_prompt(agent, session_id.clone()).await;
+                    let _ = self.acp.cancel_prompt(&agent, session_id.clone()).await;
                 }
-                agent.clone()
+                (agent, None)
             }
-            None => match self.relaunch(&session_id, owner.as_ref()).await {
-                Ok(agent) => agent,
+            (_, owner) => match self.relaunch(&session_id, owner.as_ref()).await {
+                Ok(relaunched) => (relaunched.agent_id.clone(), Some(relaunched)),
                 Err(reason) => {
                     log::warn!(
-                        "[claude-limit] chat {chat} did not continue after the reset: {reason}"
+                        "[claude-limit] chat {chat} did not continue after the reset: {}",
+                        scrub(&reason, &session_id)
                     );
                     self.emit(
                         &session_id,
@@ -463,12 +579,11 @@ impl Supervisor {
                 }
             },
         };
-        log::info!("[claude-limit] chat {chat} continues after its limit reset");
         self.emit(
             &session_id,
             &entry.project_id,
             ClaudeLimitAction::Resumed {
-                from_agent_id,
+                from_agent_id: from_agent_id.clone(),
                 new_agent_id: agent_id.0.clone(),
             },
         );
@@ -479,7 +594,14 @@ impl Supervisor {
         let reset = chrono::DateTime::from_timestamp(entry.at, 0)
             .map_or_else(String::new, |at| at.format("%H:%M UTC").to_string());
         let notice = resume_notice(&account, window_name(entry.window.as_deref()), &reset);
-        self.send_notice(agent_id, session_id, notice);
+        self.send_notice(agent_id.clone(), session_id, notice.clone());
+        if let Some(relaunched) = siblings {
+            let resumed = ClaudeLimitAction::Resumed {
+                from_agent_id,
+                new_agent_id: agent_id.0,
+            };
+            self.follow_siblings(&entry.project_id, relaunched, &resumed, &notice);
+        }
     }
 
     async fn live_owner(&self, session_id: &SessionId) -> Option<AgentId> {
@@ -507,6 +629,14 @@ impl Supervisor {
             },
         );
     }
+}
+
+/// `error` with the chat's id shortened, for the log.
+fn scrub(error: &str, session_id: &SessionId) -> String {
+    if session_id.0.is_empty() {
+        return error.to_string();
+    }
+    error.replace(&session_id.0, &redact_session_id(&session_id.0))
 }
 
 fn project_account(snapshot: &ClaudeAccountsSnapshot, project_id: &str) -> String {
@@ -581,3 +711,7 @@ async fn sleep_or_forever(wait: Option<Duration>) {
         None => std::future::pending().await,
     }
 }
+
+#[cfg(test)]
+#[path = "supervisor_tests.rs"]
+mod tests;

@@ -95,6 +95,52 @@ pub fn decide(ctx: &LimitContext<'_>) -> LimitDecision {
     }
 }
 
+/// The live agent that holds a chat when its scheduled resume falls due.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatHolder<'a> {
+    Nobody,
+    /// An agent the host launched for a client on this account.
+    Account(&'a str),
+    /// An agent on credentials no account switch changes, or one the host
+    /// did not launch for a client.
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResumePlan {
+    /// No agent holds the chat: start one.
+    Start,
+    /// Continue on the agent that holds the chat.
+    Continue,
+    /// The holder runs an older account than the project's: replace it.
+    Replace,
+    /// The chat left the limited account since, or the host cannot tell:
+    /// leave it alone.
+    Skip,
+}
+
+/// What a due resume does. `limited_account` is the account that reached its
+/// limit; `project_account` is `None` when the account lookup failed, and
+/// then no agent is replaced.
+#[must_use]
+pub fn plan_resume(
+    holder: ChatHolder<'_>,
+    limited_account: Option<&str>,
+    project_account: Option<&str>,
+) -> ResumePlan {
+    match holder {
+        ChatHolder::Nobody => ResumePlan::Start,
+        ChatHolder::Other => ResumePlan::Skip,
+        ChatHolder::Account(running) if limited_account.is_some_and(|l| l != running) => {
+            ResumePlan::Skip
+        }
+        ChatHolder::Account(running) => match project_account {
+            Some(project) if project != running => ResumePlan::Replace,
+            _ => ResumePlan::Continue,
+        },
+    }
+}
+
 #[cfg(test)]
 #[path = "decide_tests.rs"]
 mod tests;

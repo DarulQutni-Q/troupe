@@ -17,10 +17,12 @@ pub struct AgentLaunch {
 
 #[derive(Debug, Clone)]
 pub struct LaunchRecipe {
+    /// The agent the chat was last opened on.
+    pub agent_id: AgentId,
     pub launch: AgentLaunch,
     pub cwd: String,
-    /// The client's MCP list (without the host plan server). `None` when the
-    /// client reopened the session without one.
+    /// The client's last MCP list (without the host plan server). A reopen
+    /// without one keeps the list from before; `None` when no open sent one.
     pub mcp_servers: Option<Vec<McpServer>>,
     pub additional_directories: Vec<String>,
 }
@@ -46,15 +48,42 @@ impl AcpManager {
         let Some(launch) = self.agent_launch(agent_id) else {
             return;
         };
-        self.recipes.lock().insert(
-            SessionId(session_id.to_string()),
+        let mut recipes = self.recipes.lock();
+        let session_id = SessionId(session_id.to_string());
+        let mcp_servers = mcp_servers.or_else(|| {
+            recipes
+                .get(&session_id)
+                .and_then(|recipe| recipe.mcp_servers.clone())
+        });
+        recipes.insert(
+            session_id,
             LaunchRecipe {
+                agent_id: agent_id.clone(),
                 launch,
                 cwd,
                 mcp_servers,
                 additional_directories,
             },
         );
+    }
+
+    /// The chat was closed on `agent_id` (`None`: deleted), so the host must
+    /// not reopen it. A close on an agent the chat already left (a client
+    /// closing the old agent's copy after reopening it elsewhere) changes
+    /// nothing.
+    pub(super) fn forget_launch_recipe(&self, session_id: &str, agent_id: Option<&AgentId>) {
+        let session_id = SessionId(session_id.to_string());
+        {
+            let mut recipes = self.recipes.lock();
+            let current = recipes.get(&session_id).map(|recipe| &recipe.agent_id);
+            if agent_id.is_some() && current.is_some() && current != agent_id {
+                return;
+            }
+            recipes.remove(&session_id);
+        }
+        if let Some(limit) = self.claude_limit.get() {
+            limit.chat_closed(session_id, agent_id.is_none());
+        }
     }
 
     #[must_use]
@@ -96,5 +125,24 @@ impl AcpManager {
             return None;
         }
         self.launches.lock().get(agent_id).cloned()
+    }
+}
+
+#[cfg(test)]
+#[path = "launch_tests.rs"]
+mod tests;
+
+#[cfg(test)]
+impl AcpManager {
+    /// Fixture: the live test agent `agent_id` was launched with `launch` and
+    /// holds the chat `session_id`.
+    pub(crate) fn record_launch_for_test(
+        &self,
+        agent_id: &AgentId,
+        session_id: &str,
+        launch: AgentLaunch,
+    ) {
+        self.record_agent_launch(agent_id, launch);
+        self.record_launch_recipe(agent_id, session_id, "/work".to_string(), None, Vec::new());
     }
 }

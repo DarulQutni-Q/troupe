@@ -51,6 +51,11 @@ impl EventSink for Recorded {
     }
 }
 
+struct OpenChat {
+    agent_id: AgentId,
+    session_id: SessionId,
+}
+
 struct Host {
     dir: tempfile::TempDir,
     acp: Arc<AcpManager>,
@@ -124,7 +129,7 @@ impl Host {
         self.dir.path().join("state")
     }
 
-    async fn open_chat(&self) -> (AgentId, SessionId) {
+    async fn open_chat(&self) -> OpenChat {
         let entrypoint = self
             .state()
             .join("acp-registry-binaries/claude-acp/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js");
@@ -133,7 +138,10 @@ impl Host {
             name: "Claude Agent".to_string(),
             command: "node".to_string(),
             args: vec![entrypoint.to_string_lossy().to_string()],
-            env: HashMap::from([("MOCK_RESUME_OK".to_string(), "1".to_string())]),
+            env: HashMap::from([
+                ("MOCK_RESUME_OK".to_string(), "1".to_string()),
+                ("MOCK_SESSION_IDS".to_string(), "1".to_string()),
+            ]),
             allow_terminal: false,
         };
         let spawned = self
@@ -141,10 +149,18 @@ impl Host {
             .spawn_with_command_id(config, None, Some(PROJECT.to_string()))
             .await
             .expect("managed mock agent spawns");
-        let session = self
-            .acp
+        let session_id = self.open_session(&spawned.agent_id).await;
+        OpenChat {
+            agent_id: spawned.agent_id,
+            session_id,
+        }
+    }
+
+    /// Another chat on the same agent.
+    async fn open_session(&self, agent_id: &AgentId) -> SessionId {
+        self.acp
             .new_session_with_context(
-                &spawned.agent_id,
+                agent_id,
                 self.dir.path().to_string_lossy().to_string(),
                 vec![],
                 SessionCreationContext {
@@ -153,8 +169,8 @@ impl Host {
                 },
             )
             .await
-            .expect("mock session");
-        (spawned.agent_id, session.session_id)
+            .expect("mock session")
+            .session_id
     }
 
     fn prompt_and_leave(&self, agent_id: &AgentId, session_id: &SessionId, text: &str) {
@@ -271,7 +287,10 @@ async fn a_chat_at_its_limit_continues_on_the_account_with_most_room_with_no_cli
     else {
         return;
     };
-    let (old_agent, session_id) = host.open_chat().await;
+    let OpenChat {
+        agent_id: old_agent,
+        session_id,
+    } = host.open_chat().await;
     let resets_at = now_secs() + 3600;
     host.prompt_and_leave(&old_agent, &session_id, &format!("limit:{resets_at}"));
 
@@ -312,11 +331,66 @@ async fn a_chat_at_its_limit_continues_on_the_account_with_most_room_with_no_cli
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_chat_sharing_the_agent_follows_the_switch_and_continues_its_cut_off_turn() {
+    let Some(host) = Host::start(
+        &[("default", 90.0), ("Work", 100.0), ("Spare", 10.0)],
+        "Work",
+    )
+    .await
+    else {
+        return;
+    };
+    let OpenChat {
+        agent_id: old_agent,
+        session_id: limited,
+    } = host.open_chat().await;
+    let sibling = host.open_session(&old_agent).await;
+    assert_ne!(sibling, limited);
+    host.prompt_and_leave(&old_agent, &sibling, "hang");
+    host.log_until(&sibling, |records| {
+        !texts(records, "user_prompt").is_empty()
+    })
+    .await;
+    let resets_at = now_secs() + 3600;
+    host.prompt_and_leave(&old_agent, &limited, &format!("limit:{resets_at}"));
+
+    let records = host.log_until(&sibling, has_config_dir_chunk).await;
+
+    let live_agents = host.acp.list_agents();
+    assert_eq!(live_agents.len(), 1);
+    let new_agent = live_agents[0].clone();
+    assert_ne!(new_agent, old_agent);
+    let (work, spare) = (&host.accounts["Work"], &host.accounts["Spare"]);
+    assert_eq!(
+        actions(&records),
+        vec![serde_json::json!({
+            "sessionId": sibling.0,
+            "projectId": PROJECT,
+            "action": "switched",
+            "from": {"id": work, "name": "Work"},
+            "to": {"id": spare, "name": "Spare"},
+            "fromAgentId": old_agent.0,
+            "newAgentId": new_agent.0,
+        })]
+    );
+    assert_eq!(
+        texts(&records, "user_prompt"),
+        vec!["hang", switch_notice("Work", "Spare", "5-hour").as_str()]
+    );
+    assert!(host.acp.owns_session(&new_agent, sibling.clone()).await.unwrap());
+    assert!(host.acp.owns_session(&new_agent, limited.clone()).await.unwrap());
+    let _ = host.acp.kill(&new_agent).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn with_no_room_the_chat_continues_at_the_reset_after_its_agent_was_reaped() {
     let Some(host) = Host::start(&[("default", 100.0), ("Work", 100.0)], "Work").await else {
         return;
     };
-    let (old_agent, session_id) = host.open_chat().await;
+    let OpenChat {
+        agent_id: old_agent,
+        session_id,
+    } = host.open_chat().await;
     let resets_at = now_secs() + 3;
     host.prompt_and_leave(&old_agent, &session_id, &format!("limit:{resets_at}"));
 
