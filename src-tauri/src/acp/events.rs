@@ -1351,9 +1351,30 @@ pub struct UsageUpdateEvent {
     pub size: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cost: Option<UsageCostEvent>,
-    /// Claude plan rate-limit state, when the Claude ACP adapter sends it.
+    /// Claude plan rate-limit state, when the Claude ACP adapter sends it and
+    /// it does not block the chat.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rate_limit: Option<crate::acp::claude_accounts::usage::ClaudeRateLimit>,
+    /// The rate-limit state that blocks the chat (see [`split_claude_limit`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_reached: Option<crate::acp::claude_accounts::usage::ClaudeRateLimit>,
+}
+
+/// Split the adapter's rate-limit state into `(rate_limit, limit_reached)`.
+/// A limit that blocks the chat travels only as `limitReached`: clients that
+/// predate the host's account switch ran their own switch on a rejected
+/// `rateLimit`, and would restart a chat the host already moved.
+#[must_use]
+pub fn split_claude_limit(
+    limit: Option<crate::acp::claude_accounts::usage::ClaudeRateLimit>,
+) -> (
+    Option<crate::acp::claude_accounts::usage::ClaudeRateLimit>,
+    Option<crate::acp::claude_accounts::usage::ClaudeRateLimit>,
+) {
+    match limit {
+        Some(limit) if limit.blocks_chat() => (None, Some(limit)),
+        limit => (limit, None),
+    }
 }
 
 // Story 1.1 (AC7): the legacy `events::emit(app, event, payload)` free function

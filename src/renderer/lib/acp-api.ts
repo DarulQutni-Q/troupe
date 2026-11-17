@@ -794,6 +794,11 @@ export interface UsageUpdateEvent {
   cost?: UsageCost | null
   /** Claude plan rate-limit state, when the Claude ACP adapter sends it. */
   rateLimit?: ClaudeRateLimit | null
+  /**
+   * The rate-limit state that blocks the chat. The host never sends it as
+   * `rateLimit`, so clients that predate the host's account switch ignore it.
+   */
+  limitReached?: ClaudeRateLimit | null
 }
 
 /** Agent-reported context window state for a session. */

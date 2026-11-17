@@ -38,6 +38,11 @@ enum Input {
         at: Option<SystemTime>,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    /// The chat started a turn. Sent from the driver before the agent sees
+    /// the prompt, so it arrives ahead of any limit that turn reaches.
+    TurnStarted { session_id: SessionId },
+    /// The chat was closed, or deleted with its log.
+    Closed { session_id: SessionId, deleted: bool },
 }
 
 #[derive(Clone)]
@@ -81,6 +86,20 @@ impl ClaudeLimitHandle {
             .await
             .map_err(|_| "the Claude limit supervisor stopped".to_string())?
     }
+
+    /// A turn of the chat started: its scheduled resume no longer applies.
+    pub fn turn_started(&self, session_id: SessionId) {
+        let _ = self.tx.send(Input::TurnStarted { session_id });
+    }
+
+    /// The chat closed, or was deleted with its log: drop its scheduled
+    /// resume.
+    pub fn chat_closed(&self, session_id: SessionId, deleted: bool) {
+        let _ = self.tx.send(Input::Closed {
+            session_id,
+            deleted,
+        });
+    }
 }
 
 struct LimitSignalSink {
@@ -94,7 +113,7 @@ impl EventSink for LimitSignalSink {
         }
         let Some(limit) = event
             .payload
-            .get("rateLimit")
+            .get("limitReached")
             .and_then(|value| serde_json::from_value::<ClaudeRateLimit>(value.clone()).ok())
         else {
             return;
