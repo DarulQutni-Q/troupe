@@ -391,13 +391,18 @@ describe('ProjectSidebar', () => {
     }
   })
 
-  it('ends the actions fade in the hover wash on every row', () => {
+  it('shows the actions with no backdrop and fades the name out before them', () => {
     renderWithRouter({ activeProjectId: '1' })
 
     for (const id of ['project-item-1', 'project-item-2']) {
-      const actions = within(screen.getByTestId(id)).getByTestId('project-row-actions')
-      expect(actions).toHaveClass('from-row-hover-solid')
+      const row = screen.getByTestId(id)
+      const actions = within(row).getByTestId('project-row-actions')
+      expect(actions.className).not.toMatch(/\b(bg-|from-)/)
       expect(actions).toHaveClass('group-hover:flex', 'group-focus-within:flex')
+      expect(within(row).getByTitle(/./)).toHaveClass(
+        'group-hover:fade-before-row-actions',
+        'group-focus-within:fade-before-row-actions'
+      )
     }
   })
 

@@ -189,23 +189,25 @@ export const ProjectItem = memo(function ProjectItem({
                   RAIL_LABEL_FADE_CLASS
                 )}
               >
-                {/* Fills the row and fades its last 24px instead of an ellipsis. */}
+                {/* Fills the row and fades its last 24px instead of an ellipsis.
+                    On hover and focus it fades out before the actions. */}
                 <span
-                  className="fade-end min-w-0 flex-1 font-medium text-secondary-foreground transition-colors duration-150 ease-out group-hover:text-foreground"
+                  className="fade-end min-w-0 flex-1 font-medium text-secondary-foreground transition-colors duration-150 ease-out group-hover:text-foreground group-hover:fade-before-row-actions group-focus-within:fade-before-row-actions"
                   title={project.name}
                 >
                   {project.name}
                 </span>
+                {/* The actions take its place on hover (it keeps its width). */}
                 {diffStat && (
-                  <span className="flex shrink-0">
+                  <span className="flex shrink-0 group-hover:invisible group-focus-within:invisible">
                     <ProjectDiffStat stat={diffStat} />
                   </span>
                 )}
-                {/* The fade ends in the row's own surface, the hover wash. It
-                    shows under the same conditions as the wash (hover and
-                    focus-within). */}
+                {/* The row surface shows behind them (the name fades out
+                    first), so a translucent Rail gets no solid patch. They
+                    show with the wash: hover and focus-within. */}
                 <span
-                  className="pointer-events-none absolute inset-y-0 right-0 hidden items-center gap-1 bg-gradient-to-l from-row-hover-solid from-60% to-transparent pl-6 group-hover:flex group-focus-within:flex [&>*]:pointer-events-auto"
+                  className="pointer-events-none absolute inset-y-0 right-0 hidden items-center gap-1 group-hover:flex group-focus-within:flex [&>*]:pointer-events-auto"
                   data-testid="project-row-actions"
                 >
                   <RailTooltip label="More actions">
@@ -254,9 +256,10 @@ export const ProjectItem = memo(function ProjectItem({
                 onOpenNeedsYou={onOpenNeedsYou}
               />
             </span>
-            {/* Always shown, unlike the hover actions. */}
+            {/* Always shown, unlike the hover actions. `relative` keeps it
+                above the row's absolute button, or that button takes the click. */}
             {!isEditing && (
-              <span className={cn('flex shrink-0', RAIL_LABEL_FADE_CLASS)}>
+              <span className={cn('relative flex shrink-0', RAIL_LABEL_FADE_CLASS)}>
                 <RailTooltip label={`New chat in ${project.name}`}>
                   <button
                     type="button"

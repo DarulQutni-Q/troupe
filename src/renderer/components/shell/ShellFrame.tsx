@@ -8,7 +8,6 @@ import { WindowControls } from '@/components/shell/TopRowChrome'
 import { TopRowFallbackBar } from '@/components/shell/TopRowFallbackBar'
 import { ShellToolStrip } from '@/components/shell/tool-strip/ShellToolStrip'
 import { TopRowProvider } from '@/components/shell/top-row-context'
-import { getTrafficLightInset } from '@/components/shell/traffic-light-inset'
 import { useNativeWebviewOcclusion } from '@/hooks/use-native-webview-occlusion'
 import { PaneDndProvider } from '@/hooks/use-pane-dnd'
 import { ExplorerColumn } from '@/layouts/workspace-layout/ExplorerColumn'
@@ -56,8 +55,9 @@ export interface ShellFrameProps {
 
 /**
  * {@link TopRowProvider} plus the main area's start slot: with the Rail
- * collapsed the main area's top row starts with the expand toggle, padded
- * past the macOS traffic lights.
+ * collapsed the main area's top row starts with the expand toggle. The macOS
+ * traffic lights hide while the Rail is collapsed, so the slot needs no room
+ * for them.
  */
 function ShellTopRowProvider({
   roles,
@@ -70,14 +70,8 @@ function ShellTopRowProvider({
   railExpanded: boolean
   children: ReactNode
 }): React.JSX.Element {
-  const trafficLightInset = getTrafficLightInset(platform, railExpanded)
   return (
-    <TopRowProvider
-      roles={roles}
-      platform={platform}
-      mainStartInsetPx={trafficLightInset?.mainStartPx ?? 0}
-      railToggleInMain={!railExpanded}
-    >
+    <TopRowProvider roles={roles} platform={platform} railToggleInMain={!railExpanded}>
       {children}
     </TopRowProvider>
   )
