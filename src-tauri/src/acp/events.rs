@@ -200,6 +200,10 @@ pub const EVENT_LOCAL_TITLE_GENERATED: &str = "acp:local_title_generated";
 pub const EVENT_WORKTREE_BRANCH_RENAMED: &str = "acp:worktree_branch_renamed";
 /// Event name: the agent reported context window utilization (and optional cost).
 pub const EVENT_USAGE_UPDATE: &str = "acp:usage_update";
+/// Event name: the host acted on a Claude chat at its account's limit
+/// (`claude_limit`). Durable, so a reopened chat still shows a scheduled
+/// resume.
+pub const EVENT_CLAUDE_LIMIT_ACTION: &str = "acp:claude_limit_action";
 /// The agent started or stopped working in a session outside a prompt turn
 /// (live only, never persisted: see `session::unprompted`).
 pub const EVENT_AGENT_WORKING: &str = "acp:agent_working";

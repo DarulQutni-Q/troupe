@@ -1,0 +1,214 @@
+//! The host acts when a managed Claude chat reaches its account's plan limit,
+//! with or without a client connected: it moves the chat's project to the
+//! signed-in account with the most room and continues the chat there, or
+//! continues it when the limit resets. The renderer only shows what happened
+//! (`acp:claude_limit_action`).
+
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
+
+use serde::Serialize;
+use tokio::sync::{mpsc, oneshot};
+
+use crate::acp::claude_accounts::usage::ClaudeRateLimit;
+use crate::acp::config::{AgentId, SessionId};
+use crate::acp::events::EVENT_USAGE_UPDATE;
+use crate::acp::AcpManager;
+use crate::web::sink::{AcpEvent, EventSink};
+use crate::web::WsRelaySink;
+
+pub mod decide;
+mod schedule;
+mod supervisor;
+
+pub const CLAUDE_CONFIG_ID: &str = "acp-registry:claude-acp";
+
+pub const RESUME_GRACE: Duration = Duration::from_secs(15);
+
+const SCHEDULE_FILE: &str = "claude-limit-resumes.json";
+
+enum Input {
+    Limit {
+        agent_id: AgentId,
+        session_id: SessionId,
+        limit: ClaudeRateLimit,
+    },
+    SetResume {
+        session_id: SessionId,
+        at: Option<SystemTime>,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+}
+
+#[derive(Clone)]
+pub struct ClaudeLimitHandle {
+    tx: mpsc::UnboundedSender<Input>,
+}
+
+pub struct ClaudeLimitInbox(mpsc::UnboundedReceiver<Input>);
+
+impl ClaudeLimitHandle {
+    #[must_use]
+    pub fn channel() -> (Self, ClaudeLimitInbox) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (Self { tx }, ClaudeLimitInbox(rx))
+    }
+
+    /// The event sink that forwards limit signals. Add it to the manager's
+    /// sinks.
+    #[must_use]
+    pub fn sink(&self) -> Arc<dyn EventSink> {
+        Arc::new(LimitSignalSink {
+            tx: self.tx.clone(),
+        })
+    }
+
+    /// Continue the chat at `at`, or cancel its scheduled resume with `None`.
+    pub async fn set_resume(
+        &self,
+        session_id: SessionId,
+        at: Option<SystemTime>,
+    ) -> Result<(), String> {
+        let (reply, answer) = oneshot::channel();
+        self.tx
+            .send(Input::SetResume {
+                session_id,
+                at,
+                reply,
+            })
+            .map_err(|_| "the Claude limit supervisor is not running".to_string())?;
+        answer
+            .await
+            .map_err(|_| "the Claude limit supervisor stopped".to_string())?
+    }
+}
+
+struct LimitSignalSink {
+    tx: mpsc::UnboundedSender<Input>,
+}
+
+impl EventSink for LimitSignalSink {
+    fn emit(&self, event: &AcpEvent) {
+        if event.type_ != EVENT_USAGE_UPDATE {
+            return;
+        }
+        let Some(limit) = event
+            .payload
+            .get("rateLimit")
+            .and_then(|value| serde_json::from_value::<ClaudeRateLimit>(value.clone()).ok())
+        else {
+            return;
+        };
+        if !limit.blocks_chat() {
+            return;
+        }
+        let text = |key: &str| event.payload.get(key)?.as_str().map(str::to_string);
+        let (Some(agent_id), Some(session_id)) = (text("agentId"), text("sessionId")) else {
+            return;
+        };
+        let _ = self.tx.send(Input::Limit {
+            agent_id: AgentId(agent_id),
+            session_id: SessionId(session_id),
+            limit,
+        });
+    }
+}
+
+pub fn start(
+    acp: &Arc<AcpManager>,
+    relay: &Arc<WsRelaySink>,
+    handle: ClaudeLimitHandle,
+    inbox: ClaudeLimitInbox,
+    runtime: &tokio::runtime::Handle,
+) {
+    let path = acp
+        .claude_agent()
+        .state_dir()
+        .map(|dir| dir.join(SCHEDULE_FILE));
+    acp.set_claude_limit(handle);
+    let supervisor = supervisor::Supervisor::new(
+        Arc::clone(acp),
+        Arc::clone(relay),
+        schedule::Schedule::load(path),
+        RESUME_GRACE,
+    );
+    runtime.spawn(supervisor.run(inbox.0));
+    log::info!("[claude-limit] supervisor started");
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AccountRef {
+    pub id: String,
+    pub name: String,
+}
+
+/// Payload of `acp:claude_limit_action`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeLimitActionEvent {
+    pub session_id: String,
+    pub project_id: String,
+    #[serde(flatten)]
+    pub action: ClaudeLimitAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum ClaudeLimitAction {
+    /// The chat continues on `to`, in a new agent.
+    #[serde(rename_all = "camelCase")]
+    Switched {
+        from: AccountRef,
+        to: AccountRef,
+        from_agent_id: String,
+        new_agent_id: String,
+    },
+    /// The chat continues at `at`, epoch milliseconds.
+    ResumeScheduled {
+        at: i64,
+    },
+    ResumeCancelled,
+    #[serde(rename_all = "camelCase")]
+    Resumed {
+        from_agent_id: Option<String>,
+        new_agent_id: String,
+    },
+    Failed {
+        reason: String,
+    },
+}
+
+#[must_use]
+pub fn window_name(kind: Option<&str>) -> &'static str {
+    match kind {
+        Some("five_hour") => "5-hour",
+        Some("seven_day") => "weekly",
+        Some("seven_day_opus") => "Opus weekly",
+        Some("seven_day_sonnet") => "Sonnet weekly",
+        _ => "usage",
+    }
+}
+
+#[must_use]
+pub fn switch_notice(from: &str, to: &str, window: &str) -> String {
+    format!(
+        "Troupe moved this chat from Claude account {from} to {to} because {from} reached its \
+         {window} limit. Continue the task you were working on. Subagents and background \
+         commands that were running before the switch were stopped; restart the ones that are \
+         still needed."
+    )
+}
+
+#[must_use]
+pub fn resume_notice(account: &str, window: &str, reset: &str) -> String {
+    format!(
+        "Troupe continued this chat because the {window} limit of Claude account {account} \
+         reset at {reset}. Continue the task you were working on. Subagents and background \
+         commands that were running when the limit was reached may have stopped; restart the \
+         ones that are still needed."
+    )
+}
+
+#[cfg(test)]
+#[path = "real_loop_tests.rs"]
+mod real_loop_tests;
