@@ -74,6 +74,8 @@ pub(crate) use gates::{
 };
 mod history;
 mod import_session_history;
+mod launch;
+pub use launch::{AgentLaunch, LaunchRecipe};
 mod import_steps;
 mod native_subagents;
 mod project_binding;
@@ -537,6 +539,9 @@ pub struct AcpManager {
     /// Host-wide Codex Account homes. Only `acp-registry:codex-acp` receives
     /// a `CODEX_HOME`. Test managers leave this inactive.
     codex_agent: Arc<crate::acp::codex_agent::CodexAgentService>,
+    launches: Mutex<HashMap<AgentId, AgentLaunch>>,
+    recipes: Mutex<HashMap<SessionId, LaunchRecipe>>,
+    claude_limit: std::sync::OnceLock<crate::acp::claude_limit::ClaudeLimitHandle>,
 }
 
 impl AcpManager {
@@ -580,6 +585,9 @@ impl AcpManager {
             host_plan_server,
             claude_agent,
             codex_agent: Arc::new(crate::acp::codex_agent::CodexAgentService::without_host_state()),
+            launches: Mutex::new(HashMap::new()),
+            recipes: Mutex::new(HashMap::new()),
+            claude_limit: std::sync::OnceLock::new(),
         }
     }
 
@@ -634,6 +642,9 @@ impl AcpManager {
             host_plan_server,
             claude_agent,
             codex_agent: Arc::new(crate::acp::codex_agent::CodexAgentService::without_host_state()),
+            launches: Mutex::new(HashMap::new()),
+            recipes: Mutex::new(HashMap::new()),
+            claude_limit: std::sync::OnceLock::new(),
         }
     }
 
@@ -766,11 +777,33 @@ impl AcpManager {
         command_id: Option<String>,
         project_id: Option<String>,
     ) -> Result<SpawnOutcome, String> {
-        let host_auth_ready = self
+        let launch_config = config.clone();
+        let (host_auth_ready, claude) = self
             .prepare_spawn_config(&mut config, project_id.as_deref())
             .await?;
-        self.spawn_with_sinks(config, host_auth_ready, self.sinks.clone(), command_id)
-            .await
+        let outcome = self
+            .spawn_with_sinks(config, host_auth_ready, self.sinks.clone(), command_id)
+            .await?;
+        self.record_agent_launch(
+            &outcome.agent_id,
+            AgentLaunch {
+                config: launch_config,
+                project_id,
+                claude,
+            },
+        );
+        Ok(outcome)
+    }
+
+    pub fn set_claude_limit(&self, handle: crate::acp::claude_limit::ClaudeLimitHandle) {
+        if self.claude_limit.set(handle).is_err() {
+            log::warn!("[claude-limit] supervisor already installed; kept the first");
+        }
+    }
+
+    #[must_use]
+    pub fn claude_limit(&self) -> Option<&crate::acp::claude_limit::ClaudeLimitHandle> {
+        self.claude_limit.get()
     }
 
     /// [`spawn`](Self::spawn) whose agent fans its events out to `sinks`
@@ -782,7 +815,7 @@ impl AcpManager {
         project_id: Option<&str>,
         sinks: Vec<Arc<dyn EventSink>>,
     ) -> Result<SpawnOutcome, String> {
-        let host_auth_ready = self.prepare_spawn_config(&mut config, project_id).await?;
+        let (host_auth_ready, _) = self.prepare_spawn_config(&mut config, project_id).await?;
         self.spawn_with_sinks(config, host_auth_ready, sinks, None)
             .await
     }
@@ -793,18 +826,18 @@ impl AcpManager {
         &self,
         config: &mut AgentConfig,
         project_id: Option<&str>,
-    ) -> Result<bool, String> {
+    ) -> Result<(bool, crate::acp::claude_agent::ClaudeLaunchAuth), String> {
         crate::acp::factory_key::normalize_launch_args(config);
         crate::acp::factory_key::inject(config)?;
-        let claude_ready = self
+        let claude = self
             .claude_agent
-            .prepare_managed_config_for_project(config, project_id)
+            .prepare_managed_launch(config, project_id)
             .await?;
         let codex_ready = self
             .codex_agent
             .prepare_managed_config_for_project(config, project_id)
             .await?;
-        Ok(claude_ready || codex_ready)
+        Ok((claude.host_auth_ready() || codex_ready, claude))
     }
 
     /// The [`SpawnOutcome`] of the live agent spawned under `command_id`, or
@@ -1219,6 +1252,9 @@ impl AcpManager {
         // Story 8: a promotable ephemeral session (warm pool) still gets the
         // plan tool — it becomes a durable chat on promotion, and plan-MCP
         // injection is `session/new`-time only.
+        let recipe_mcp = mcp_servers.clone();
+        let recipe_cwd = cwd.clone();
+        let recipe_directories = context.additional_directories.clone();
         let (combined_mcp_servers, plan_token): (Vec<McpServer>, Option<String>) =
             if !context.ephemeral || context.promotable {
                 let (port, token, provisional_sid) =
@@ -1270,6 +1306,13 @@ impl AcpManager {
                     self.host_plan_server
                         .bind_session(&token, &outcome.session_id.0);
                 }
+                self.record_launch_recipe(
+                    agent_id,
+                    &outcome.session_id.0,
+                    recipe_cwd,
+                    Some(recipe_mcp),
+                    recipe_directories,
+                );
                 Ok(outcome)
             }
             Err(e) => {
@@ -1321,6 +1364,7 @@ impl AcpManager {
         gate_load_session(&caps)?;
         let directories = filter_additional_directories(&caps, &cwd, &additional_directories);
         let session_key = session_id.0.clone();
+        let recipe = (cwd.clone(), mcp_servers.clone(), additional_directories);
         // Resolve the command channel BEFORE a new plan token exists, so an
         // unknown agent returns without leaving a registered token behind.
         let tx = self.command_tx(agent_id)?;
@@ -1337,6 +1381,10 @@ impl AcpManager {
         })
         .await;
         self.settle_reopen_plan_token(&session_key, plan_token.as_deref(), reached_agent(&outcome));
+        if outcome.is_ok() {
+            let (cwd, mcp_servers, directories) = recipe;
+            self.record_launch_recipe(agent_id, &session_key, cwd, mcp_servers, directories);
+        }
         outcome
     }
 
@@ -1364,6 +1412,7 @@ impl AcpManager {
         gate_resume_session(&caps)?;
         let directories = filter_additional_directories(&caps, &cwd, &additional_directories);
         let session_key = session_id.0.clone();
+        let recipe = (cwd.clone(), mcp_servers.clone(), additional_directories);
         // Resolve the command channel BEFORE a new plan token exists, so an
         // unknown agent returns without leaving a registered token behind.
         let tx = self.command_tx(agent_id)?;
@@ -1379,6 +1428,10 @@ impl AcpManager {
         })
         .await;
         self.settle_reopen_plan_token(&session_key, plan_token.as_deref(), reached_agent(&outcome));
+        if outcome.is_ok() {
+            let (cwd, mcp_servers, directories) = recipe;
+            self.record_launch_recipe(agent_id, &session_key, cwd, mcp_servers, directories);
+        }
         outcome
     }
 
