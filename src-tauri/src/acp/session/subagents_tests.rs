@@ -132,3 +132,17 @@ fn a_repeated_seed_keeps_the_first_route() {
     let again = state.seed_child_route(&origin("chat-9", "chat-9", None), "sess-child");
     assert_eq!(again.root_session_id, "chat-1");
 }
+
+#[test]
+fn an_orchestrated_child_works_for_its_chat_while_a_headless_session_stays_locked() {
+    let mut state = DriverState::new();
+    state.mark_ephemeral("oneshot".to_string());
+    assert!(state.is_headless("oneshot"), "a one-shot session has no chat");
+
+    state.mark_ephemeral("sess-child".to_string());
+    state.seed_child_route(&origin("chat-1", "chat-1", None), "sess-child");
+    assert!(
+        !state.is_headless("sess-child"),
+        "an orchestrated child reaches files and terminals for its chat"
+    );
+}

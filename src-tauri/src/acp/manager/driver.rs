@@ -974,7 +974,7 @@ pub(super) async fn drive_connection(
                 // large file can't stall connection I/O (M1).
                 let root = {
                     let state = read_state.lock();
-                    if state.is_ephemeral(request.session_id.0.as_ref()) {
+                    if state.is_headless(request.session_id.0.as_ref()) {
                         let denied = Err(agent_client_protocol::Error::method_not_found());
                         let _ = responder.respond_with_result(denied);
                         return Ok(());
@@ -995,7 +995,7 @@ pub(super) async fn drive_connection(
                         cx| {
                 let root = {
                     let state = write_state.lock();
-                    if state.is_ephemeral(request.session_id.0.as_ref()) {
+                    if state.is_headless(request.session_id.0.as_ref()) {
                         let denied = Err(agent_client_protocol::Error::method_not_found());
                         let _ = responder.respond_with_result(denied);
                         return Ok(());
@@ -1018,7 +1018,7 @@ pub(super) async fn drive_connection(
                 if !allow_terminal
                     || term_create_state
                         .lock()
-                        .is_ephemeral(request.session_id.0.as_ref())
+                        .is_headless(request.session_id.0.as_ref())
                 {
                     let denied: Result<CreateTerminalResponse, agent_client_protocol::Error> =
                         Err(agent_client_protocol::Error::method_not_found());
@@ -1059,7 +1059,7 @@ pub(super) async fn drive_connection(
                 use agent_client_protocol::schema::v1::TerminalOutputResponse;
                 if term_output_state
                     .lock()
-                    .is_ephemeral(request.session_id.0.as_ref())
+                    .is_headless(request.session_id.0.as_ref())
                 {
                     let denied: Result<TerminalOutputResponse, agent_client_protocol::Error> =
                         Err(agent_client_protocol::Error::method_not_found());
@@ -1085,7 +1085,7 @@ pub(super) async fn drive_connection(
                 use agent_client_protocol::schema::v1::WaitForTerminalExitResponse;
                 if term_wait_state
                     .lock()
-                    .is_ephemeral(request.session_id.0.as_ref())
+                    .is_headless(request.session_id.0.as_ref())
                 {
                     let denied: Result<WaitForTerminalExitResponse, agent_client_protocol::Error> =
                         Err(agent_client_protocol::Error::method_not_found());
@@ -1133,7 +1133,7 @@ pub(super) async fn drive_connection(
                 use agent_client_protocol::schema::v1::KillTerminalResponse;
                 if term_kill_state
                     .lock()
-                    .is_ephemeral(request.session_id.0.as_ref())
+                    .is_headless(request.session_id.0.as_ref())
                 {
                     let denied: Result<KillTerminalResponse, agent_client_protocol::Error> =
                         Err(agent_client_protocol::Error::method_not_found());
@@ -1157,7 +1157,7 @@ pub(super) async fn drive_connection(
                 use agent_client_protocol::schema::v1::ReleaseTerminalResponse;
                 if term_release_state
                     .lock()
-                    .is_ephemeral(request.session_id.0.as_ref())
+                    .is_headless(request.session_id.0.as_ref())
                 {
                     let denied: Result<ReleaseTerminalResponse, agent_client_protocol::Error> =
                         Err(agent_client_protocol::Error::method_not_found());

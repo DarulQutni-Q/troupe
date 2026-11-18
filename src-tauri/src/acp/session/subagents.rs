@@ -202,4 +202,12 @@ impl super::DriverState {
     pub(crate) fn chat_session_for(&self, session_id: &str) -> String {
         self.subagents.root_of(session_id).to_string()
     }
+
+    /// Whether `session_id` runs headless, locked out of the client's file
+    /// and terminal methods: its chat (itself, or the chat an orchestrated
+    /// child is routed under) is ephemeral. An orchestrated child is
+    /// ephemeral itself but works for a chat, like the chat's own agent.
+    pub(crate) fn is_headless(&self, session_id: &str) -> bool {
+        self.is_ephemeral(&self.chat_session_for(session_id))
+    }
 }

@@ -491,6 +491,9 @@ fn main() -> ExitCode {
             .snapshot()
             .projects
             .into_iter()
+            // Archived projects keep their worktrees for review, as on the
+            // desktop.
+            .filter(|project| !project.is_archived)
             .filter_map(|project| project.path.map(std::path::PathBuf::from))
             .collect();
         termul_manager_lib::orchestrator::install(
