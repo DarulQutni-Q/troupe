@@ -119,7 +119,7 @@ impl HostPlanServer {
         let reply = match tool {
             SubagentTool::ListAgents => list_agents(&engine),
             SubagentTool::Start => match parse::<SubagentStartInput>(input) {
-                Ok(input) => start(engine, caller, input).await,
+                Ok(input) => start(engine, caller, input, hung_up).await,
                 Err(message) => refusal("invalid_input", message),
             },
             SubagentTool::Wait => match parse::<SubagentWaitInput>(input) {
@@ -167,12 +167,15 @@ fn list_agents(engine: &OrchestratorEngine) -> FrameReply {
     }))
 }
 
-/// The start runs on its own task: the engine owns the abort path for a
-/// spawn it gave up on, so this caller going away must not drop it halfway.
+/// The start runs on its own task, so this caller going away never drops
+/// it halfway. A hang-up (the client cancelled the tool call) cancels it
+/// instead: the engine kills the child and removes its worktree, since the
+/// agent will never learn the run's id.
 async fn start(
     engine: std::sync::Arc<OrchestratorEngine>,
     caller: CallerRef,
     input: SubagentStartInput,
+    hung_up: impl Future<Output = ()>,
 ) -> FrameReply {
     let request = StartRequest {
         agent: input.agent,
@@ -184,7 +187,19 @@ async fn start(
         title: input.title,
         model: input.model,
     };
-    let started = tokio::spawn(async move { engine.start(caller, request).await }).await;
+    let abandoned = tokio_util::sync::CancellationToken::new();
+    let mut task = {
+        let abandoned = abandoned.clone();
+        tokio::spawn(async move { engine.start_until(caller, request, abandoned).await })
+    };
+    let started = tokio::select! {
+        biased;
+        started = &mut task => started,
+        () = hung_up => {
+            abandoned.cancel();
+            return FrameReply::err("the caller hung up");
+        }
+    };
     match started {
         Ok(Ok(summary)) => FrameReply::ok_with(json!({
             "subagentId": summary.run.0,

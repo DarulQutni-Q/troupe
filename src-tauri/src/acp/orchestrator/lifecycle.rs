@@ -198,21 +198,28 @@ impl OrchestratorEngine {
         let engine = self.clone();
         self.handle.spawn(async move {
             tokio::time::sleep(STOP_BACKSTOP).await;
-            let stopped_at = engine
+            let stuck = engine
                 .ledger
                 .lock()
                 .runs
                 .get(&run)
                 .and_then(|entry| match &entry.body {
-                    RunBody::Stopping { since_ms, .. } => Some(*since_ms),
+                    RunBody::Stopping {
+                        since_ms,
+                        child_agent,
+                        ..
+                    } => Some((*since_ms, child_agent.clone())),
                     _ => None,
                 });
-            if let Some(stopped_at) = stopped_at {
+            if let Some((stopped_at, child)) = stuck {
                 log::warn!(
                     "[orchestrator] run {} did not settle {} ms after its stop; killing the child",
                     crate::logging::redact_session_id(run.as_str()),
                     now_millis().saturating_sub(stopped_at)
                 );
+                // Kill first: the settle frees the run's capacity slot, and a
+                // child that ignored the cancel must not keep working past it.
+                engine.manager.kill_detached(&child);
                 engine.finish(&run, RunEnd::Cancelled).await;
             }
         });
@@ -239,7 +246,7 @@ impl OrchestratorEngine {
     }
 
     /// Stop every live run of a closed chat.
-    pub(crate) async fn chat_closed(&self, root: &str) {
+    pub(crate) async fn chat_closed(self: &Arc<Self>, root: &str) {
         let (runs, starts) = {
             let ledger = self.ledger.lock();
             let starts = ledger.cancel_starts(|start| start.root == root);
@@ -268,6 +275,9 @@ impl OrchestratorEngine {
                     .and_then(|entry| entry.begin_stop(now_millis()))
             };
             if let Some((child_agent, session)) = cancel {
+                // The same backstop as a stop: a child stuck in a tool call
+                // is killed if its turn has not ended in time.
+                self.arm_backstop(run.clone());
                 if let Err(error) = self.manager.cancel_prompt(&child_agent, session).await {
                     log::warn!(
                         "[orchestrator] run {} cancel before chat close failed: {error}",

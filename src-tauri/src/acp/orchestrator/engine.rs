@@ -224,8 +224,21 @@ impl OrchestratorEngine {
         caller: CallerRef,
         req: StartRequest,
     ) -> Result<RunSummary, StartError> {
+        self.start_until(caller, req, tokio_util::sync::CancellationToken::new())
+            .await
+    }
+
+    /// [`start`](Self::start), given up when `abandoned` fires (the tool
+    /// caller hung up): the start is cancelled and cleaned up like one a
+    /// closing chat cancels, so no child runs that nobody holds the id of.
+    pub async fn start_until(
+        self: &Arc<Self>,
+        caller: CallerRef,
+        req: StartRequest,
+        abandoned: tokio_util::sync::CancellationToken,
+    ) -> Result<RunSummary, StartError> {
         let checks = self.checks(&caller, &req)?;
-        let reservation = self.reserve(&checks)?;
+        let reservation = self.reserve(&checks, &abandoned)?;
         let run = Arc::new(reservation.run.clone());
         let cancel = reservation.cancel.clone();
         let progress: Arc<Mutex<StartProgress>> = Arc::default();
@@ -267,7 +280,11 @@ impl OrchestratorEngine {
     /// Take a capacity slot for a new run of the checked chat: the check
     /// and the claim happen under one lock, so parallel starts cannot both
     /// pass it. The slot is released when the returned reservation drops.
-    fn reserve(self: &Arc<Self>, checks: &StartChecks) -> Result<Reservation, StartError> {
+    fn reserve(
+        self: &Arc<Self>,
+        checks: &StartChecks,
+        abandoned: &tokio_util::sync::CancellationToken,
+    ) -> Result<Reservation, StartError> {
         let mut ledger = self.ledger.lock();
         let max = checks.settings.max_running;
         if ledger.occupied_of_root(&checks.root) >= max as usize {
@@ -279,7 +296,7 @@ impl OrchestratorEngine {
                 break candidate;
             }
         };
-        let cancel = tokio_util::sync::CancellationToken::new();
+        let cancel = abandoned.child_token();
         ledger.starting.insert(
             run.clone(),
             Starting {

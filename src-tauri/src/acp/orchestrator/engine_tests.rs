@@ -660,3 +660,26 @@ async fn a_second_stop_before_the_run_settles_answers_sent() {
         Some(Ok(crate::acp::orchestrator::StopOutcome::Sent))
     );
 }
+
+#[tokio::test]
+async fn an_abandoned_start_leaves_no_run_and_frees_its_slot() {
+    let Some(test) = refusal_engine() else {
+        return;
+    };
+    let engine = &test.engine;
+    let abandoned = tokio_util::sync::CancellationToken::new();
+    abandoned.cancel();
+    let outcome = engine
+        .start_until(test.caller.clone(), request("finish"), abandoned)
+        .await;
+    assert!(
+        matches!(outcome, Err(crate::acp::orchestrator::StartError::SpawnFailed(_))),
+        "{outcome:?}"
+    );
+    let ledger = engine.ledger.lock();
+    assert!(ledger.starting.is_empty(), "the slot is freed");
+    assert!(
+        ledger.runs.values().all(|run| !run.is_live()),
+        "no run is left live"
+    );
+}
