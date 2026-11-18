@@ -26,7 +26,7 @@ Troupe puts each worktree in `.termul/worktrees/<name>/` inside your project fol
 
 Troupe creates the worktree and opens a terminal in it. The new branch starts from the commit your project folder has checked out.
 
-The project must be a Git repository. If it is not, **New worktree** is disabled in the menu.
+The project must be a Git repository. If it is not, the menu shows **New worktree (no git repo)**, turned off.
 
 ### Pick the branch
 
@@ -64,7 +64,7 @@ When you start a chat, you can make the agent work in a worktree instead of your
 
 A new worktree for a chat gets a branch named `chat/` followed by a short id. When the agent gives the chat a title, Troupe may rename the branch to match the title. The folder keeps its name.
 
-After the first message, the row below the message box shows the worktree's folder name and branch when the agent works in a worktree, and **Current checkout** when it edits your project folder.
+After the first message, the row below the message box shows the worktree's folder name and branch when the agent works in a worktree, and **Current checkout** with the branch, for example `Current checkout · main`, when it edits your project folder.
 
 ## Switch between worktrees
 

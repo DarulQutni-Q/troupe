@@ -15,17 +15,17 @@ Each row under the project shows the agent's icon and the chat's title. The titl
 
 The end of the row shows what the chat is doing. A spinner means the agent is working. **Needs you** means it waits for your answer. **New** marks a reply you have not seen. Otherwise, the row shows how long ago the chat was last active. A closed chat shows **Closed** before the time.
 
-The sidebar shows the newest five chats. Click **Show N more** to see the rest, and **Show less** to go back. The open chat always stays in view. To hide or show a project's chats, hover over the project's icon and click the arrow that takes its place.
+The sidebar shows the newest five chats. Click **Show N more** to see the rest, and **Show less** to go back. The open chat stays in view, as long as it runs in the folder the project uses. To hide or show a project's chats, hover over the project's icon and click the arrow that takes its place.
 
 When the project uses a worktree, the list shows the chats that run in that worktree. To pick the worktree, choose **Switch worktree…** in the project's menu. See [Worktrees](/docs/git/worktrees).
 
 When the sidebar is collapsed, each chat shows as its agent's icon. A dot on the icon shows its status.
 
-Chats without a project are under **Quick chats**, and chats from older versions of Troupe are under **Older chats**. See [Start a quick chat](/docs/agents/start-a-chat#start-a-quick-chat).
+Chats without a project are under **Quick chats**, and chats from older versions of Troupe are under **Older chats**. See [Start a chat](/docs/agents/start-a-chat).
 
 ## Search your chats
 
-Open the [command palette](/docs/getting-started/command-palette#find-a-chat) with **Search** at the top of the sidebar, or with `Ctrl+K` (`Cmd+K` on macOS), and type. The search matches the chat title, the agent name, the model, and the branch. Matching chats show first, under **Chats**. They come from every worktree of the active project. Quick chats show under **Quick chats**.
+Open the [command palette](/docs/getting-started/command-palette#find-a-chat) with **Search** at the top of the sidebar, or with `Ctrl+K` (`Cmd+K` on macOS), and type. For the active project's chats, the search matches the title, the agent name, the model, and the branch. Matching chats show first, under **Chats**. They come from every worktree of the active project. Quick chats show under **Quick chats** and match by title only.
 
 ## Reopen and resume a chat
 
@@ -56,7 +56,7 @@ The dialog lists the chats of the open project's folder, or of the worktree the 
 
 ## Open a chat next to another one
 
-Right-click a chat in the sidebar and choose **Open in split**. The chat opens in a new pane to the right of the active pane, so you can watch two chats at once. You can also drag a chat from the sidebar onto a pane.
+Right-click a chat under a project in the sidebar and choose **Open in split**. Quick chats and older chats do not have this item. The chat opens in a new pane to the right of the active pane, so you can watch two chats at once. You can also drag a chat from the sidebar onto a pane.
 
 **Open in split** is off when the chat is already the only tab in the active pane.
 
@@ -90,7 +90,7 @@ The agent that started them lists them with `list_started_chats`, follows them w
 1. Right-click the chat in the sidebar and choose **Delete chat**.
 2. Click **Delete** to confirm.
 
-Deleting a chat removes it and its history, and closes its tab. For a chat that [switched agents](/docs/agents/switch-agents), this deletes the whole conversation, with every agent's part. If the chat switches agents while the confirmation is open, the dialog says the chat changed and asks you to confirm again. You cannot undo it. The files the agent changed stay as they are.
+Deleting a chat removes it and its history, and closes its tab. For a chat that [switched agents](/docs/agents/switch-agents), this deletes the whole conversation, with every agent's part. You cannot undo it. For a chat in a project, the files the agent changed stay as they are. Deleting a quick chat also deletes the files in its folder, so save the ones you want to keep first.
 
 ## Restart a chat's agent
 
