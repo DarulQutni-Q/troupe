@@ -18,7 +18,8 @@ import type { AcpCatalog } from '@shared/types/acp-catalog.types'
 import type {
   ClaudeAccount,
   ClaudeAccountsSnapshot,
-  ClaudeAccountUsage
+  ClaudeAccountUsage,
+  RemovedClaudeAccount
 } from '@shared/types/claude-accounts.types'
 import type {
   CodexAccount,
@@ -247,15 +248,26 @@ export function createInvokeAcpTransport(): AcpTransport {
         accountId,
         expectedAccountId: expectedAccountId ?? null
       }),
+    setChatClaudeAccount: (projectId, sessionId, accountId, expectedAccountId) =>
+      invoke<boolean>('claude_accounts_set_chat', {
+        projectId,
+        sessionId,
+        accountId,
+        expectedAccountId: expectedAccountId ?? null
+      }),
     setClaudeAutoSwitch: async (enabled) => {
       await invoke('claude_accounts_set_auto_switch', { enabled })
+    },
+    setClaudeResume: async (sessionId, at) => {
+      await invoke('claude_set_resume', { sessionId, at })
     },
     addClaudeAccount: (name, options) =>
       invokeCommand<ClaudeAccount>('claude_accounts_add', { name }, options),
     renameClaudeAccount: async (accountId, name) => {
       await invoke('claude_accounts_rename', { accountId, name })
     },
-    removeClaudeAccount: (accountId) => invoke<string[]>('claude_accounts_remove', { accountId }),
+    removeClaudeAccount: (accountId) =>
+      invoke<RemovedClaudeAccount>('claude_accounts_remove', { accountId }),
     startClaudeLinkLogin: (accountId) =>
       invoke<string>('claude_accounts_start_link_login', { accountId }),
     finishClaudeLinkLogin: async (accountId, code, options) => {
@@ -286,10 +298,10 @@ export function createInvokeAcpTransport(): AcpTransport {
     removeCodexAccount: (accountId) => invoke<string[]>('codex_accounts_remove', { accountId }),
     startCodexAccountLogin: (accountId, config, options) =>
       invokeCommand<SpawnAgentResult>('codex_accounts_start_login', { accountId, config }, options),
-    spawnAgent: (config, options, projectId) =>
+    spawnAgent: (config, options, projectId, sessionId) =>
       invokeCommand<SpawnAgentResult>(
         'acp_spawn_agent',
-        { config, projectId: projectId ?? null },
+        { config, projectId: projectId ?? null, sessionId: sessionId ?? null },
         options
       ),
     killAgent: async (agentId) => {

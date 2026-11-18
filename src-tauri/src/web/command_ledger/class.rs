@@ -142,7 +142,9 @@ pub const WS_COMMAND_CLASSES: &[(&str, CommandClass)] = &[
     ("list_claude_usage", CommandClass::read()),
     ("set_default_claude_account", CommandClass::idempotent()),
     ("set_project_claude_account", CommandClass::idempotent()),
+    ("set_chat_claude_account", CommandClass::idempotent()),
     ("set_claude_auto_switch", CommandClass::idempotent()),
+    ("set_claude_resume", CommandClass::idempotent()),
     // A resend of a lost reply answers with the Account the first run added,
     // instead of adding a second one.
     ("add_claude_account", CommandClass::command(Replay::Payload)),

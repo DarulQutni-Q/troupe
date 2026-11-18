@@ -3,6 +3,7 @@ import type { Dispatch, MutableRefObject, ReactNode, SetStateAction } from 'reac
 import { openNewChat } from '@/components/chat/new-chat/open-new-chat'
 import { ChevronDown, ChevronRight, FolderPlus } from '@/components/icons'
 import { useRailCollapsed } from '@/components/shell/rail/rail-density'
+import { RAIL_BLOCK_FADE_CLASS } from '@/components/shell/rail/rail-motion'
 import { RailTooltip } from '@/components/shell/rail-button'
 import { logRailEvent } from '@/components/shell/shell-log'
 import { CollapseExpandMotion } from '@/components/ui/collapse-expand-motion'
@@ -17,6 +18,8 @@ import { RailGroupRow } from './rail-group-row'
 import { RailProjectItem } from './rail-project-item'
 import { RAIL_SECTION_BUTTON_CLASS, RailSectionHeader } from './rail-section-header'
 import { useDragLift } from './use-drag-lift'
+
+const INSTANT_LAYOUT = { layout: { duration: 0 } } as const
 
 export interface ProjectListProps {
   projects: Project[]
@@ -129,6 +132,11 @@ export function ProjectList({
   // The lift (opaque bg) holds until the row lands, and `relative` lets
   // Reorder's own zIndex apply, so neighbours never show through it.
   const { liftedId, lift, release, settle } = useDragLift()
+  const groupLift = useDragLift()
+  // Rows slide only during a reorder drag. On a project switch the chat list
+  // moves in one frame, so a sliding row would paint over the new chats.
+  const layoutTransition =
+    liftedId !== null || groupLift.liftedId !== null ? undefined : INSTANT_LAYOUT
   const renderProjectRow = (project: Project): React.JSX.Element => {
     return (
       <Reorder.Item
@@ -136,6 +144,7 @@ export function ProjectList({
         value={project}
         drag="y"
         layout="position"
+        transition={layoutTransition}
         data-dragging={liftedId === project.id || undefined}
         // `gap-px`: the active project's chats sit 1px under its row.
         className="relative flex list-none flex-col gap-px rounded-lg transition-shadow duration-[110ms] ease-out motion-reduce:transition-none data-[dragging]:bg-sidebar data-[dragging]:shadow-md data-[dragging]:duration-150"
@@ -212,7 +221,12 @@ export function ProjectList({
     >
       {projects.length === 0 ? (
         collapsed ? null : (
-          <div className="flex flex-col items-center justify-center p-6 text-center opacity-60">
+          <div
+            className={cn(
+              'flex flex-col items-center justify-center p-6 text-center opacity-60',
+              RAIL_BLOCK_FADE_CLASS
+            )}
+          >
             <p className="text-sm text-muted-foreground">No projects yet</p>
             <p className="text-xs text-muted-foreground mt-1">
               Create your first project to get started
@@ -261,6 +275,10 @@ export function ProjectList({
                     value={groupEntry}
                     drag="y"
                     layout="position"
+                    transition={layoutTransition}
+                    onDragStart={() => groupLift.lift(group.id)}
+                    onDragEnd={() => groupLift.release(group.id)}
+                    onDragTransitionEnd={() => groupLift.settle(group.id)}
                     className="list-none"
                   >
                     <div
@@ -344,7 +362,9 @@ export function ProjectList({
 
           {/* Archived Projects Section (not on the collapsed Rail) */}
           {!collapsed && archivedProjects.length > 0 && (
-            <div className="mt-2 flex flex-col gap-0.5">
+            <div
+              className={cn('mt-2 flex flex-col gap-0.5 whitespace-nowrap', RAIL_BLOCK_FADE_CLASS)}
+            >
               <button
                 onClick={() => setShowArchived(!showArchived)}
                 className={`label-panel flex h-8 w-full items-center gap-1.5 rounded-md pl-1 pr-1.5 transition-colors duration-150 ease-out hover:bg-foreground/[0.03] hover:text-foreground focus-visible:ring-inset disabled:cursor-default disabled:hover:bg-transparent ${FOCUS_RING_CLASS}`}

@@ -8,12 +8,12 @@ import { WindowControls } from '@/components/shell/TopRowChrome'
 import { TopRowFallbackBar } from '@/components/shell/TopRowFallbackBar'
 import { ShellToolStrip } from '@/components/shell/tool-strip/ShellToolStrip'
 import { TopRowProvider } from '@/components/shell/top-row-context'
-import { getTrafficLightInset } from '@/components/shell/traffic-light-inset'
 import { useNativeWebviewOcclusion } from '@/hooks/use-native-webview-occlusion'
 import { PaneDndProvider } from '@/hooks/use-pane-dnd'
 import { ExplorerColumn } from '@/layouts/workspace-layout/ExplorerColumn'
 import { getExplorerColumnBlocks } from '@/layouts/workspace-layout/explorer-column-blocks'
 import type { SSHWorkspaceState } from '@/layouts/workspace-layout/use-ssh-workspace'
+import { useQuickChatTitle } from '@/lib/no-project-chat'
 import {
   getTopRowPlatform,
   selectTopRowRoles,
@@ -55,8 +55,9 @@ export interface ShellFrameProps {
 
 /**
  * {@link TopRowProvider} plus the main area's start slot: with the Rail
- * collapsed the main area's top row starts with the expand toggle, padded
- * past the macOS traffic lights.
+ * collapsed the main area's top row starts with the expand toggle. The macOS
+ * traffic lights hide while the Rail is collapsed, so the slot needs no room
+ * for them.
  */
 function ShellTopRowProvider({
   roles,
@@ -69,14 +70,8 @@ function ShellTopRowProvider({
   railExpanded: boolean
   children: ReactNode
 }): React.JSX.Element {
-  const trafficLightInset = getTrafficLightInset(platform, railExpanded)
   return (
-    <TopRowProvider
-      roles={roles}
-      platform={platform}
-      mainStartInsetPx={trafficLightInset?.mainStartPx ?? 0}
-      railToggleInMain={!railExpanded}
-    >
+    <TopRowProvider roles={roles} platform={platform} railToggleInMain={!railExpanded}>
       {children}
     </TopRowProvider>
   )
@@ -116,11 +111,14 @@ export function ShellFrame({
   const paneRoot = usePaneRoot()
   const fullscreenPaneId = useFullscreenPaneId()
   const pathname = useLocation().pathname
+  // An open quick chat has no pane tab bar: the fallback bar holds the top
+  // row (expand-Rail toggle, drag region, window controls) and its title.
   const mode: TopRowMode = ssh.workspaceOpen
     ? 'ssh'
-    : projects.length === 0 || !isWorkspaceRoutePath(pathname)
+    : projects.length === 0 || !isWorkspaceRoutePath(pathname) || quickChatOpen
       ? 'fallback'
       : 'panes'
+  const quickChatTitle = useQuickChatTitle()
   // Same rule as `ExplorerColumn`: is the right panel on screen?
   const isExplorerVisible = useFileExplorerVisible()
   const panelBlocks = getExplorerColumnBlocks({
@@ -129,7 +127,10 @@ export function ShellFrame({
     ssh,
     hasSidePanel: Boolean(activeProject)
   })
-  const rightPanelOpen = panelBlocks.showFileColumn || panelBlocks.sftpSession !== null
+  // The quick view hides the right panel, so its header cannot own the
+  // window controls.
+  const rightPanelOpen =
+    !quickChatOpen && (panelBlocks.showFileColumn || panelBlocks.sftpSession !== null)
   const roles = useMemo(
     () => selectTopRowRoles({ root: paneRoot, fullscreenPaneId, mode, rightPanelOpen }),
     [paneRoot, fullscreenPaneId, mode, rightPanelOpen]
@@ -143,7 +144,7 @@ export function ShellFrame({
 
   return (
     <ShellTopRowProvider roles={roles} platform={platform} railExpanded={railExpanded}>
-      <div className="h-screen flex flex-col overflow-hidden bg-background">
+      <div className="h-screen flex flex-col overflow-hidden bg-background" data-shell-frame="">
         <ResizeEdges />
         <div className="flex-1 flex overflow-hidden min-h-0 h-full">
           <ShellRail
@@ -163,14 +164,17 @@ export function ShellFrame({
             onToggleThemePicker={handleToggleThemePicker}
           />
 
-          {/* Shell row: main area | right panel | tool strip. */}
+          {/* Shell row: main area | right panel | tool strip. It paints its
+              own surface so a translucent Rail (macOS) stays the only glass. */}
           <div
-            className="relative flex-1 flex overflow-hidden min-h-0 min-w-0 h-full"
+            className="relative flex-1 flex overflow-hidden min-h-0 min-w-0 h-full bg-background"
             data-testid="shell-row"
           >
             <PaneDndProvider>
               <main className="flex-1 flex flex-col min-w-0 border-l-[0.5px] border-border bg-background overflow-clip">
-                {roles.showPanelOwner === 'fallback-bar' && <TopRowFallbackBar />}
+                {roles.showPanelOwner === 'fallback-bar' && (
+                  <TopRowFallbackBar title={quickChatOpen ? quickChatTitle : undefined} />
+                )}
                 {workspaceMain}
               </main>
 

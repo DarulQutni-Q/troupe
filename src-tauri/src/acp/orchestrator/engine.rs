@@ -296,7 +296,7 @@ impl OrchestratorEngine {
         };
         let capture = Arc::new(RunCapture::default());
         let sinks: Vec<Arc<dyn EventSink>> = vec![
-            Arc::new(RerouteFilter::new(root.clone(), self.manager.sinks())),
+            Arc::new(RerouteFilter::new(root.clone(), self.manager.sinks().to_vec())),
             Arc::new(RunWatcher::new(
                 self.clone(),
                 (*run).clone(),

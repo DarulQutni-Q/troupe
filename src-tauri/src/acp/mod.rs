@@ -16,6 +16,8 @@ pub mod chat_history_store;
 pub mod claude_accounts;
 pub mod claude_admin;
 pub mod claude_agent;
+pub mod claude_limit;
+pub mod worker_chats;
 pub mod client;
 pub mod codex_accounts;
 pub mod codex_admin;
@@ -64,7 +66,7 @@ pub use chat_history_store::{
 };
 #[allow(unused_imports)]
 pub use claude_agent::{
-    ClaudeAgentService, ClaudeAuthMode, ClaudeAuthStatus, LinkCodeError, SignInCheck,
+    ClaudeAgentService, ClaudeAuthMode, ClaudeAuthStatus, LaunchChat, LinkCodeError, SignInCheck,
 };
 pub use codex_agent::{CodexAgentService, CodexSignInCheck};
 #[allow(unused_imports)]
@@ -77,7 +79,7 @@ pub use install::{
     InstallRequest, InstalledAgent, InstalledManifestFile,
 };
 #[allow(unused_imports)]
-pub use manager::{AcpManager, AgentSummary, SessionCreationContext, SpawnOutcome};
+pub use manager::{AcpManager, AgentSummary, SessionCreationContext, SpawnOutcome, SpawnScope};
 pub use project_registry::{FileProjectRegistry, ProjectRegistryError, RootCheck, VfsRoot};
 pub use session::AgentActivity;
 #[allow(unused_imports)]

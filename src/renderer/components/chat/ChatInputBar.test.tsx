@@ -252,6 +252,7 @@ vi.mock('@/stores/acp-store', () => {
     configToLiveAgent: { 'acp-registry:cursor\0/work': 'agent-1' },
     sessionIndex: mockSessionIndex.current,
     messages: mockMessages.current,
+    promptQueues: {},
     toolCalls: {}
   })
   const listeners = new Set<() => void>()
@@ -774,6 +775,7 @@ describe('ChatInputBar agent switch chip (Story 4, spec-in-chat-agent-switch)', 
     mockSessionAgentId.current = 'agent-1'
     mockLaunchConfigId.current = undefined
     mockAgentOptionsCache.current = {}
+    mockMessages.current = {}
   })
 
   it('renders the agent switch control in the right chip cluster', async () => {
@@ -803,6 +805,8 @@ describe('ChatInputBar agent switch chip (Story 4, spec-in-chat-agent-switch)', 
   })
 
   it('arms the switch with a model chosen on another agent tab', async () => {
+    // A started chat: an empty one moves to the other agent at once instead.
+    mockMessages.current = { 'session-1': [{ id: 'm1', role: 'user', blocks: [] }] }
     const claude = mockAgentConfigs.current[1]
     mockAgentOptionsCache.current = {
       [claude.id]: {
@@ -1834,6 +1838,20 @@ describe('ChatInputBar draft persistence', () => {
     await waitFor(() => {
       expect(getComposerValue()).toBe('half-typed message')
     })
+  })
+
+  it('sends on Enter on desktop and labels the return key "send"', async () => {
+    const onSend = vi.fn()
+    renderInputBar({ onSend })
+    expect(document.querySelector('[data-composer-editor="true"]')).toHaveAttribute(
+      'enterkeyhint',
+      'send'
+    )
+    setComposerValue('desktop send')
+
+    pressComposerKey('Enter')
+
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith('desktop send'))
   })
 
   it('clears the draft on send', async () => {

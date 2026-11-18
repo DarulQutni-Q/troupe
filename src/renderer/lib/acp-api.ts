@@ -802,6 +802,11 @@ export interface UsageUpdateEvent {
   cost?: UsageCost | null
   /** Claude plan rate-limit state, when the Claude ACP adapter sends it. */
   rateLimit?: ClaudeRateLimit | null
+  /**
+   * The rate-limit state that blocks the chat. The host never sends it as
+   * `rateLimit`, so clients that predate the host's account switch ignore it.
+   */
+  limitReached?: ClaudeRateLimit | null
 }
 
 /** Agent-reported context window state for a session. */
@@ -843,6 +848,7 @@ export const ACP_EVENTS = {
   sessionInfoUpdate: 'acp:session_info_update',
   agentSwitch: 'acp:agent_switch',
   usageUpdate: 'acp:usage_update',
+  claudeLimitAction: 'acp:claude_limit_action',
   agentWorking: 'acp:agent_working',
   backgroundCommands: 'acp:background_commands',
   browserOpenRequest: 'acp:browser_open_request',
@@ -1156,16 +1162,17 @@ export async function acpFetchRegistrySnapshot(
 
 export async function acpSpawnAgent(
   config: AgentConfig,
-  projectId?: string | null
+  projectId?: string | null,
+  sessionId?: string | null
 ): Promise<SpawnAgentResult> {
   const run = await ledgered(
     'spawn_agent',
     // args/env are digested (env can hold credentials): a changed launch is a
     // different spawn, and no raw value reaches the journal or engine state.
-    `${config.configId ?? ''}|${config.name}|${config.command}|${projectId ?? ''}|${keyDigest(
+    `${config.configId ?? ''}|${config.name}|${config.command}|${projectId ?? ''}|${sessionId ?? ''}|${keyDigest(
       JSON.stringify([config.args, config.env, config.allowTerminal ?? false])
     )}`,
-    (call) => getAcpTransport().spawnAgent(config, call, projectId)
+    (call) => getAcpTransport().spawnAgent(config, call, projectId, sessionId)
   )
   return run.result
 }

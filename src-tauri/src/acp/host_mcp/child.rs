@@ -41,6 +41,7 @@ mod automation;
 mod mcp_install;
 mod read_chat;
 mod subagents;
+mod worker_chats;
 
 /// Env-derived configuration for the child. Extracted so the arg parser is
 /// unit-testable without touching `std::env`.
@@ -139,6 +140,7 @@ impl TermulPlanServer {
         let mut tool_router = Self::tool_router()
             + Self::automation_tool_router()
             + Self::read_chat_tool_router()
+            + Self::worker_chats_tool_router()
             + Self::mcp_install_tool_router()
             + Self::subagent_tool_router();
         for tool in canvas_tools::tools() {
@@ -165,6 +167,18 @@ impl TermulPlanServer {
         request: FrameRequest,
         round_trip: std::time::Duration,
     ) -> CallToolResult {
+        self.text_call_or(tool, request, round_trip, "the Troupe host did not answer in time")
+            .await
+    }
+
+    /// [`Self::text_call`] that answers `late` when the round trip runs out.
+    async fn text_call_or(
+        &self,
+        tool: &str,
+        request: FrameRequest,
+        round_trip: std::time::Duration,
+        late: &str,
+    ) -> CallToolResult {
         let reply = tokio::time::timeout(round_trip, exchange_frame(&self.config, request)).await;
         match reply {
             Ok(Ok(reply)) => text_result(reply),
@@ -174,9 +188,7 @@ impl TermulPlanServer {
                     "the Troupe host is unreachable: {error}"
                 ))])
             }
-            Err(_) => CallToolResult::error(vec![ContentBlock::text(
-                "the Troupe host did not answer in time",
-            )]),
+            Err(_) => CallToolResult::error(vec![ContentBlock::text(late)]),
         }
     }
 

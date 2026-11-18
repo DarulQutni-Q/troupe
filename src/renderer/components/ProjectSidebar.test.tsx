@@ -368,8 +368,9 @@ describe('ProjectSidebar', () => {
     expect(root).not.toHaveClass('bg-background')
     expect(root).not.toHaveClass('bg-sidebar')
     expect(screen.getByText('Projects')).toHaveClass('label-panel')
+    // The same 20px section button as the Groups and Quick chats headers.
     expect(screen.getByRole('button', { name: 'Add project or folder group' })).toHaveClass(
-      'size-7'
+      'size-5'
     )
   })
 
@@ -378,7 +379,7 @@ describe('ProjectSidebar', () => {
 
     const activeRow = screen.getByTestId('project-item-1').querySelector('[data-project-row]')
     const idleRow = screen.getByTestId('project-item-2').querySelector('[data-project-row]')
-    expect(activeRow).toHaveClass('h-7.5', 'rounded-md')
+    expect(activeRow).toHaveClass('h-7.5', 'rounded-lg')
     expect(
       within(screen.getByTestId('project-item-1')).getByRole('button', { name: /^Project:/ })
     ).toHaveAttribute('aria-current', 'page')
@@ -390,13 +391,18 @@ describe('ProjectSidebar', () => {
     }
   })
 
-  it('ends the actions fade in the hover wash on every row', () => {
+  it('shows the actions with no backdrop and fades the name out before them', () => {
     renderWithRouter({ activeProjectId: '1' })
 
     for (const id of ['project-item-1', 'project-item-2']) {
-      const actions = within(screen.getByTestId(id)).getByTestId('project-row-actions')
-      expect(actions).toHaveClass('from-row-hover-solid')
+      const row = screen.getByTestId(id)
+      const actions = within(row).getByTestId('project-row-actions')
+      expect(actions.className).not.toMatch(/\b(bg-|from-)/)
       expect(actions).toHaveClass('group-hover:flex', 'group-focus-within:flex')
+      expect(within(row).getByTitle(/./)).toHaveClass(
+        'group-hover:fade-before-row-actions',
+        'group-focus-within:fade-before-row-actions'
+      )
     }
   })
 
@@ -850,6 +856,12 @@ describe('ProjectSidebar rail rows', () => {
     expect(actions).toHaveClass('absolute', 'hidden', 'group-hover:flex', 'group-focus-within:flex')
     expect(actions).toContainElement(within(row).getByLabelText('Settings for Project Two'))
     expect(actions.parentElement).toContainElement(stat)
+    // The stat slot is at least as wide as the actions, so they cover only
+    // the stat and the name needs no hover fade.
+    expect(stat.parentElement).toHaveClass('min-w-11', 'justify-end', 'group-hover:invisible')
+    expect(within(row).getByTitle('Project Two')).not.toHaveClass(
+      'group-hover:fade-before-row-actions'
+    )
   })
 
   it('shows one side only for a one-sided stat and nothing for a clean tree', () => {
@@ -951,7 +963,7 @@ describe('ProjectSidebar: Mono-style alignment and groups', () => {
     renderWithRouter({ projects: railProjects.slice(0, 2) })
 
     const row = screen.getByTestId('project-item-1').querySelector('[data-project-row]')
-    expect(row).toHaveClass('gap-2', 'px-3', 'rounded-md')
+    expect(row).toHaveClass('gap-2', 'px-3', 'rounded-lg')
     const iconColumn = row?.querySelector('[data-rail-icon-column]')
     expect(iconColumn).toHaveClass('size-4', 'shrink-0')
   })

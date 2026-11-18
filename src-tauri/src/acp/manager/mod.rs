@@ -74,10 +74,14 @@ pub(crate) use gates::{
 };
 mod history;
 mod import_session_history;
+mod launch;
+pub use launch::{AgentLaunch, LaunchRecipe};
 mod import_steps;
 mod native_subagents;
 mod project_binding;
 mod reopen;
+mod reopen_gate;
+pub use reopen_gate::HostMove;
 mod sign_in;
 mod spawn_error;
 pub(crate) mod stderr_ring;
@@ -205,6 +209,8 @@ pub struct SessionCreationContext {
     /// Set when this session is a quick chat. The value is the host-minted
     /// folder id. The client does not choose it.
     pub quick_chat_id: Option<String>,
+    /// The chat whose agent started this one (`start_chat`).
+    pub started_by: Option<String>,
 }
 
 /// Where an orchestrated child session renders: every id the child's route
@@ -243,6 +249,7 @@ enum AcpCommand {
         command_id: Option<String>,
         tool_allowlist: Option<crate::acp::session::ToolAllowlist>,
         quick_chat_id: Option<String>,
+        started_by: Option<String>,
         reply: oneshot::Sender<Result<NewSessionOutcome, String>>,
     },
     LoadSession {
@@ -458,6 +465,14 @@ pub struct SpawnOutcome {
     pub stable_namespace: Option<String>,
 }
 
+/// What a spawn opens: the Project selects the Claude and Codex Account, and
+/// the chat the agent is started for can select its own Claude Account.
+#[derive(Debug, Clone, Default)]
+pub struct SpawnScope {
+    pub project_id: Option<String>,
+    pub chat: crate::acp::claude_agent::LaunchChat,
+}
+
 /// Identity-rich summary of a live agent (CAP-11). Returned by the WS
 /// `list_agents` handler so
 /// clients can render/agent-route without a second lookup. `configId` and
@@ -575,6 +590,10 @@ pub struct AcpManager {
     /// Host-wide Codex Account homes. Only `acp-registry:codex-acp` receives
     /// a `CODEX_HOME`. Test managers leave this inactive.
     codex_agent: Arc<crate::acp::codex_agent::CodexAgentService>,
+    launches: Mutex<HashMap<AgentId, AgentLaunch>>,
+    recipes: Mutex<HashMap<SessionId, LaunchRecipe>>,
+    claude_limit: std::sync::OnceLock<crate::acp::claude_limit::ClaudeLimitHandle>,
+    reopen_gates: Arc<reopen_gate::ReopenGates>,
 }
 
 impl AcpManager {
@@ -618,6 +637,10 @@ impl AcpManager {
             host_plan_server,
             claude_agent,
             codex_agent: Arc::new(crate::acp::codex_agent::CodexAgentService::without_host_state()),
+            launches: Mutex::new(HashMap::new()),
+            recipes: Mutex::new(HashMap::new()),
+            claude_limit: std::sync::OnceLock::new(),
+            reopen_gates: Arc::default(),
         }
     }
 
@@ -672,6 +695,10 @@ impl AcpManager {
             host_plan_server,
             claude_agent,
             codex_agent: Arc::new(crate::acp::codex_agent::CodexAgentService::without_host_state()),
+            launches: Mutex::new(HashMap::new()),
+            recipes: Mutex::new(HashMap::new()),
+            claude_limit: std::sync::OnceLock::new(),
+            reopen_gates: Arc::default(),
         }
     }
 
@@ -692,12 +719,6 @@ impl AcpManager {
     #[must_use]
     pub fn persistence(&self) -> Option<Arc<SessionPersistence>> {
         self.persistence.clone()
-    }
-
-    /// The sinks every host-spawned agent reaches (the orchestrator's
-    /// reroute filter forwards re-addressed child traffic to them).
-    pub(crate) fn sinks(&self) -> Vec<Arc<dyn EventSink>> {
-        self.sinks.clone()
     }
 
     /// The canvas call router renderers report their mounts and replies to.
@@ -795,26 +816,61 @@ impl AcpManager {
     /// synchronously from the response (CAP-4: the spawn response — not the
     /// async event — is the source of truth).
     pub async fn spawn(&self, config: AgentConfig) -> Result<SpawnOutcome, String> {
-        self.spawn_with_command_id(config, None, None).await
+        self.spawn_with_command_id(config, None, SpawnScope::default())
+            .await
     }
 
     /// [`spawn`](Self::spawn) stamping the client `commandId` on the agent, so
     /// a resent `spawn_agent` finds it ([`Self::spawn_outcome_by_command_id`]).
-    /// `project_id` selects the Claude Account of a managed Claude agent and
-    /// the Codex Account of `acp-registry:codex-acp`. The renderer reuse key
-    /// already includes that project id, and `renewAgentCredentials` bumps the
-    /// credential epoch after an account switch so a warm process is not reused.
+    /// `scope` selects the Claude Account of a managed Claude agent and the
+    /// Codex Account of `acp-registry:codex-acp`. The renderer reuse key
+    /// already includes the project id, and the chat id when the agent opens
+    /// one chat, and `renewAgentCredentials` bumps the credential epoch after
+    /// a project account switch so a warm process is not reused.
     pub async fn spawn_with_command_id(
         &self,
         mut config: AgentConfig,
         command_id: Option<String>,
-        project_id: Option<String>,
+        scope: SpawnScope,
     ) -> Result<SpawnOutcome, String> {
-        let host_auth_ready = self
-            .prepare_spawn_config(&mut config, project_id.as_deref())
+        let launch_config = config.clone();
+        let (host_auth_ready, claude) = self
+            .prepare_spawn_config(&mut config, scope.project_id.as_deref(), &scope.chat)
             .await?;
-        self.spawn_with_sinks(config, host_auth_ready, self.sinks.clone(), command_id)
-            .await
+        let outcome = self
+            .spawn_with_sinks(config, host_auth_ready, self.sinks.clone(), command_id)
+            .await?;
+        self.record_agent_launch(
+            &outcome.agent_id,
+            AgentLaunch {
+                config: launch_config,
+                project_id: scope.project_id,
+                claude,
+            },
+        );
+        Ok(outcome)
+    }
+
+    pub fn set_claude_limit(&self, handle: crate::acp::claude_limit::ClaudeLimitHandle) {
+        if self.claude_limit.set(handle).is_err() {
+            log::warn!("[claude-limit] supervisor already installed; kept the first");
+        }
+    }
+
+    #[must_use]
+    pub fn claude_limit(&self) -> Option<&crate::acp::claude_limit::ClaudeLimitHandle> {
+        self.claude_limit.get()
+    }
+
+    /// Serve the `start_chat` and `send_to_chat` host tools with `chats`.
+    pub fn set_worker_chats(&self, chats: Arc<crate::acp::worker_chats::WorkerChats>) {
+        self.host_plan_server.set_worker_chats(chats);
+    }
+
+    /// The sinks every host-spawned agent reaches (the orchestrator's
+    /// reroute filter forwards re-addressed child traffic to them).
+    pub(crate) fn sinks(&self) -> &[Arc<dyn EventSink>] {
+        &self.sinks
     }
 
     /// [`spawn`](Self::spawn) whose agent fans its events out to `sinks`
@@ -826,29 +882,37 @@ impl AcpManager {
         project_id: Option<&str>,
         sinks: Vec<Arc<dyn EventSink>>,
     ) -> Result<SpawnOutcome, String> {
-        let host_auth_ready = self.prepare_spawn_config(&mut config, project_id).await?;
+        let (host_auth_ready, _) = self
+            .prepare_spawn_config(
+                &mut config,
+                project_id,
+                &crate::acp::claude_agent::LaunchChat::None,
+            )
+            .await?;
         self.spawn_with_sinks(config, host_auth_ready, sinks, None)
             .await
     }
 
     /// Launch-arg normalization, the persisted Factory key, and the managed
-    /// Claude or Codex account of `project_id`. Returns host-auth readiness.
+    /// Claude account of `chat` in `project_id` or the Codex account of
+    /// `project_id`. Returns host-auth readiness.
     async fn prepare_spawn_config(
         &self,
         config: &mut AgentConfig,
         project_id: Option<&str>,
-    ) -> Result<bool, String> {
+        chat: &crate::acp::claude_agent::LaunchChat,
+    ) -> Result<(bool, crate::acp::claude_agent::ClaudeLaunchAuth), String> {
         crate::acp::factory_key::normalize_launch_args(config);
         crate::acp::factory_key::inject(config)?;
-        let claude_ready = self
+        let claude = self
             .claude_agent
-            .prepare_managed_config_for_project(config, project_id)
+            .prepare_managed_launch(config, project_id, chat)
             .await?;
         let codex_ready = self
             .codex_agent
             .prepare_managed_config_for_project(config, project_id)
             .await?;
-        Ok(claude_ready || codex_ready)
+        Ok((claude.host_auth_ready() || codex_ready, claude))
     }
 
     /// The [`SpawnOutcome`] of the live agent spawned under `command_id`, or
@@ -1159,6 +1223,7 @@ impl AcpManager {
     /// driver stopped mid-query degrades to an empty set (logged) rather than
     /// failing the whole listing.
     pub async fn list_agent_summaries_with_ownership(&self) -> Vec<AgentSummary> {
+        self.host_moves_settled().await;
         let mut summaries = self.list_agent_summaries();
         for summary in &mut summaries {
             match self.agent_session_ids(&summary.id).await {
@@ -1266,7 +1331,11 @@ impl AcpManager {
         // gets it too: it may spawn subagents of its own while the engine's
         // depth setting allows, and its own tool calls route through the
         // same host.
-        let inject_host_tools = !context.ephemeral || context.promotable || context.child_origin.is_some();
+        let recipe_mcp = mcp_servers.clone();
+        let recipe_cwd = cwd.clone();
+        let recipe_directories = context.additional_directories.clone();
+        let inject_host_tools =
+            !context.ephemeral || context.promotable || context.child_origin.is_some();
         let (combined_mcp_servers, plan_token): (Vec<McpServer>, Option<String>) =
             if inject_host_tools {
                 let (port, token, provisional_sid) =
@@ -1304,6 +1373,7 @@ impl AcpManager {
                 command_id: context.command_id,
                 tool_allowlist: context.tool_allowlist,
                 quick_chat_id: context.quick_chat_id,
+                started_by: context.started_by,
                 reply,
             })
             .await
@@ -1319,6 +1389,13 @@ impl AcpManager {
                     self.host_plan_server
                         .bind_session(&token, &outcome.session_id.0);
                 }
+                self.record_launch_recipe(
+                    agent_id,
+                    &outcome.session_id.0,
+                    recipe_cwd,
+                    Some(recipe_mcp),
+                    recipe_directories,
+                );
                 Ok(outcome)
             }
             Err(e) => {
@@ -1351,10 +1428,34 @@ impl AcpManager {
             additional_directories,
             mcp_servers,
             false,
+            None,
         )
         .await
     }
 
+    /// [`Self::load_session`] of a chat `moving` holds.
+    pub async fn load_session_in_move(
+        &self,
+        moving: &HostMove,
+        agent_id: &AgentId,
+        session_id: SessionId,
+        cwd: String,
+        additional_directories: Vec<String>,
+        mcp_servers: Option<Vec<McpServer>>,
+    ) -> Result<SessionReopenOutcome, String> {
+        self.load_session_with(
+            agent_id,
+            session_id,
+            cwd,
+            additional_directories,
+            mcp_servers,
+            false,
+            Some(moving),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn load_session_with(
         &self,
         agent_id: &AgentId,
@@ -1363,13 +1464,16 @@ impl AcpManager {
         additional_directories: Vec<String>,
         mcp_servers: Option<Vec<McpServer>>,
         import_history: bool,
+        moving: Option<&HostMove>,
     ) -> Result<SessionReopenOutcome, String> {
+        let _held = self.hold_unless_moving(moving, &session_id).await;
         self.reject_session_owned_by_other_mid_turn(agent_id, &session_id)
             .await?;
         let caps = self.capabilities(agent_id)?;
         gate_load_session(&caps)?;
         let directories = filter_additional_directories(&caps, &cwd, &additional_directories);
         let session_key = session_id.0.clone();
+        let recipe = (cwd.clone(), mcp_servers.clone(), additional_directories);
         // Resolve the command channel BEFORE a new plan token exists, so an
         // unknown agent returns without leaving a registered token behind.
         let tx = self.command_tx(agent_id)?;
@@ -1386,6 +1490,10 @@ impl AcpManager {
         })
         .await;
         self.settle_reopen_plan_token(&session_key, plan_token.as_deref(), reached_agent(&outcome));
+        if outcome.is_ok() {
+            let (cwd, mcp_servers, directories) = recipe;
+            self.record_launch_recipe(agent_id, &session_key, cwd, mcp_servers, directories);
+        }
         outcome
     }
 
@@ -1407,12 +1515,55 @@ impl AcpManager {
         additional_directories: Vec<String>,
         mcp_servers: Option<Vec<McpServer>>,
     ) -> Result<SessionReopenOutcome, String> {
+        self.resume_session_with(
+            agent_id,
+            session_id,
+            cwd,
+            additional_directories,
+            mcp_servers,
+            None,
+        )
+        .await
+    }
+
+    /// [`Self::resume_session`] of a chat `moving` holds.
+    pub async fn resume_session_in_move(
+        &self,
+        moving: &HostMove,
+        agent_id: &AgentId,
+        session_id: SessionId,
+        cwd: String,
+        additional_directories: Vec<String>,
+        mcp_servers: Option<Vec<McpServer>>,
+    ) -> Result<SessionReopenOutcome, String> {
+        self.resume_session_with(
+            agent_id,
+            session_id,
+            cwd,
+            additional_directories,
+            mcp_servers,
+            Some(moving),
+        )
+        .await
+    }
+
+    async fn resume_session_with(
+        &self,
+        agent_id: &AgentId,
+        session_id: SessionId,
+        cwd: String,
+        additional_directories: Vec<String>,
+        mcp_servers: Option<Vec<McpServer>>,
+        moving: Option<&HostMove>,
+    ) -> Result<SessionReopenOutcome, String> {
+        let _held = self.hold_unless_moving(moving, &session_id).await;
         self.reject_session_owned_by_other_mid_turn(agent_id, &session_id)
             .await?;
         let caps = self.capabilities(agent_id)?;
         gate_resume_session(&caps)?;
         let directories = filter_additional_directories(&caps, &cwd, &additional_directories);
         let session_key = session_id.0.clone();
+        let recipe = (cwd.clone(), mcp_servers.clone(), additional_directories);
         // Resolve the command channel BEFORE a new plan token exists, so an
         // unknown agent returns without leaving a registered token behind.
         let tx = self.command_tx(agent_id)?;
@@ -1428,6 +1579,10 @@ impl AcpManager {
         })
         .await;
         self.settle_reopen_plan_token(&session_key, plan_token.as_deref(), reached_agent(&outcome));
+        if outcome.is_ok() {
+            let (cwd, mcp_servers, directories) = recipe;
+            self.record_launch_recipe(agent_id, &session_key, cwd, mcp_servers, directories);
+        }
         outcome
     }
 
@@ -1529,6 +1684,20 @@ impl AcpManager {
 
     /// Close a session. Gated on the agent's `sessionCapabilities.close`.
     pub async fn close_session(
+        &self,
+        agent_id: &AgentId,
+        session_id: SessionId,
+    ) -> Result<(), String> {
+        // The client treats the chat as closed whatever the agent answers.
+        self.forget_launch_recipe(&session_id.0, Some(agent_id));
+        self.close_session_keeping_recipe(agent_id, session_id)
+            .await
+    }
+
+    /// [`close_session`](Self::close_session) for a host move of the chat to
+    /// another agent: the move reopens the chat from its launch recipe, so
+    /// the recipe stays.
+    pub(crate) async fn close_session_keeping_recipe(
         &self,
         agent_id: &AgentId,
         session_id: SessionId,
@@ -1638,6 +1807,19 @@ impl AcpManager {
             return Err("prompt content must not be empty".to_string());
         }
         let tx = self.command_tx(agent_id)?;
+        // A turn of a durable chat (one with an accept hook) ends its
+        // scheduled resume. The driver runs the hook before the agent sees
+        // the prompt, so the signal precedes any limit the turn reaches.
+        let on_accept = match (on_accept, self.claude_limit.get()) {
+            (Some(hook), Some(limit)) => {
+                let (limit, session) = (limit.clone(), session_id.clone());
+                Some(Box::new(move || {
+                    limit.turn_started(session);
+                    hook();
+                }) as PromptAcceptHook)
+            }
+            (hook, _) => hook,
+        };
         let (accepted_tx, accepted_rx) = oneshot::channel();
         let (completion_tx, completion_rx) = oneshot::channel();
         tx.send(AcpCommand::SendPrompt {
@@ -2044,6 +2226,8 @@ impl AcpManager {
         persistence: &SessionPersistence,
         session_id: &str,
     ) -> Result<(), SessionPersistenceError> {
+        self.forget_launch_recipe(session_id, None);
+        self.claude_agent.forget_chat_account(session_id);
         if let Ok(metadata) = persistence.metadata(session_id) {
             if metadata.kind == crate::acp::session_persistence::SessionKind::Quick {
                 // `runtime_agent_id` is the agent from create. Reopen starts a

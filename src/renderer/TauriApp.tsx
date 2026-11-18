@@ -1,11 +1,12 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MotionConfig } from 'framer-motion'
 import { useEffect } from 'react'
 import { createHashRouter, RouterProvider } from 'react-router-dom'
 import { BrowserAuthDialogHost } from '@/components/agents/BrowserAuthDialog'
 import { BrowserConsentCardHost } from '@/components/agents/BrowserConsentCardHost'
 import { CodexCliAuthSync } from '@/components/agents/CodexCliAuthSync'
 import { ChatRoute } from '@/components/ChatRoute'
-import { useClaudeAutoSwitch } from '@/components/chat/claude-account/auto-switch'
+import { useClaudeLimitActions } from '@/components/chat/claude-account/limit-actions'
 import { useCodexAutoSwitch } from '@/components/chat/codex-account/auto-switch'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { ExternalLinkConfirmHost } from '@/components/external-link/ExternalLinkConfirm'
@@ -54,6 +55,7 @@ import { useTerminalDetachedOutput } from './hooks/use-terminal-detached-output'
 import { useTerminalExitNotification } from './hooks/use-terminal-exit-notification'
 import { useTerminalIdleNotification } from './hooks/use-terminal-idle-notification'
 import { useTerminalRestore } from './hooks/use-terminal-restore'
+import { useTranslucentRailSync } from './hooks/use-translucent-rail'
 import { useAppliedUiZoomSync } from './hooks/use-ui-zoom'
 import { useUpdateCheck } from './hooks/use-updater'
 import { useVisibilityState } from './hooks/use-visibility-state'
@@ -95,6 +97,7 @@ function AppEffects(): null {
   useAppSettingsLoader()
   useAppliedColorThemeSync()
   useAppliedUiZoomSync()
+  useTranslucentRailSync()
   useKeyboardShortcutsLoader()
   useProjectRegistry()
   useShellLayoutHydration()
@@ -119,7 +122,7 @@ function AppEffects(): null {
   useChatNotifications()
   // A Claude chat at its account's limit continues on another account, even
   // off screen. Mounted on both renderer roots for parity.
-  useClaudeAutoSwitch()
+  useClaudeLimitActions()
   useCodexAutoSwitch()
   // A chat agent's proposed automation opens for review. Both roots.
   useAutomationProposals()
@@ -204,35 +207,39 @@ export default function TauriApp(): React.JSX.Element {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <GlobalContextMenu>
-          <ErrorBoundary context="App Root">
-            <AppEffects />
-            <Toaster />
-            <ExternalLinkConfirmHost />
-            {/* Headless ACP auth: global host for the browser-open paste-back
+      {/* framer-motion follows the OS "reduce motion" setting app-wide:
+          transform and layout animations are skipped, opacity stays. */}
+      <MotionConfig reducedMotion="user">
+        <TooltipProvider>
+          <GlobalContextMenu>
+            <ErrorBoundary context="App Root">
+              <AppEffects />
+              <Toaster />
+              <ExternalLinkConfirmHost />
+              {/* Headless ACP auth: global host for the browser-open paste-back
                 dialog (spec-acp-terminal-auth) — auth can be triggered from a
                 chat panel or warm pool, not just the launcher. */}
-            <BrowserAuthDialogHost />
-            {/* MCP OAuth paste-back: only the web flow sets its state, so this
+              <BrowserAuthDialogHost />
+              {/* MCP OAuth paste-back: only the web flow sets its state, so this
                 renders nothing on desktop. Mounted on both roots for parity. */}
-            <McpOAuthPasteDialogHost />
-            <CodexCliAuthSync />
-            {/* Agent browser-automation consent fallback (CAP-5): corner card
+              <McpOAuthPasteDialogHost />
+              <CodexCliAuthSync />
+              {/* Agent browser-automation consent fallback (CAP-5): corner card
                 for pending consents no visible chat-panel card hosts; the
                 in-pane strip and in-chat card own the prompt otherwise. */}
-            <BrowserConsentCardHost />
-            <RouterProvider router={router} future={{ v7_startTransition: true }} />
-            <WhatsNewModal
-              isOpen={whatsNew.isOpen}
-              version={whatsNew.version}
-              notes={whatsNew.notes}
-              htmlUrl={whatsNew.htmlUrl}
-              onClose={whatsNew.close}
-            />
-          </ErrorBoundary>
-        </GlobalContextMenu>
-      </TooltipProvider>
+              <BrowserConsentCardHost />
+              <RouterProvider router={router} future={{ v7_startTransition: true }} />
+              <WhatsNewModal
+                isOpen={whatsNew.isOpen}
+                version={whatsNew.version}
+                notes={whatsNew.notes}
+                htmlUrl={whatsNew.htmlUrl}
+                onClose={whatsNew.close}
+              />
+            </ErrorBoundary>
+          </GlobalContextMenu>
+        </TooltipProvider>
+      </MotionConfig>
     </QueryClientProvider>
   )
 }

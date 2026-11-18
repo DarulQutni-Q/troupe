@@ -310,7 +310,7 @@ export function AgentChatPanel({
       // conversation timeline keeps the latest message visible above the OSK.
       // We locate the inner MessageScrollerViewport (it has
       // `data-slot="message-scroller-viewport"`) and scroll it to the bottom.
-      // The MessageScrollerProvider's auto-scroll already handles streaming;
+      // The list's virtualizer keeps the live edge pinned while streaming;
       // this handles the OSK-open transition case.
       const root = rootRef.current
       if (root) {
@@ -797,7 +797,8 @@ export function AgentChatPanel({
   const dockRef = useDockClearance(isMobileShell && isVisible)
   // The status rail (subagents, background commands, changes) at the top right
   // of the chat root. While it shows, the root says so (`data-status-rail`) and
-  // narrow panes keep a right gutter clear of it.
+  // narrow desktop panes keep a right gutter clear of it. On the phone shell it
+  // floats below the plan bar with no gutter, so it never shifts the layout.
   const [statusRailShown, setStatusRailShown] = useState(false)
   const statusRail = session ? (
     <ChatStatusChips
@@ -959,7 +960,7 @@ export function AgentChatPanel({
       ref={rootRef}
       onFocus={onFocus}
       onBlur={onBlur}
-      data-status-rail={statusRailShown ? 'shown' : undefined}
+      data-status-rail={statusRailShown && !isMobileShell ? 'shown' : undefined}
       className="@container relative isolate flex h-full flex-col bg-terminal-bg"
       // Story 5.3 (T2.1): apply OSK spacer as bottom padding so the sticky
       // composer card stays visible above the on-screen keyboard. iOS Safari
@@ -999,7 +1000,7 @@ export function AgentChatPanel({
             <button
               type="button"
               onClick={retryDiscoveredReopen}
-              className="inline-flex min-h-11 items-center rounded-md border border-destructive/40 px-3 text-xs font-medium transition-colors hover:bg-destructive/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 @[400px]:min-h-10"
+              className="inline-flex min-h-11 items-center rounded-md border border-destructive/40 px-3 text-xs font-medium transition-colors hover:bg-destructive/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 @[400px]:pointer-fine:min-h-10"
             >
               Retry restore
             </button>
@@ -1021,13 +1022,20 @@ export function AgentChatPanel({
           <span>{hostOffline ? 'Host offline' : 'Reconnecting…'}</span>
         </div>
       )}
-      {statusRail}
+      {!isMobileShell && statusRail}
       <PlanPanel
         key={`plan-${session.id}`}
         entries={plan}
         defaultCollapsed={isMobileShell}
         forceCollapsed={compactDock}
       />
+      {isMobileShell && (
+        // Phone: the rail floats over the transcript just below the plan bar.
+        // A zero-height anchor, so it takes no layout and no gutter.
+        <div data-status-rail-anchor="" className="relative h-0 shrink-0">
+          {statusRail}
+        </div>
+      )}
       <ChatTimelineStage
         isEmptyChat={isEmptyChat}
         isMobileShell={isMobileShell}

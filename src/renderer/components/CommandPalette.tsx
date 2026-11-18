@@ -1,6 +1,7 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CommandPaletteChats } from '@/components/CommandPaletteChats'
+import { CommandPaletteQuickChats } from '@/components/CommandPaletteQuickChats'
 import {
   Bot,
   Bug,
@@ -50,6 +51,8 @@ interface CommandPaletteProps {
   onOpenTerminalProfile?: (profile: TerminalProfile) => void
   /** A new empty chat in the active pane. */
   onNewChat?: () => void
+  /** A chat with no project. The host owns its folder. */
+  onNewQuickChat?: () => void
   onLaunchAgent?: () => void
   onSaveSnapshot?: () => void
   onNewBrowserTab?: () => void
@@ -117,6 +120,7 @@ export function CommandPalette({
   terminalProfiles,
   onOpenTerminalProfile,
   onNewChat,
+  onNewQuickChat,
   onLaunchAgent,
   onSaveSnapshot,
   onNewBrowserTab,
@@ -194,6 +198,19 @@ export function CommandPalette({
               keywords: ['agent', 'ai', 'claude', 'codex', 'prompt', 'chat', 'new'],
               shortcut: getShortcutLabel?.('newTerminal'),
               execute: onNewChat
+            }
+          ]
+        : []),
+      ...(onNewQuickChat
+        ? [
+            {
+              id: 'new-quick-chat',
+              category: 'workspace' as const,
+              icon: <Bot aria-hidden="true" size={16} />,
+              label: 'New quick chat',
+              description: 'Start a chat that has no project',
+              keywords: ['agent', 'ai', 'chat', 'quick', 'scratch', 'no project', 'new'],
+              execute: onNewQuickChat
             }
           ]
         : []),
@@ -368,6 +385,7 @@ export function CommandPalette({
       terminalProfiles,
       onOpenTerminalProfile,
       onNewChat,
+      onNewQuickChat,
       onLaunchAgent,
       onSaveSnapshot,
       onNewBrowserTab,
@@ -524,10 +542,11 @@ export function CommandPalette({
               void togglePin(cmd.id)
             }}
             className={cn(
-              'flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-opacity hover:bg-foreground/[0.06] hover:text-foreground group-data-[selected=true]:text-foreground',
+              // Touch has no hover: the pin shows on every row, with a 44px hit area.
+              "relative flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-opacity hover:bg-foreground/[0.06] active:bg-foreground/[0.06] hover:text-foreground group-data-[selected=true]:text-foreground pointer-coarse:after:absolute pointer-coarse:after:-inset-2.5 pointer-coarse:after:content-['']",
               isPinned
                 ? 'text-foreground opacity-100'
-                : 'opacity-0 group-data-[selected=true]:opacity-100 group-hover:opacity-100'
+                : 'opacity-0 group-data-[selected=true]:opacity-100 group-hover:opacity-100 pointer-coarse:opacity-100'
             )}
           >
             <Pin aria-hidden="true" size={13} className={cn(isPinned && 'fill-current')} />
@@ -595,8 +614,16 @@ export function CommandPalette({
                   </button>
                 )}
               </div>
-              <CommandList className="max-h-[52vh] px-1 py-1">
+              <CommandList className="max-h-[52dvh] overscroll-contain px-1 py-1">
                 <CommandEmpty>No commands found.</CommandEmpty>
+
+                {/* Chat matches first. They show only for a real text match, and
+                    cmdk 1.1 does not reorder groups by score (its group lookup
+                    misses), so render order is the rank. */}
+                {chatsProject && query.trim() !== '' && (
+                  <CommandPaletteChats project={chatsProject} query={query} onDone={onClose} />
+                )}
+                {query.trim() !== '' && <CommandPaletteQuickChats query={query} onDone={onClose} />}
 
                 {pinnedCommands.length > 0 && query === '' && (
                   <CommandGroup heading="Pinned">
@@ -615,10 +642,6 @@ export function CommandPalette({
                     {categoryCommands.map((cmd) => renderCommandItem(cmd))}
                   </CommandGroup>
                 ))}
-
-                {chatsProject && query.trim() !== '' && (
-                  <CommandPaletteChats project={chatsProject} query={query} onDone={onClose} />
-                )}
               </CommandList>
 
               {/* Story 11 (QA F9): ↑↓/↵/Esc kbd hints are dead affordances

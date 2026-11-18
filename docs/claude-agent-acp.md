@@ -82,8 +82,10 @@ in the OS keychain.
 ## Claude accounts
 
 In Claude Code login mode, a host can hold several Claude subscription logins
-(Accounts). Each Project uses one Account; a Project with no choice uses the
-Default Account. The built-in Account uses the host's normal Claude config
+(Accounts). A chat uses its own Account when it has one, else its Project's
+Account, else the Default Account. A new chat starts on its Project's Account.
+The choices live in `claude-accounts.json` (`projectAccounts` and
+`chatAccounts`). The built-in Account uses the host's normal Claude config
 folder (`~/.claude`, or `CLAUDE_CONFIG_DIR` when the host sets it). See
 [ADR-0004](./adr/0004-claude-accounts-linked-config-dirs.md).
 
@@ -97,8 +99,22 @@ or refreshes the login tokens; Claude Code keeps them in its own credential
 store. The Account list (`<state dir>/claude-accounts.json`) holds names and
 ids only.
 
-When a Project's Account changes, each open Claude chat restarts on the new
-Account and resumes the same session. If the new Account cannot find the
+The account picker in a chat (`set_chat_claude_account`) moves only that chat:
+it restarts on a new agent with the chosen Account and resumes the same
+session. Other chats of the Project, including chats on the same agent, keep
+running. "Follow project" removes the chat's own choice. Choosing the Account
+the chat already runs on changes nothing. When a person moves a chat at its
+limit from the limit card, its held turn is cancelled and the chat continues
+with a short notice, worded like the host's, instead of the last prompt sent
+again. A chat that is opened
+again starts its agent with the chat id (`spawn_agent` `sessionId`), so the
+host starts it on the chat's Account. Such an agent belongs to that chat: the
+renderer registers it under a reuse key with the chat id, and no other chat or
+warm session takes it.
+
+When a Project's Account changes, each open Claude chat of the Project without
+its own Account restarts on the new Account and resumes the same session.
+Chats with their own Account stay where they are. If the new Account cannot find the
 session (the agent answers `session/resume` with `Resource not found`), the
 chat continues in a new session. That session starts from a summary of the
 conversation, the same handoff as an agent switch, and the earlier messages
@@ -133,7 +149,66 @@ unknown reply shape yields no windows instead of an error.
 
 During a turn, the Claude ACP adapter also attaches the live rate-limit state
 (`allowed`, `allowed_warning`, or `rejected`, with reset time and percent) to
-`usage_update` events. Troupe forwards it as `rateLimit` on `acp:usage_update`.
+`usage_update` events. Troupe forwards a state that does not block the chat as
+`rateLimit` on `acp:usage_update`. A state that blocks the chat (`rejected`
+with no overage in use) travels only as `limitReached`, so a client from before
+the host switch never runs its own account switch on it.
+
+### At the limit
+
+The host acts on a blocking limit itself, with or without a client connected.
+A supervisor in the host (`src-tauri/src/acp/claude_limit/`) receives each
+`limitReached` from a managed `claude-acp` agent that runs on a Troupe Account
+inside a Project:
+
+- When automatic switching is on and another signed-in Account has room, the
+  host sets the chat's own Account to the Account with the most room, with a
+  compare-and-set on the Account the chat ran on. The Project's Account does
+  not change, and no other chat moves. The host takes the chat off its agent
+  (it stops the agent when no other durable chat runs on it, and otherwise
+  closes only this chat there), starts a new agent for the chat from the
+  launch recipe the client's spawn recorded, resumes the same session, and
+  sends a short continuation notice as a user prompt.
+- When no Account has room, the host schedules a resume at the reset time in
+  `claude-limit-resumes.json` in the host state folder. The resume survives the
+  agent being reaped and a host restart. A turn of the chat, closing it, or
+  `set_claude_resume` with `at: null` cancels it.
+- When the agent runs another Account than the chat now uses (a client moved
+  the chat, or the Project, first), the host restarts the chat on its
+  Account.
+
+Each step is recorded as `acp:claude_limit_action` in the chat's session log,
+and clients follow it. While the host moves a chat, a client that reopens it
+waits for the move and then finds it on the new agent. The launch recipe stays
+in memory only, and the host forgets it when the chat closes or its agent stops,
+unless the chat waits for a scheduled resume.
+
+### Worker chats
+
+An agent can start worker chats with the `start_chat` host tool
+(`src-tauri/src/acp/worker_chats/`). The host builds the worker from the
+caller's launch recipe: the same agent config, Project, folder, worktree, MCP
+list and additional folders. A caller with no recipe is refused, and so is a
+start whose Project is removed or archived while the worker starts. The user's
+automatic account switching setting is the consent to run a worker on another
+Account: with it off, the worker follows its Project whatever `account` says.
+With it on and the caller a managed Claude chat on an Account, `account:
+"auto"` (the default) takes the signed-in Account with the most room by the
+same ranking a chat at its limit moves by, and skips the Accounts the
+supervisor saw reach a limit. A named `account` must be signed in. The host
+starts the worker's agent on that Account, then writes it as the worker's own
+Account before the first message, so the supervisor moves the worker alone
+when it reaches a limit. When no Account has room, or the caller runs on
+credentials no Account switch changes, the worker follows its Project and the
+tool result says why. The worker starts in the caller's current mode, so a
+caller that allowed its tools does not leave a worker waiting on a permission
+prompt with no client to answer it.
+
+`send_to_chat` reaches only chats the caller started (`startedBy` in the
+session metadata). It refuses while the worker answers its last message, and
+when no live agent holds the worker. `list_started_chats` lists the caller's
+workers and whether each is working, idle or stopped. A worker cannot start workers, and one
+caller may have six running.
 
 `remove` signs the Claude CLI out of that Account, deletes its folder (never
 the shared folder), and moves its Projects back to the Default Account. The

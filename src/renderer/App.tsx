@@ -1,11 +1,12 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MotionConfig } from 'framer-motion'
 import { lazy, Suspense, useEffect } from 'react'
 import { createHashRouter, RouterProvider } from 'react-router-dom'
 import { BrowserAuthDialogHost } from '@/components/agents/BrowserAuthDialog'
 import { BrowserConsentCardHost } from '@/components/agents/BrowserConsentCardHost'
 import { CodexCliAuthSync } from '@/components/agents/CodexCliAuthSync'
 import { ChatRoute } from '@/components/ChatRoute'
-import { useClaudeAutoSwitch } from '@/components/chat/claude-account/auto-switch'
+import { useClaudeLimitActions } from '@/components/chat/claude-account/limit-actions'
 import { useCodexAutoSwitch } from '@/components/chat/codex-account/auto-switch'
 import { DirectoryPicker } from '@/components/DirectoryPicker'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
@@ -76,6 +77,7 @@ import { usePreventNativeContextMenu } from './hooks/use-prevent-native-context-
 import { useProjectRegistry } from './hooks/use-project-registry'
 import { useShellLayoutHydration } from './hooks/use-shell-layout-hydration'
 import { useSmoothWheelScroll } from './hooks/use-smooth-wheel-scroll'
+import { useTranslucentRailSync } from './hooks/use-translucent-rail'
 import { useAppliedUiZoomSync } from './hooks/use-ui-zoom'
 import { useUpdateCheck } from './hooks/use-updater'
 import { useVisibilityState } from './hooks/use-visibility-state'
@@ -168,6 +170,7 @@ function AppEffects(): null {
   useAppSettingsLoader()
   useAppliedColorThemeSync()
   useAppliedUiZoomSync()
+  useTranslucentRailSync()
   useKeyboardShortcutsLoader()
   useProjectRegistry()
   useShellLayoutHydration()
@@ -192,7 +195,7 @@ function AppEffects(): null {
   useChatNotifications()
   // A Claude chat at its account's limit continues on another account, even
   // off screen. Mounted on both renderer roots for parity.
-  useClaudeAutoSwitch()
+  useClaudeLimitActions()
   useCodexAutoSwitch()
   // A chat agent's proposed automation opens for review. Both roots.
   useAutomationProposals()
@@ -291,48 +294,52 @@ const App = () => {
   }, [])
   return (
     <QueryClientProvider client={queryClient}>
-      <TooltipProvider delayDuration={80} skipDelayDuration={300}>
-        <GlobalContextMenu>
-          <ErrorBoundary context="App Root">
-            {/* Web/remote mode only: while the setup gate reports 'setup'
+      {/* framer-motion follows the OS "reduce motion" setting app-wide:
+          transform and layout animations are skipped, opacity stays. */}
+      <MotionConfig reducedMotion="user">
+        <TooltipProvider delayDuration={80} skipDelayDuration={300}>
+          <GlobalContextMenu>
+            <ErrorBoundary context="App Root">
+              {/* Web/remote mode only: while the setup gate reports 'setup'
                 the wizard replaces this subtree entirely — AppEffects and
                 the router (both assume a configured server) never mount.
                 Toaster stays outside so wizard errors can still toast. */}
-            <ServerSetupGate>
-              <AppEffects />
-              <ExternalLinkConfirmHost />
-              {/* Web/remote mode only: in-app directory picker registered with
+              <ServerSetupGate>
+                <AppEffects />
+                <ExternalLinkConfirmHost />
+                {/* Web/remote mode only: in-app directory picker registered with
                   dialogApi so NewProjectModal's Browse button works without a native
                   dialog.open (Story: Web/remote project creation). Desktop never
                   mounts it. */}
-              {!isTauriContext() && <DirectoryPicker />}
-              {/* Headless ACP auth: global host for the browser-open paste-back
+                {!isTauriContext() && <DirectoryPicker />}
+                {/* Headless ACP auth: global host for the browser-open paste-back
                   dialog (spec-acp-terminal-auth) — auth can be triggered from a
                   chat panel or warm pool, not just the launcher. */}
-              <BrowserAuthDialogHost />
-              <CodexCliAuthSync />
-              {/* Web MCP OAuth paste-back (spec-mcp-oauth-web-paste-back): the
+                <BrowserAuthDialogHost />
+                <CodexCliAuthSync />
+                {/* Web MCP OAuth paste-back (spec-mcp-oauth-web-paste-back): the
                   loopback redirect the host registered is unreachable from a
                   browser on another device, so its address is pasted back here.
                   Global so MCP settings and catalog install share it. */}
-              <McpOAuthPasteDialogHost />
-              {/* Agent browser-automation consent fallback (CAP-5) —
+                <McpOAuthPasteDialogHost />
+                {/* Agent browser-automation consent fallback (CAP-5) —
                   desktop-only responder (the component no-ops on web; the host
                   auto-denies). */}
-              <BrowserConsentCardHost />
-              <RouterProvider router={router} future={{ v7_startTransition: true }} />
-              <WhatsNewModal
-                isOpen={isTauriContext() && whatsNew.isOpen}
-                version={whatsNew.version}
-                notes={whatsNew.notes}
-                htmlUrl={whatsNew.htmlUrl}
-                onClose={whatsNew.close}
-              />
-            </ServerSetupGate>
-            <Toaster />
-          </ErrorBoundary>
-        </GlobalContextMenu>
-      </TooltipProvider>
+                <BrowserConsentCardHost />
+                <RouterProvider router={router} future={{ v7_startTransition: true }} />
+                <WhatsNewModal
+                  isOpen={isTauriContext() && whatsNew.isOpen}
+                  version={whatsNew.version}
+                  notes={whatsNew.notes}
+                  htmlUrl={whatsNew.htmlUrl}
+                  onClose={whatsNew.close}
+                />
+              </ServerSetupGate>
+              <Toaster />
+            </ErrorBoundary>
+          </GlobalContextMenu>
+        </TooltipProvider>
+      </MotionConfig>
     </QueryClientProvider>
   )
 }

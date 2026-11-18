@@ -3,18 +3,23 @@ import { useShallow } from 'zustand/shallow'
 import { ChatEntryIcon, type ChatHistorySidebarEntry } from '@/components/chat/ChatHistoryEntryRow'
 import { ChatDeleteConfirmDialog } from '@/components/chat/ChatHistoryTab'
 import { ImportChatsButton } from '@/components/chat/ImportChatsButton'
+import { openNewQuickChat } from '@/components/chat/new-chat/open-new-chat'
 import { useChatHistoryEntries } from '@/components/chat/use-chat-history-entries'
-import { MoreHorizontal } from '@/components/icons'
+import { MoreHorizontal, Plus } from '@/components/icons'
 import { useColumnWorkingCopy } from '@/components/shell/use-column-working-copy'
 import { useChatLiveState } from '@/components/shell/use-project-chats'
 import { ChatRowTrail, type ProjectChatLiveState } from '@/components/sidebar/project-chat-row'
+import { Button } from '@/components/ui/button'
 import { useMobileTabActions } from '@/hooks/use-mobile-tab-actions'
+import { QUICK_CHATS_GROUP, quickSessions } from '@/lib/acp-history-persistence'
 import { copyChatReference } from '@/lib/chat-reference'
 import { logFrontendError } from '@/lib/log-api'
+import { renameQuickChat } from '@/lib/quick-chat-rename'
 import { formatChatCreatedTime } from '@/lib/relative-time'
 import { cn } from '@/lib/utils'
 import { useAcpStore } from '@/stores/acp-store'
 import { useActiveProject } from '@/stores/project-store'
+import { useQuickChatSessionId } from '@/stores/quick-chat-store'
 import { MobileRecentsActionsSheet } from './MobileRecentsActionsSheet'
 
 /** How long a touch must hold still before it opens the row actions (iOS fires no `contextmenu`). */
@@ -22,9 +27,15 @@ const LONG_PRESS_MS = 500
 /** A touch that moves further than this (px) is a scroll, not a long-press. */
 const LONG_PRESS_SLOP_PX = 10
 
-/** The row's accessible name: title, then status, then the created time, when known. */
-function rowAriaLabel(title: string, statusText: string | null | undefined, time: string): string {
-  return [title, statusText, time ? `created ${time}` : ''].filter(Boolean).join(', ')
+function rowAriaLabel(
+  title: string,
+  startedByLabel: string | undefined,
+  statusText: string | null | undefined,
+  time: string
+): string {
+  return [title, startedByLabel, statusText, time ? `created ${time}` : '']
+    .filter(Boolean)
+    .join(', ')
 }
 
 /** Claude-style row: borderless 16px label, the active row a full-width pill. */
@@ -32,7 +43,12 @@ function rowClass(isActive: boolean): string {
   return cn(
     'flex min-h-11 w-full min-w-0 items-center gap-3 rounded-full px-4 py-2 text-left text-base outline-none transition-colors duration-150 ease-out',
     'select-none [-webkit-touch-callout:none] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus-ring',
-    isActive ? 'bg-secondary text-foreground' : 'text-foreground hover:bg-foreground/[0.04]'
+    // On touch the row keeps its right 44px free for the visible ⋯.
+    'pointer-coarse:pr-12',
+    // A touch has no hover: the press shows a fill so the row answers the finger.
+    isActive
+      ? 'bg-secondary text-foreground'
+      : 'text-foreground hover:bg-foreground/[0.04] active:bg-foreground/[0.08]'
   )
 }
 
@@ -153,6 +169,7 @@ function RecentsStatus({
 interface RowShellProps {
   entryId: string
   title: string
+  subtitle?: string
   isActive: boolean
   ariaLabel: string
   disabled?: boolean
@@ -164,10 +181,11 @@ interface RowShellProps {
   onOpenActions: () => void
 }
 
-/** The markup every Recents row shares: one select button and a focus-only actions button. */
+/** The markup every Recents row shares: one select button and an actions button (visible on touch, focus-only otherwise). */
 function RecentsRowShell({
   entryId,
   title,
+  subtitle,
   isActive,
   ariaLabel,
   disabled,
@@ -194,22 +212,29 @@ function RecentsRowShell({
         }}
       >
         <span className="inline-flex shrink-0 items-center">{icon}</span>
-        <span className="min-w-0 flex-1 truncate">{title}</span>
+        {subtitle ? (
+          <span className="flex min-w-0 flex-1 flex-col">
+            <span className="truncate">{title}</span>
+            <span className="truncate text-xs text-muted-foreground">{subtitle}</span>
+          </span>
+        ) : (
+          <span className="min-w-0 flex-1 truncate">{title}</span>
+        )}
         {status ? <span className="flex shrink-0 items-center gap-1">{status}</span> : null}
         {time ? (
           <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{time}</span>
         ) : null}
       </button>
-      {/* Keyboard and screen-reader route to the row actions. Invisible and
-          untouchable until it holds focus (a screen reader's double-tap
-          focuses it first), so the row shows no trailing icon. */}
+      {/* The row actions. On touch the ⋯ is always visible (Paper 10.7):
+          a long press is not discoverable. With a mouse or keyboard it stays
+          invisible and untouchable until it holds focus. */}
       <button
         type="button"
         data-recents-actions=""
         aria-label={`More actions for ${title}`}
         aria-haspopup="dialog"
         onClick={onOpenActions}
-        className="pointer-events-none absolute right-1 top-1/2 inline-flex size-11 -translate-y-1/2 items-center justify-center rounded-full bg-secondary text-foreground opacity-0 outline-none focus:pointer-events-auto focus:opacity-100 focus-visible:ring-2 focus-visible:ring-focus-ring"
+        className="pointer-events-none absolute right-1 top-1/2 inline-flex size-11 -translate-y-1/2 items-center justify-center rounded-full bg-secondary text-foreground opacity-0 outline-none transition-colors duration-150 ease-out focus:pointer-events-auto focus:opacity-100 focus-visible:ring-2 focus-visible:ring-focus-ring pointer-coarse:pointer-events-auto pointer-coarse:bg-transparent pointer-coarse:text-muted-foreground pointer-coarse:opacity-100 pointer-coarse:active:bg-foreground/[0.08]"
       >
         <MoreHorizontal size={16} aria-hidden="true" />
       </button>
@@ -254,8 +279,9 @@ function OpenRecentsRow({
     <RecentsRowShell
       entryId={entry.id}
       title={title}
+      subtitle={entry.startedByLabel}
       isActive={isActive}
-      ariaLabel={rowAriaLabel(title, statusWord, time)}
+      ariaLabel={rowAriaLabel(title, entry.startedByLabel, statusWord, time)}
       icon={
         <ChatEntryIcon
           agentId={signals.session?.agentId ?? indexAgentId ?? entry.agentId}
@@ -278,6 +304,8 @@ function OpenRecentsRow({
 interface HistoryRecentsRowProps {
   entry: ChatHistorySidebarEntry
   time: string
+  /** The open quick chat: it has no tab, so the row itself is the active one. */
+  isActive?: boolean
   onSelect: () => void
   onOpenActions: () => void
 }
@@ -290,6 +318,7 @@ interface HistoryRecentsRowProps {
 function HistoryRecentsRow({
   entry,
   time,
+  isActive = false,
   onSelect,
   onOpenActions
 }: HistoryRecentsRowProps): React.JSX.Element {
@@ -300,8 +329,9 @@ function HistoryRecentsRow({
     <RecentsRowShell
       entryId={entry.id}
       title={entry.title}
-      isActive={false}
-      ariaLabel={rowAriaLabel(entry.title, statusText, time)}
+      subtitle={entry.startedByLabel}
+      isActive={isActive}
+      ariaLabel={rowAriaLabel(entry.title, entry.startedByLabel, statusText, time)}
       disabled={entry.discovered && !entry.canOpen}
       icon={
         <ChatEntryIcon
@@ -366,6 +396,34 @@ export function MobileRecentsList({
 }: MobileRecentsListProps): React.JSX.Element {
   const baseId = useId()
   const rootRef = useRef<HTMLDivElement>(null)
+  const quickIds = useAcpStore(
+    useShallow((state) => quickSessions(state.sessionIndex).map((entry) => entry.id))
+  )
+  const quickIdSet = useMemo(() => new Set(quickIds), [quickIds])
+  const quickOpenId = useQuickChatSessionId()
+  // The phone's way to start a quick chat (the desktop Rail has its `+`).
+  const newQuickChat = (): void => {
+    onNavigate()
+    void openNewQuickChat('mobile-drawer-quick')
+  }
+  const quickHeading = (labelId: string): React.JSX.Element => (
+    <div className="flex items-center justify-between pr-2">
+      <h3 id={labelId} className="label-group px-4 pb-1 pt-3 text-muted-foreground">
+        {QUICK_CHATS_GROUP}
+      </h3>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className="mt-2 size-11 shrink-0"
+        aria-label="New quick chat"
+        data-testid="mobile-new-quick-chat"
+        onClick={newQuickChat}
+      >
+        <Plus size={16} />
+      </Button>
+    </div>
+  )
   const { paneTabs, selectTab, closePaneTab } = useMobileTabActions()
   const activeProject = useActiveProject()
   const { cwd: importCwd } = useColumnWorkingCopy(activeProject)
@@ -447,6 +505,15 @@ export function MobileRecentsList({
   )
 
   const [actionsTarget, setActionsTarget] = useState<ActionsTarget | null>(null)
+  // A quick chat's title now, not the one captured when the sheet opened: a
+  // rename in the sheet changes it while the sheet stays open. Other chats
+  // keep the title their row showed (an open chat's live title).
+  const indexedActionsTitle = useAcpStore((state) =>
+    actionsTarget && quickIdSet.has(actionsTarget.entryId)
+      ? state.sessionIndex.find((entry) => entry.id === actionsTarget.entryId)?.title
+      : undefined
+  )
+  const actionsTitle = indexedActionsTitle || actionsTarget?.title || ''
   const [actionsOpen, setActionsOpen] = useState(false)
   // The delete confirm, as the desktop History: `deleteTarget` outlives
   // `deleteOpen` so the description does not blank while it animates closed.
@@ -539,9 +606,13 @@ export function MobileRecentsList({
           const labelId = `${baseId}-${group}`
           return (
             <div key={group}>
-              <h3 id={labelId} className="label-group px-4 pb-1 pt-3 text-muted-foreground">
-                {group}
-              </h3>
+              {group === QUICK_CHATS_GROUP ? (
+                quickHeading(labelId)
+              ) : (
+                <h3 id={labelId} className="label-group px-4 pb-1 pt-3 text-muted-foreground">
+                  {group}
+                </h3>
+              )}
               <div role="group" aria-labelledby={labelId} className="flex flex-col gap-0.5">
                 {entries.map((entry) => {
                   const time = formatChatCreatedTime(entry.createdAt, now)
@@ -574,6 +645,7 @@ export function MobileRecentsList({
                       key={entry.id}
                       entry={entry}
                       time={time}
+                      isActive={entry.id === quickOpenId}
                       onSelect={() => void openEntry(entry)}
                       onOpenActions={() =>
                         openActions({
@@ -591,12 +663,17 @@ export function MobileRecentsList({
           )
         })
       )}
+      {/* No Quick chats group on screen (none yet, or none in the loaded
+          window): keep the heading and its + so the phone can start one. */}
+      {!query.trim() &&
+        !groups.some(({ group }) => group === QUICK_CHATS_GROUP) &&
+        quickHeading(`${baseId}-quick-chats-empty`)}
       {hasMore && (
         <div ref={sentinelRef} className="px-2 py-2">
           <button
             type="button"
             onClick={loadMore}
-            className="min-h-11 w-full rounded-full py-1 text-sm tabular-nums text-muted-foreground transition-colors duration-150 ease-out hover:bg-foreground/[0.04]"
+            className="min-h-11 w-full rounded-full py-1 text-sm tabular-nums text-muted-foreground transition-colors duration-150 ease-out hover:bg-foreground/[0.04] active:bg-foreground/[0.08]"
           >
             Load more ({filtered.length - visible.length} more)
           </button>
@@ -612,16 +689,17 @@ export function MobileRecentsList({
       <MobileRecentsActionsSheet
         open={actionsOpen}
         onOpenChange={setActionsOpen}
-        title={actionsTarget?.title ?? ''}
+        title={actionsTitle}
         onCopyReference={() => {
           if (actionsTarget) {
-            void copyChatReference(
-              actionsTarget.entryId,
-              actionsTarget.title,
-              'MobileRecentsList.copy'
-            )
+            void copyChatReference(actionsTarget.entryId, actionsTitle, 'MobileRecentsList.copy')
           }
         }}
+        onRename={
+          actionsTarget && quickIdSet.has(actionsTarget.entryId)
+            ? (title) => renameQuickChat(actionsTarget.entryId, title, actionsTitle)
+            : undefined
+        }
         onCloseChat={
           actionsTarget?.canClose ? () => closeOpenChat(actionsTarget.entryId) : undefined
         }

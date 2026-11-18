@@ -2,6 +2,7 @@ import type { GitDiffStat } from '@shared/types/ipc.types'
 import { type KeyboardEvent, memo, useEffect, useRef } from 'react'
 import { ChevronRight, MoreHorizontal, Plus, Settings } from '@/components/icons'
 import { ProjectIcon } from '@/components/ProjectIcon'
+import { RAIL_LABEL_FADE_CLASS } from '@/components/shell/rail/rail-motion'
 import { RailTooltip } from '@/components/shell/rail-button'
 import { RAIL_ICON_BOX_CLASS, RAIL_ROW_INSET_CLASS } from '@/components/shell/rail-layout'
 import { ContextMenu, ContextMenuTrigger } from '@/components/ui/context-menu'
@@ -98,8 +99,8 @@ export const ProjectItem = memo(function ProjectItem({
             className={cn(
               'group relative flex h-7.5 w-full cursor-pointer select-none items-center text-left text-xs',
               // Paper 10X5: the open project is a plain row (only the open
-              // chat under it is raised), radius 6.
-              'rounded-md',
+              // chat under it is raised), radius 8 like every Rail row.
+              'rounded-lg',
               RAIL_ROW_INSET_CLASS,
               'transition-colors duration-150 ease-out',
               'hover:bg-row-hover focus-within:bg-row-hover'
@@ -118,7 +119,7 @@ export const ProjectItem = memo(function ProjectItem({
               }}
               tabIndex={isEditing ? -1 : undefined}
               className={cn(
-                'absolute inset-0 rounded-md focus-visible:ring-inset',
+                'absolute inset-0 rounded-lg focus-visible:ring-inset',
                 FOCUS_RING_CLASS
               )}
               aria-current={isActive ? 'page' : undefined}
@@ -182,24 +183,37 @@ export const ProjectItem = memo(function ProjectItem({
               // Name and diff stat share one box whose width never changes on
               // hover: the actions sit on top of its end, over a fade, so
               // nothing reflows and the name is not cut again.
-              <span className="pointer-events-none relative flex min-w-0 flex-1 items-center gap-2">
-                {/* Fills the row and fades its last 24px instead of an ellipsis. */}
+              <span
+                className={cn(
+                  'pointer-events-none relative flex min-w-0 flex-1 items-center gap-2',
+                  RAIL_LABEL_FADE_CLASS
+                )}
+              >
+                {/* Fills the row and fades its last 24px instead of an ellipsis.
+                    Without a diff stat, the actions cover its end on hover and
+                    focus, so it fades out before them. */}
                 <span
-                  className="fade-end min-w-0 flex-1 font-medium text-secondary-foreground transition-colors duration-150 ease-out group-hover:text-foreground"
+                  className={cn(
+                    'fade-end min-w-0 flex-1 font-medium text-secondary-foreground transition-colors duration-150 ease-out group-hover:text-foreground',
+                    !diffStat &&
+                      'group-hover:fade-before-row-actions group-focus-within:fade-before-row-actions'
+                  )}
                   title={project.name}
                 >
                   {project.name}
                 </span>
+                {/* At least as wide as the actions (44px), so they take its
+                    place on hover and never cover the name. */}
                 {diffStat && (
-                  <span className="flex shrink-0">
+                  <span className="flex min-w-11 shrink-0 justify-end group-hover:invisible group-focus-within:invisible">
                     <ProjectDiffStat stat={diffStat} />
                   </span>
                 )}
-                {/* The fade ends in the row's own surface, the hover wash. It
-                    shows under the same conditions as the wash (hover and
-                    focus-within). */}
+                {/* The row surface shows behind them (the name fades out
+                    first), so a translucent Rail gets no solid patch. They
+                    show with the wash: hover and focus-within. */}
                 <span
-                  className="pointer-events-none absolute inset-y-0 right-0 hidden items-center gap-1 bg-gradient-to-l from-row-hover-solid from-60% to-transparent pl-6 group-hover:flex group-focus-within:flex [&>*]:pointer-events-auto"
+                  className="pointer-events-none absolute inset-y-0 right-0 hidden items-center gap-1 group-hover:flex group-focus-within:flex [&>*]:pointer-events-auto"
                   data-testid="project-row-actions"
                 >
                   <RailTooltip label="More actions">
@@ -235,7 +249,12 @@ export const ProjectItem = memo(function ProjectItem({
             {/* Status marks stay outside the name box: always visible, and the
                 needs-you pill stays clickable. The activity spinner yields to
                 the rename input. */}
-            <span className="pointer-events-none relative flex shrink-0 items-center gap-2 empty:hidden [&_button]:pointer-events-auto">
+            <span
+              className={cn(
+                'pointer-events-none relative flex shrink-0 items-center gap-2 empty:hidden [&_button]:pointer-events-auto',
+                RAIL_LABEL_FADE_CLASS
+              )}
+            >
               <ProjectStatusMarks
                 status={
                   isEditing && status.live === 'activity' ? { ...status, live: null } : status
@@ -243,22 +262,25 @@ export const ProjectItem = memo(function ProjectItem({
                 onOpenNeedsYou={onOpenNeedsYou}
               />
             </span>
-            {/* Always shown, unlike the hover actions. */}
+            {/* Always shown, unlike the hover actions. `relative` keeps it
+                above the row's absolute button, or that button takes the click. */}
             {!isEditing && (
-              <RailTooltip label={`New chat in ${project.name}`}>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onNewChat()
-                  }}
-                  className={cn(ROW_ACTION_CLASS, FOCUS_RING_CLASS)}
-                  aria-label={`New chat in ${project.name}`}
-                  data-testid="project-row-new-chat"
-                >
-                  <Plus size={12} aria-hidden="true" />
-                </button>
-              </RailTooltip>
+              <span className={cn('relative flex shrink-0', RAIL_LABEL_FADE_CLASS)}>
+                <RailTooltip label={`New chat in ${project.name}`}>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onNewChat()
+                    }}
+                    className={cn(ROW_ACTION_CLASS, FOCUS_RING_CLASS)}
+                    aria-label={`New chat in ${project.name}`}
+                    data-testid="project-row-new-chat"
+                  >
+                    <Plus size={12} aria-hidden="true" />
+                  </button>
+                </RailTooltip>
+              </span>
             )}
           </div>
         </ContextMenuTrigger>

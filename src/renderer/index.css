@@ -266,10 +266,9 @@
     --think-highlight: oklch(var(--foreground));
     --think-ease: ease-in-out;
 
-    /* Streaming word resolve (Streamdown blurIn). */
+    /* Streaming word fade (Streamdown fadeIn). */
     --stream-gap: 12ms;
     --stream-fade: 350ms;
-    --stream-blur: 1px;
     --stream-ease: cubic-bezier(0.22, 1, 0.36, 1);
 
     /* Accordion expand / collapse. Symmetric. */
@@ -463,6 +462,9 @@
   }
 
   html {
+    /* Same fill as body: Safari on iOS reads the html background for the
+       area behind its bars. */
+    background-color: oklch(var(--background));
     /* Crisp font rendering on Linux/Wayland (sub-pixel AA off by default) */
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -818,6 +820,38 @@
   scale: none;
 }
 
+/* Phone text floor (tactile-design "Phone", touch-and-accessibility).
+   On a touch phone (the same viewports as `useMobileWebShell`: narrow, or a
+   short landscape phone) small text is hard to read at arm's length, so
+   every size under 15px becomes 15px with a 24px line. `text-base` and
+   larger keep their size; fields stay at 16px (`pointer-coarse:text-base`)
+   so iOS does not zoom. A mouse or trackpad never matches, so the desktop
+   app and a narrow desktop window keep the dense 12/14px scale.
+   `--font-size-micro` drives `text-2xs` / `text-3xs` / `text-4xs`
+   (tailwind.config.ts). Unlayered, so it wins over the theme layer. */
+:root {
+  --font-size-micro: 0.75rem;
+}
+
+@media (pointer: coarse) and (max-width: 767px), (pointer: coarse) and (max-height: 499px) {
+  :root {
+    --font-size-micro: 0.9375rem;
+    --text-xs: 0.9375rem;
+    --text-xs--line-height: calc(24 / 15);
+    --text-sm: 0.9375rem;
+    --text-sm--line-height: calc(24 / 15);
+  }
+
+  /* Safari on iOS evens out every line of a `text-wrap: pretty` paragraph,
+     so reply lines break well before the right padding and the column
+     looks inset on the right. On a phone the lines fill to the padding,
+     so both sides look the same. Unlayered, so it wins over `.chat-prose`. */
+  .chat-prose,
+  .chat-streamdown {
+    text-wrap: wrap;
+  }
+}
+
 /* The model menu drives open and close with a transition. */
 [data-radix-popper-content-wrapper] > .termul-popover-transition {
   animation: none;
@@ -888,6 +922,13 @@
   overflow: hidden;
   white-space: nowrap;
   mask-image: linear-gradient(to right, black calc(100% - 24px), transparent);
+}
+
+/* `fade-end` that ends before a project row's hover actions (two 20px
+   buttons and a 4px gap = 44px, plus 4px of air), so the actions need no
+   backdrop. */
+@utility fade-before-row-actions {
+  mask-image: linear-gradient(to right, black calc(100% - 68px), transparent calc(100% - 48px));
 }
 
 /* `fade-end` for a label whose box hugs its text (a centred title, a label
@@ -1544,6 +1585,28 @@
     height: 0.875rem;
     flex-shrink: 0;
   }
+  /* Touch: the 24px code and table actions keep their look but get a 44px
+     hit area (an invisible ring 10px wide), and a press shows the hover ink. */
+  @media (pointer: coarse) {
+    .chat-streamdown [data-streamdown="code-block-actions"] button,
+    .chat-streamdown [data-streamdown="table-toolbar"] button {
+      position: relative;
+    }
+    .chat-streamdown [data-streamdown="code-block-actions"] button::after,
+    .chat-streamdown [data-streamdown="table-toolbar"] button::after {
+      content: "";
+      position: absolute;
+      inset: -0.625rem;
+    }
+    /* 20px apart so two hit areas never overlap. */
+    .chat-streamdown [data-streamdown="code-block-actions"] {
+      gap: 1.25rem;
+    }
+    .chat-streamdown [data-streamdown="code-block-actions"] button:active,
+    .chat-streamdown [data-streamdown="table-toolbar"] button:active {
+      color: oklch(var(--foreground));
+    }
+  }
   /* Fullscreen table toolbar is portaled to document.body, so it's outside
      .chat-streamdown. Keep a 44px hit area. */
   [data-streamdown="table-fullscreen"] button {
@@ -1967,19 +2030,18 @@
   }
 }
 
-/* Unlayered so this wins over streamdown/styles.css (imported first).
-   Streamdown prefixes the animation name: blurIn → sd-blurIn.
-   Blur settles from --stream-blur (1px). Duration and easing come from
-   the animated prop (--stream-fade, --stream-ease). The end state is
-   `filter: none` so settled words (kept by fill-mode `both`) do not each
-   hold a blur(0) filter and their own stacking context. */
-@keyframes sd-blurIn {
-  from {
-    opacity: 0;
-    filter: blur(var(--stream-blur));
-  }
-  to {
-    opacity: 1;
-    filter: none;
-  }
+/* Translucent Rail (macOS desktop, opt-in, `use-translucent-rail.ts`): the
+   window is transparent and the native sidebar material sits behind the
+   webview. The page and the shell frame let it through only while the shell
+   is on screen; the shell row paints its own solid surface, so the Rail is the
+   only glass. A 60% background tint keeps Rail text and row states readable on
+   any wallpaper. Unlayered so it wins over the `bg-background` utilities. */
+html[data-translucent-rail]:has([data-shell-frame]),
+html[data-translucent-rail]:has([data-shell-frame]) body,
+html[data-translucent-rail] [data-shell-frame] {
+  background-color: transparent;
+}
+
+html[data-translucent-rail] [data-shell-frame] [data-rail-surface] {
+  background-color: oklch(var(--background) / 0.6);
 }
