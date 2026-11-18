@@ -457,12 +457,15 @@ pub enum StopOutcome {
 /// A stop the engine could not deliver.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StopError {
+    /// No run of the caller's chat has this id.
+    NotFound,
     Failed(String),
 }
 
 impl std::fmt::Display for StopError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::NotFound => f.write_str("no such subagent in this chat"),
             Self::Failed(error) => write!(f, "could not stop the subagent: {error}"),
         }
     }

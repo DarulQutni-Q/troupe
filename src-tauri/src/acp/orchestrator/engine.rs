@@ -563,7 +563,7 @@ impl OrchestratorEngine {
         let root = self.caller_root(&caller);
         self.stop_run(&run, &root)
             .await
-            .unwrap_or(Err(StopError::Failed("no such run of this chat".to_string())))
+            .unwrap_or(Err(StopError::NotFound))
     }
 
     pub fn settings_view(&self) -> OrchestratorSettings {

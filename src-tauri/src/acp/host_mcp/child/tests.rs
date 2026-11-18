@@ -667,7 +667,7 @@ fn without_a_host_the_browser_tool_is_advertised_fail_closed() {
     }
 }
 
-const HOST_TOOLS: [&str; 15] = [
+const HOST_TOOLS: [&str; 20] = [
     "ask_user",
     "mcp_install",
     "automation_apply_ops",
@@ -683,6 +683,11 @@ const HOST_TOOLS: [&str; 15] = [
     "read_canvas_guide",
     "read_chat",
     "set_session_title",
+    "subagent_list_agents",
+    "subagent_start",
+    "subagent_status",
+    "subagent_stop",
+    "subagent_wait",
 ];
 
 pub(super) type ClientWriter = tokio::io::WriteHalf<tokio::io::DuplexStream>;

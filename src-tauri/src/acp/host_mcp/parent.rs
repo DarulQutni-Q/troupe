@@ -35,6 +35,7 @@ mod automation;
 mod canvas;
 mod mcp_install;
 mod read_chat;
+mod subagents;
 pub use ask::IdleSignal;
 use ask::PendingAsk;
 
@@ -669,6 +670,16 @@ impl HostPlanServer {
                     .await
             }
             FrameKind::ReadChat => self.read_chat(&real_session_id, req.read_chat).await,
+            FrameKind::Subagent => {
+                self.subagent_call(
+                    &auth.agent_id,
+                    &real_session_id,
+                    req.subagent_tool,
+                    req.subagent_input,
+                    hung_up,
+                )
+                .await
+            }
             FrameKind::AskUser => {
                 let Some(input) = req.ask else {
                     return FrameReply::err("ask_user frame needs a question");

@@ -32,6 +32,7 @@ pub mod mcp_install;
 pub mod parent;
 pub mod presence;
 pub mod read_chat;
+pub mod subagent_tools;
 
 #[cfg(test)]
 mod automation_tools_tests;
@@ -90,7 +91,10 @@ once with a short title and a kebab-case `branch` slug. When you need a decision
 details from the user, ask with the `ask_user` tool or your client's own question tool, not in \
 plain text. When the user gives you a Troupe chat ID or a copied chat reference, read that chat \
 with the `read_chat` tool. To install an MCP server from a link, a registry name, or \
-JSON, read it with your own tools and call `mcp_install`. The user approves on a card in the chat.";
+JSON, read it with your own tools and call `mcp_install`. The user approves on a card in the chat. \
+To hand a self-contained task to another installed agent, list them with \
+`subagent_list_agents`, start one with `subagent_start`, and collect its result with \
+`subagent_wait`.";
 
 /// The context budget Claude Code gives a server's `instructions`: it keeps
 /// this many UTF-16 code units (`CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH`,
@@ -201,6 +205,9 @@ pub enum FrameKind {
     ReadChat,
     /// `mcp_install`: show the approval card, then plan and commit on approve.
     McpInstall,
+    /// A `subagent_*` tool call, answered by the host orchestrator engine
+    /// for the calling chat.
+    Subagent,
 }
 
 /// One option the agent offers in an `ask_user` question.
@@ -408,6 +415,12 @@ pub struct FrameRequest {
     /// The catalog or import source of an `McpInstall` frame.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_install: Option<crate::mcp_catalog::FormRequest>,
+    /// The tool a `Subagent` frame serves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_tool: Option<subagent_tools::SubagentTool>,
+    /// A `Subagent` frame's tool arguments, parsed by the parent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_input: Option<serde_json::Value>,
 }
 
 /// Parent reply frame (one per connection). `result` carries the browser
