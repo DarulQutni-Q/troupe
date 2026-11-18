@@ -1099,7 +1099,12 @@ export const createAgentSlice: StateCreator<AcpState, [], [], AgentSliceState> =
       .map(([id]) => id)
     if (e.sessionId && !crashedSessions.includes(e.sessionId)) crashedSessions.push(e.sessionId)
     set((s) => {
-      const toolCalls = cancelRunningSubagents(s, crashedSessions, endedAt)
+      // Orchestrated children run as their own host processes; the host
+      // settles them and its settle card, not a local unexplained end, ends
+      // the row.
+      const toolCalls = cancelRunningSubagents(s, crashedSessions, endedAt, {
+        spareOrchestrated: true
+      })
       return toolCalls === s.toolCalls ? {} : { toolCalls }
     })
     if (
@@ -1248,7 +1253,12 @@ export const createAgentSlice: StateCreator<AcpState, [], [], AgentSliceState> =
     get().clearPendingSignIn(e.agentId)
     const endedAt = Date.now()
     set((s) => {
-      const toolCalls = cancelRunningSubagents(s, goneSessionIds, endedAt)
+      // Orchestrated children run as their own host processes; the host
+      // stops them when the parent agent goes, and its settle card (cancelled)
+      // ends the row.
+      const toolCalls = cancelRunningSubagents(s, goneSessionIds, endedAt, {
+        spareOrchestrated: true
+      })
       return toolCalls === s.toolCalls ? {} : { toolCalls }
     })
     // Persist closed status + transcript while maps still hold content, then

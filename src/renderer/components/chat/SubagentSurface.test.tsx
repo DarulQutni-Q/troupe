@@ -5,6 +5,7 @@ import type { ToolCall } from '@/lib/acp-api'
 import type { FilePathResolutionContext } from '@/lib/file-path-links'
 import {
   endedState,
+  orchestratedSubagentRecord,
   type SubagentRecordOverrides,
   subagentToolCall
 } from '@/lib/test-utils/subagent'
@@ -542,5 +543,98 @@ describe('opening the subagent panel', () => {
     view.update({ toolCalls: [] })
     expect(screen.queryByTestId('subagent-panel')).toBeNull()
     expect(animate).not.toHaveBeenCalled()
+  })
+})
+
+describe('orchestrated subagents in the transcript', () => {
+  const CODEX_CONFIG = {
+    id: 'acp-registry:codex-acp',
+    name: 'Codex',
+    command: 'codex',
+    args: [],
+    env: {},
+    templateId: 'codex-acp'
+  }
+
+  function orchestrated(
+    id: string,
+    record: Parameters<typeof orchestratedSubagentRecord>[0] = {},
+    call: Partial<ToolCall> = {}
+  ): ToolCall {
+    seq += 1
+    return {
+      toolCallId: id,
+      title: 'Task',
+      kind: 'think',
+      status: 'in_progress',
+      seq,
+      timestamp: 1_200,
+      ...call,
+      subagent: orchestratedSubagentRecord({ ...record, dispatchToolCallId: id })
+    }
+  }
+
+  beforeEach(() => {
+    mobileRef.current = false
+    seq = 10
+    useOverlayStackStore.setState({ stack: [] })
+    useAcpStore.setState({ agentConfigs: [CODEX_CONFIG] })
+  })
+  afterEach(async () => {
+    cleanup()
+    await act(() => new Promise((resolve) => setTimeout(resolve, 0)))
+    useAcpStore.setState({ toolCalls: {}, agentConfigs: [] })
+  })
+
+  it('runs the row on the child identity: its glyph, agent, model and workspace chip', () => {
+    renderChat({
+      toolCalls: [
+        orchestrated('sub-1', {
+          model: 'gpt-5.5',
+          usage: { toolUses: 6 }
+        }),
+        child('sub-1', 'c1')
+      ]
+    })
+
+    const card = row(/^Implement the retry fix.*Working/)
+    expect(card.querySelector('[data-subagent-avatar] svg')).not.toBeNull()
+    expect(card).toHaveTextContent('worktree · troupe/sub/retry-fix')
+    // The workspace chip replaces the role and background chips.
+    expect(card).not.toHaveTextContent('background')
+    expect(card).toHaveTextContent('Codex · gpt-5.5 · Read refresh.rs · 6 tools')
+  })
+
+  it('docks the panel with the child identity, its workspace and the diff summary', () => {
+    renderChat({
+      toolCalls: [
+        orchestrated(
+          'sub-1',
+          {
+            model: 'gpt-5.5',
+            usage: { toolUses: 6 },
+            state: endedState(),
+            workspace: { diffStat: '3 files changed, +42 -7' }
+          },
+          {
+            status: 'completed',
+            rawOutput: { text: 'Done. Committed on the branch below; nothing merged.' }
+          }
+        )
+      ]
+    })
+    fireEvent.click(row(/^Implement the retry fix.*Done/))
+
+    expect(panel()).toHaveTextContent('Codex · gpt-5.5 · 6 tools')
+    expect(within(panel()).getByRole('heading', { name: 'Workspace' })).toBeVisible()
+    expect(within(panel()).getByText('/work/.termul/worktrees/sub-retry-fix')).toBeVisible()
+    expect(within(panel()).getByText('main @ 42be01e, with uncommitted changes')).toBeVisible()
+
+    const result = within(panel()).getByRole('heading', { name: 'Result' }).closest('section')
+    expect(result).toHaveTextContent('3 files changed')
+    expect(result?.querySelector('.text-success')).toHaveTextContent('+42')
+    expect(result?.querySelector('.text-destructive')).toHaveTextContent('−7')
+    // The branch shows twice: in the Workspace section and the diff summary.
+    expect(within(panel()).getAllByText('troupe/sub/retry-fix')).toHaveLength(2)
   })
 })
