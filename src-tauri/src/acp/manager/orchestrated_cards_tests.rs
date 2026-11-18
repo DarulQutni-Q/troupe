@@ -268,14 +268,12 @@ impl EventSink for EventLog {
 /// for the chat session. `None` when the host has no python (the loop tests
 /// opt out), like `native_subagents_loop_tests`.
 async fn upsert_through_a_real_driver() -> Option<Vec<(String, Option<String>, Value)>> {
-    let Some(python) = ["python3", "python"].into_iter().find(|candidate| {
+    let python = ["python3", "python"].into_iter().find(|candidate| {
         std::process::Command::new(candidate)
             .arg("--version")
             .output()
             .is_ok_and(|output| output.status.success())
-    }) else {
-        return None;
-    };
+    })?;
     let root = tempfile::tempdir().expect("tempdir");
     let script = root.path().join("agent.py");
     std::fs::write(

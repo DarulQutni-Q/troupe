@@ -110,7 +110,7 @@ fn inputs_use_camel_case() {
 }
 
 #[test]
-fn a_malformed_input_is_invalid_input() {
-    let reply = parse::<SubagentRefInput>(Some(json!({ "id": "sub-1" }))).unwrap_err();
-    assert_eq!(reply.code.as_deref(), Some("invalid_input"));
+fn a_malformed_input_names_the_missing_field() {
+    let message = parse::<SubagentRefInput>(Some(json!({ "id": "sub-1" }))).unwrap_err();
+    assert!(message.contains("subagentId"), "{message}");
 }

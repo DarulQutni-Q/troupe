@@ -36,11 +36,11 @@ fn not_found() -> FrameReply {
     refusal("not_found", "no such subagent in this chat")
 }
 
-fn parse<T: DeserializeOwned>(input: Option<Value>) -> Result<T, FrameReply> {
+/// The tool's arguments, or the `invalid_input` message.
+fn parse<T: DeserializeOwned>(input: Option<Value>) -> Result<T, String> {
     // A tool with only optional fields may arrive with no arguments.
     let input = input.unwrap_or_else(|| json!({}));
-    serde_json::from_value(input)
-        .map_err(|error| refusal("invalid_input", format!("invalid arguments: {error}")))
+    serde_json::from_value(input).map_err(|error| format!("invalid arguments: {error}"))
 }
 
 fn start_refusal(error: &StartError) -> FrameReply {
@@ -120,19 +120,19 @@ impl HostPlanServer {
             SubagentTool::ListAgents => list_agents(&engine),
             SubagentTool::Start => match parse::<SubagentStartInput>(input) {
                 Ok(input) => start(engine, caller, input).await,
-                Err(reply) => reply,
+                Err(message) => refusal("invalid_input", message),
             },
             SubagentTool::Wait => match parse::<SubagentWaitInput>(input) {
                 Ok(input) => wait(&engine, caller, input, hung_up).await,
-                Err(reply) => reply,
+                Err(message) => refusal("invalid_input", message),
             },
             SubagentTool::Status => match parse::<SubagentStatusInput>(input) {
                 Ok(input) => status(&engine, caller, input),
-                Err(reply) => reply,
+                Err(message) => refusal("invalid_input", message),
             },
             SubagentTool::Stop => match parse::<SubagentRefInput>(input) {
                 Ok(input) => stop(&engine, caller, input).await,
-                Err(reply) => reply,
+                Err(message) => refusal("invalid_input", message),
             },
         };
         if !reply.ok {
