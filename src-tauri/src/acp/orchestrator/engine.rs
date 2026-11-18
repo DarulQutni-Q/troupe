@@ -9,12 +9,12 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use tokio::runtime::Handle;
 
-use crate::acp::config::{AgentConfig, AgentId};
+use crate::acp::config::{AgentConfig, AgentId, SessionId};
 use crate::acp::install::AcpInstallService;
 use crate::acp::manager::{AcpManager, ChildOrigin, SessionCreationContext};
 use crate::acp::orchestrator::lifecycle::{now_millis, ChildLease};
 use crate::acp::orchestrator::run::{
-    bounded, AgentListing, CallerRef, ChildRun, RunBody, RunCapture, RunId, RunLedger,
+    bounded, AgentListing, CallerRef, ChildRun, RunBody, RunCapture, RunEnd, RunId, RunLedger,
     RunLookupError, RunSummary, StartError, StartRequest, Starting, StopError, StopOutcome,
     WaitOutcome,
 };
@@ -61,6 +61,7 @@ impl OrchestratorEngine {
     /// Command, args and env never leave the host.
     pub fn list_agents(&self) -> Vec<AgentListing> {
         let settings = self.settings.get();
+        self.registry.reload();
         let allowed = |key: &str| settings.agents.get(key).copied().unwrap_or(true);
         let mut agents: Vec<AgentListing> = self
             .registry
@@ -120,6 +121,9 @@ impl OrchestratorEngine {
     /// Resolve the launch config of `agent`: the known-agents registry
     /// first, then the installed-agents overlay.
     fn resolve_agent(&self, agent: &str) -> Result<AgentConfig, StartError> {
+        // The spawn path records launch configs into the automation
+        // service's registry; read the file it writes, not a startup copy.
+        self.registry.reload();
         if let Some(config) = self.registry.resolve(agent) {
             return Ok(config);
         }
@@ -245,11 +249,16 @@ impl OrchestratorEngine {
                 Err(StartError::SpawnFailed("starting the subagent timed out".to_string()))
             }),
             () = cancel.cancelled() => Err(StartError::SpawnFailed(
-                "the chat closed while the subagent was starting".to_string(),
+                "the subagent was stopped while it was starting".to_string(),
             )),
         };
         if let Err(error) = &outcome {
-            self.abort_start(&run, &progress, error).await;
+            let end = if cancel.is_cancelled() {
+                RunEnd::Cancelled
+            } else {
+                RunEnd::Failed(bounded(&error.to_string(), 512))
+            };
+            self.abort_start(&run, &progress, end).await;
         }
         drop(reservation);
         outcome
@@ -348,7 +357,13 @@ impl OrchestratorEngine {
         let project_id = self.project_id(&root);
         let spawned = self
             .manager
-            .spawn_private(config, project_id.as_deref(), sinks)
+            .spawn_private(
+                config,
+                project_id.as_deref(),
+                // The chat's own Claude account, as its agent runs on.
+                &crate::acp::claude_agent::LaunchChat::Existing(SessionId(root.clone())),
+                sinks,
+            )
             .await
             .map_err(|error| {
                 log::warn!("[orchestrator] agent {agent_name} spawn failed: {error}");

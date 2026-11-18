@@ -880,14 +880,11 @@ impl AcpManager {
         &self,
         mut config: AgentConfig,
         project_id: Option<&str>,
+        chat: &crate::acp::claude_agent::LaunchChat,
         sinks: Vec<Arc<dyn EventSink>>,
     ) -> Result<SpawnOutcome, String> {
         let (host_auth_ready, _) = self
-            .prepare_spawn_config(
-                &mut config,
-                project_id,
-                &crate::acp::claude_agent::LaunchChat::None,
-            )
+            .prepare_spawn_config(&mut config, project_id, chat)
             .await?;
         self.spawn_with_sinks(config, host_auth_ready, sinks, None)
             .await

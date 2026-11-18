@@ -12,7 +12,7 @@ use crate::acp::config::AgentId;
 use crate::acp::manager::{AcpManager, StartedPrompt};
 use crate::acp::orchestrator::engine::{OrchestratorEngine, StartProgress};
 use crate::acp::orchestrator::run::{bounded, RunBody, RunEnd, RunId};
-use crate::acp::orchestrator::run::{StartError, StopError, StopOutcome};
+use crate::acp::orchestrator::run::{StopError, StopOutcome};
 use crate::acp::subagents::SubagentWorkspaceMode;
 
 /// After a stop, how long the cancel has to settle before the child is
@@ -22,13 +22,13 @@ const STOP_BACKSTOP: std::time::Duration = std::time::Duration::from_secs(10);
 impl OrchestratorEngine {
     /// Clean up a start that failed, timed out or was cancelled. Nothing
     /// ran yet: no prompt was accepted. An announced run (its card is out)
-    /// settles as Failed; an unannounced one is forgotten. The child is
+    /// settles with `end`; an unannounced one is forgotten. The child is
     /// killed and the worktree made for it is removed with its branch.
     pub(super) async fn abort_start(
         self: &Arc<Self>,
         run: &RunId,
         progress: &Mutex<StartProgress>,
-        error: &StartError,
+        end: RunEnd,
     ) {
         let StartProgress { child, worktree } = std::mem::take(&mut *progress.lock());
         let announced = {
@@ -49,8 +49,7 @@ impl OrchestratorEngine {
             announced
         };
         if announced {
-            self.finish(run, RunEnd::Failed(bounded(&error.to_string(), 512)))
-                .await;
+            self.finish(run, end).await;
         }
         if let Some(child) = child {
             self.manager.kill_detached(&child);
@@ -151,8 +150,9 @@ impl OrchestratorEngine {
         run: &RunId,
         root: &str,
     ) -> Option<Result<StopOutcome, StopError>> {
-        let cancel = {
+        let (cancel, starting) = {
             let mut ledger = self.ledger.lock();
+            let starting = ledger.starting.get(run).map(|start| start.cancel.clone());
             let entry = ledger.runs.get_mut(run)?;
             if entry.root != root {
                 return None;
@@ -160,10 +160,19 @@ impl OrchestratorEngine {
             if !entry.is_live() {
                 return Some(Ok(StopOutcome::AlreadyEnded));
             }
-            entry.begin_stop(now_millis())
+            (entry.begin_stop(now_millis()), starting)
         };
+        // A run still starting has its start cancelled: the start cleans up
+        // and settles it, and a prompt it was about to send never goes out.
+        if let Some(starting) = &starting {
+            starting.cancel();
+        }
         let Some((child_agent, session)) = cancel else {
-            return Some(Ok(StopOutcome::AlreadyEnded));
+            return Some(Ok(if starting.is_some() {
+                StopOutcome::Sent
+            } else {
+                StopOutcome::AlreadyEnded
+            }));
         };
         self.arm_backstop(run.clone());
         let result = self

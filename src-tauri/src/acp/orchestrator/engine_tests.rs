@@ -581,3 +581,64 @@ async fn a_finished_start_frees_its_slot() {
         "a failed start releases its reservation"
     );
 }
+
+#[tokio::test]
+async fn an_agent_recorded_after_startup_is_listed_and_resolved() {
+    let Some(test) = refusal_engine() else {
+        return;
+    };
+    let engine = &test.engine;
+    // The spawn path records into the automation service's registry, which
+    // writes the same file; the engine must see it without a restart.
+    let writer = crate::automation::agents::AgentRegistry::open(
+        test._data.path().join(crate::automation::agents::FILE_NAME),
+    );
+    writer.record(&AgentConfig {
+        config_id: Some("late-agent".to_string()),
+        name: "Late Agent".to_string(),
+        command: "late".to_string(),
+        args: Vec::new(),
+        env: std::collections::HashMap::new(),
+        allow_terminal: false,
+    });
+    assert!(engine
+        .list_agents()
+        .iter()
+        .any(|agent| agent.name == "Late Agent"));
+    let key = crate::automation::agents::agent_key(&AgentConfig {
+        config_id: Some("late-agent".to_string()),
+        name: "Late Agent".to_string(),
+        command: "late".to_string(),
+        args: Vec::new(),
+        env: std::collections::HashMap::new(),
+        allow_terminal: false,
+    });
+    assert!(engine.resolve_agent(&key).is_ok());
+}
+
+#[tokio::test]
+async fn stopping_a_run_that_is_still_starting_cancels_the_start() {
+    let Some(test) = refusal_engine() else {
+        return;
+    };
+    let engine = &test.engine;
+    let run = seeded_run(engine, "child-starting", 1);
+    let cancel = tokio_util::sync::CancellationToken::new();
+    {
+        let mut ledger = engine.ledger.lock();
+        ledger.runs.get_mut(&run).expect("seeded").body = RunBody::Spawning {
+            child_agent: AgentId("agent-seeded".to_string()),
+        };
+        ledger.starting.insert(
+            run.clone(),
+            crate::acp::orchestrator::run::Starting {
+                root: CHAT.to_string(),
+                parent_agent: AgentId("agent-parent".to_string()),
+                cancel: cancel.clone(),
+            },
+        );
+    }
+    let outcome = engine.stop_from_ui(CHAT, run.as_str()).await;
+    assert_eq!(outcome, Some(Ok(crate::acp::orchestrator::StopOutcome::Sent)));
+    assert!(cancel.is_cancelled(), "the start is cancelled, not reported ended");
+}

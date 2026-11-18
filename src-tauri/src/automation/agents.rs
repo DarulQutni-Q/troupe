@@ -35,6 +35,29 @@ pub fn agent_key(config: &AgentConfig) -> String {
     }
 }
 
+/// The registry file's agents. A missing file is empty; an unreadable one
+/// is copied aside and read as empty, so a corrupt file never blocks boot.
+fn load(path: &std::path::Path) -> BTreeMap<String, AgentConfig> {
+    match std::fs::read(path) {
+        Ok(bytes) => match serde_json::from_slice::<RegistryFile>(&bytes) {
+            Ok(file) => file.agents,
+            Err(error) => {
+                let backup = atomic_file::backup_corrupt(path, &bytes);
+                log::warn!(
+                    "[Automation] known-agents file is corrupt ({error}); starting empty (backup: {})",
+                    backup.is_ok()
+                );
+                BTreeMap::new()
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+        Err(error) => {
+            log::warn!("[Automation] known-agents file unreadable: {error}");
+            BTreeMap::new()
+        }
+    }
+}
+
 pub struct AgentRegistry {
     /// `None` keeps the registry in memory only (tests).
     path: Option<PathBuf>,
@@ -46,28 +69,20 @@ impl AgentRegistry {
     /// copied aside and the registry starts empty, so a corrupt file never
     /// blocks boot.
     pub fn open(path: PathBuf) -> Self {
-        let agents = match std::fs::read(&path) {
-            Ok(bytes) => match serde_json::from_slice::<RegistryFile>(&bytes) {
-                Ok(file) => file.agents,
-                Err(error) => {
-                    let backup = atomic_file::backup_corrupt(&path, &bytes);
-                    log::warn!(
-                        "[Automation] known-agents file is corrupt ({error}); starting empty (backup: {})",
-                        backup.is_ok()
-                    );
-                    BTreeMap::new()
-                }
-            },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
-            Err(error) => {
-                log::warn!("[Automation] known-agents file unreadable: {error}");
-                BTreeMap::new()
-            }
-        };
+        let agents = load(&path);
         log::info!("[Automation] known agents loaded: {}", agents.len());
         Self {
             path: Some(path),
             agents: Mutex::new(agents),
+        }
+    }
+
+    /// Re-read the file, for a reader whose copy another registry on the
+    /// same file writes to (the subagent orchestrator reads what the spawn
+    /// path records). In-memory registries keep their entries.
+    pub fn reload(&self) {
+        if let Some(path) = &self.path {
+            *self.agents.lock() = load(path);
         }
     }
 
