@@ -141,6 +141,9 @@ pub(crate) struct ChildRun {
     pub(crate) model: Option<String>,
     pub(crate) created_ms: u64,
     pub(crate) workspace: SubagentWorkspace,
+    /// The snapshot commit a worktree run started from; the settle diff is
+    /// taken against it. Absent for shared runs and empty repositories.
+    pub(crate) base_commit: Option<String>,
     pub(crate) body: RunBody,
     pub(crate) result: Option<String>,
     pub(crate) waiters: Vec<oneshot::Sender<()>>,

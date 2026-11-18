@@ -88,11 +88,23 @@ impl OrchestratorEngine {
                 });
             (entry.parent_agent.clone(), entry.record(), content)
         };
+        let base_commit = record
+            .workspace
+            .as_ref()
+            .filter(|workspace| workspace.mode == SubagentWorkspaceMode::Worktree)
+            .and_then(|_| {
+                self.ledger
+                    .lock()
+                    .runs
+                    .get(run)
+                    .and_then(|entry| entry.base_commit.clone())
+            });
         if let Some(workspace) = &mut record.workspace {
             if workspace.mode == SubagentWorkspaceMode::Worktree {
                 if let Some(path) = workspace.path.clone() {
                     workspace.diff_stat =
-                        crate::acp::orchestrator::worktree::diff_stat(&path).await;
+                        crate::acp::orchestrator::worktree::diff_stat(&path, base_commit.as_deref())
+                            .await;
                 }
             }
         }

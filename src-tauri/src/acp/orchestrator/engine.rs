@@ -276,17 +276,20 @@ impl OrchestratorEngine {
         let agent_name = config.name.clone();
         let config_id = config.config_id.clone();
         let cwd = self.caller_cwd(caller).await?;
-        let workspace = match req.workspace {
-            SubagentWorkspaceMode::Shared => SubagentWorkspace {
-                mode: SubagentWorkspaceMode::Shared,
-                path: None,
-                branch: None,
-                base: None,
-                diff_stat: None,
-            },
+        let (workspace, base_commit) = match req.workspace {
+            SubagentWorkspaceMode::Shared => (
+                SubagentWorkspace {
+                    mode: SubagentWorkspaceMode::Shared,
+                    path: None,
+                    branch: None,
+                    base: None,
+                    diff_stat: None,
+                },
+                None,
+            ),
             SubagentWorkspaceMode::Worktree => {
                 match crate::acp::orchestrator::worktree::prepare(&cwd, &run).await {
-                    Ok(workspace) => workspace,
+                    Ok(prepared) => (prepared.workspace, prepared.base_commit),
                     Err(error) => return Err(StartError::WorkspaceUnavailable(error)),
                 }
             }
@@ -333,6 +336,7 @@ impl OrchestratorEngine {
             model: req.model.clone(),
             created_ms: now_millis(),
             workspace,
+            base_commit,
             body: RunBody::Spawning {
                 child_agent: child_agent.clone(),
             },

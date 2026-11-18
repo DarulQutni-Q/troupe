@@ -70,6 +70,38 @@ pub(super) fn run_git_output(args: &[&str], cwd: Option<&str>) -> Result<GitOutp
     })
 }
 
+/// Run a git command with extra environment variables (the subagent
+/// snapshot's temporary `GIT_INDEX_FILE`) and return its trimmed stdout on
+/// success. Same invocation rules as [`run_git_output`]: `color.ui=false`
+/// pinned, `cwd` path-normalized. The caller owns judging success; the
+/// error text is the bounded stderr line.
+pub(crate) fn run_git_env_success(
+    args: &[&str],
+    cwd: Option<&str>,
+    env: &[(&str, &str)],
+) -> Result<String, String> {
+    let git = which_git().map_err(|error| error.to_string())?;
+    let mut cmd = quiet_command(&git);
+    cmd.arg("-c").arg("color.ui=false");
+    cmd.args(args);
+    if let Some(dir) = cwd {
+        cmd.current_dir(crate::path_validation::git_path(dir).as_ref());
+    }
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
+    let output = cmd.output().map_err(|error| error.to_string())?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let first = stderr.lines().find(|line| !line.trim().is_empty());
+        let text = first.unwrap_or_default().trim();
+        let bounded: String = text.chars().take(200).collect();
+        Err(bounded)
+    }
+}
+
 /// Run a git command and return (stdout, stderr, success).
 pub(super) fn run_git(args: &[&str], cwd: Option<&str>) -> Result<(String, String), WorktreeError> {
     let output = run_git_output(args, cwd)?;

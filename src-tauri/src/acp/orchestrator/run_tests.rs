@@ -28,6 +28,7 @@ fn child_run(body: RunBody) -> ChildRun {
             base: Some("main @ 42be01e, with uncommitted changes".to_string()),
             diff_stat: None,
         },
+        base_commit: Some("snap-oid".to_string()),
         body,
         result: None,
         waiters: Vec::new(),

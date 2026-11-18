@@ -344,6 +344,7 @@ fn seeded_run(engine: &OrchestratorEngine, session: &str, depth: u8) -> RunId {
             base: None,
             diff_stat: None,
         },
+        base_commit: None,
         body: RunBody::Live {
             child_agent: AgentId("agent-seeded".to_string()),
             session: SessionId(session.to_string()),
@@ -469,7 +470,7 @@ async fn status_and_wait_refuse_another_chats_run() {
 }
 
 #[tokio::test]
-async fn worktree_mode_is_refused_until_the_workspace_module_lands() {
+async fn worktree_mode_is_refused_outside_a_repository() {
     let Some(test) = refusal_engine() else {
         return;
     };
