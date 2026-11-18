@@ -50,7 +50,7 @@ Each row shows the file name, its folder, and how many lines were added and remo
 
 The list shows the first 4 files. Click **Show N more**, or **Open in Git**, to open the **Changes** panel on the right with all of them. On a phone this opens the Git sheet. To stage and commit the changes, use the **Changes** panel. See [Git](/docs/git).
 
-To throw away this chat's changes, click **Discard all**. Troupe asks first, because new files are deleted and your own edits in these files go too. Click **Discard N files** to confirm, or **Cancel**. You can't undo a discard. **Discard all** is off while the agent works. It is not shown outside a Git repository, or when the server does not accept changes from your device.
+To throw away this chat's changes, click **Discard all**. Troupe asks first, because new files are deleted and unstaged edits in these files go too, also your own. Staged changes stay. Click **Discard N files** to confirm, or **Cancel**. You can't undo a discard. **Discard all** is off while the agent works. It is not shown outside a Git repository, or when the server does not accept changes from your device.
 
 A [quick chat](/docs/agents/start-a-chat#start-a-quick-chat) has no changed files part, because it has no project.
 
@@ -146,7 +146,7 @@ Hover a message to see its buttons. The last message in the chat always shows th
 
 ![Your message, "Try a discount parameter on cartTotal", with the Edit and Copy buttons below it.](/screenshots/agents-message-actions.png)
 
-If the chat stopped, **Retry** starts the agent again before it sends your message. When a turn ends with an error, a notice at the top of the message box says "The last turn did not finish." and shows the error. It can have its own **Retry** or **Resume chat** button. Click **Details** to see the error code and data, or the **×** button to dismiss the notice.
+If the chat stopped, **Retry** starts the agent again before it sends your message. When a turn ends with an error, a notice at the top of the message box says "The last turn did not finish." and shows the error. It can have its own **Retry** or **Resume chat** button. When the error has a code or data, click **Details** to see them. Click the **×** button to dismiss the notice.
 
 Code blocks in a reply have their own **Copy** and **Download** buttons. Tables have copy, download, and **View fullscreen** buttons.
 
