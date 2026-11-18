@@ -443,8 +443,9 @@ async fn start_refuses_each_settings_gate() {
     engine.ledger.lock().remove(&seeded);
 
     let nested = seeded_run(engine, "sess-nested", 2);
+    // A nested call comes from the child agent that runs the seeded session.
     let nested_caller = crate::acp::orchestrator::CallerRef {
-        agent: test.caller.agent.clone(),
+        agent: AgentId("agent-seeded".to_string()),
         session: SessionId("sess-nested".to_string()),
     };
     assert_eq!(

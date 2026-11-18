@@ -600,7 +600,9 @@ fn change(state: &mut DriverState, child: &str, edit: impl FnOnce(&mut Subagent)
         return SessionRoute::Claimed(Vec::new());
     };
     sync_route(state, child, &after.state);
-    let status = card_status(&after.state).filter(|status| card_status(&before.state) != Some(*status));
+    let status = (before.state != after.state)
+        .then(|| card_status(&after.state))
+        .flatten();
     let title = (before.title != after.title).then_some(after.title.as_str());
     SessionRoute::Claimed(vec![record_update(&after, status, title)])
 }
