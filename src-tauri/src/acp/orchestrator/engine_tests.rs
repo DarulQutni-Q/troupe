@@ -642,3 +642,21 @@ async fn stopping_a_run_that_is_still_starting_cancels_the_start() {
     assert_eq!(outcome, Some(Ok(crate::acp::orchestrator::StopOutcome::Sent)));
     assert!(cancel.is_cancelled(), "the start is cancelled, not reported ended");
 }
+
+#[tokio::test]
+async fn a_second_stop_before_the_run_settles_answers_sent() {
+    let Some(test) = refusal_engine() else {
+        return;
+    };
+    let engine = &test.engine;
+    let run = seeded_run(engine, "child-stopping", 1);
+    engine.ledger.lock().runs.get_mut(&run).expect("seeded").body = RunBody::Stopping {
+        child_agent: AgentId("agent-seeded".to_string()),
+        session: SessionId("child-stopping".to_string()),
+        since_ms: 1,
+    };
+    assert_eq!(
+        engine.stop_from_ui(CHAT, run.as_str()).await,
+        Some(Ok(crate::acp::orchestrator::StopOutcome::Sent))
+    );
+}

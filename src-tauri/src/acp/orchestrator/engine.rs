@@ -326,17 +326,39 @@ impl OrchestratorEngine {
                 None,
             ),
             SubagentWorkspaceMode::Worktree => {
-                match crate::acp::orchestrator::worktree::prepare(&cwd, &run).await {
-                    Ok(prepared) => {
+                // On its own task: git keeps working when a cancel or timeout
+                // drops this start, so the task, not this future, hands the
+                // worktree over (or removes it, when the start was abandoned).
+                let prepare = {
+                    let cwd = cwd.clone();
+                    let run = (*run).clone();
+                    let progress = Arc::clone(&progress);
+                    tokio::spawn(async move {
+                        let prepared = crate::acp::orchestrator::worktree::prepare(&cwd, &run).await?;
                         if let (Some(path), Some(branch)) =
                             (&prepared.workspace.path, &prepared.workspace.branch)
                         {
-                            progress.lock().worktree =
-                                Some((cwd.clone(), path.clone(), branch.clone()));
+                            let made = (cwd.clone(), path.clone(), branch.clone());
+                            let abandoned = {
+                                let mut progress = progress.lock();
+                                if !progress.abandoned {
+                                    progress.worktree = Some(made.clone());
+                                }
+                                progress.abandoned
+                            };
+                            if abandoned {
+                                crate::acp::orchestrator::worktree::discard(made.0, made.1, made.2)
+                                    .await;
+                                return Err("the start was abandoned".to_string());
+                            }
                         }
-                        (prepared.workspace, prepared.base_commit)
-                    }
-                    Err(error) => return Err(StartError::WorkspaceUnavailable(error)),
+                        Ok(prepared)
+                    })
+                };
+                match prepare.await {
+                    Ok(Ok(prepared)) => (prepared.workspace, prepared.base_commit),
+                    Ok(Err(error)) => return Err(StartError::WorkspaceUnavailable(error)),
+                    Err(error) => return Err(StartError::WorkspaceUnavailable(error.to_string())),
                 }
             }
         };
@@ -629,6 +651,9 @@ pub(super) struct StartProgress {
     pub(super) child: Option<AgentId>,
     /// `(repository root, worktree path, branch)`.
     pub(super) worktree: Option<(String, String, String)>,
+    /// Set by the cleanup: a worktree finished after it is removed by the
+    /// task that made it.
+    pub(super) abandoned: bool,
 }
 
 /// A held capacity slot; dropping it frees the slot.

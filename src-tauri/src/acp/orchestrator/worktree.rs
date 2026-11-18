@@ -2,7 +2,7 @@
 //! (including uncommitted changes) that the child works in, kept after
 //! settle for review. The sweep removes abandoned worktrees at startup.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tokio::runtime::Handle;
 
@@ -151,16 +151,10 @@ pub(crate) async fn sweep_roots(roots: Vec<PathBuf>) {
                 if !entry.name.starts_with("sub-") || !entry.branch.starts_with("troupe/sub/") {
                     continue;
                 }
-                let modified = std::fs::metadata(&entry.path)
-                    .and_then(|meta| meta.modified())
-                    .ok();
-                let Some(modified) = modified else {
-                    continue;
-                };
-                let age = std::time::SystemTime::now()
-                    .duration_since(modified)
-                    .unwrap_or_default();
-                if age < SWEEP_AGE {
+                let cutoff = std::time::SystemTime::now()
+                    .checked_sub(SWEEP_AGE)
+                    .unwrap_or(std::time::UNIX_EPOCH);
+                if touched_since(Path::new(&entry.path), cutoff) {
                     continue;
                 }
                 match remove_with_branch(&root_text, &entry.path, &entry.branch) {
@@ -179,6 +173,44 @@ pub(crate) async fn sweep_roots(roots: Vec<PathBuf>) {
     })
     .await
     .ok();
+}
+
+/// Whether anything under `dir` (the directory itself included, `.git`
+/// excluded) changed after `cutoff`. A directory's own mtime does not move
+/// when a file deeper in it is edited, so the walk looks at every entry and
+/// stops at the first recent one. An unreadable entry counts as recent: the
+/// sweep never removes what it cannot judge.
+fn touched_since(dir: &Path, cutoff: std::time::SystemTime) -> bool {
+    let recent = |path: &Path| {
+        std::fs::symlink_metadata(path)
+            .and_then(|meta| meta.modified())
+            .map_or(true, |modified| modified > cutoff)
+    };
+    if recent(dir) {
+        return true;
+    }
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(current) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&current) else {
+            return true;
+        };
+        for entry in entries {
+            let Ok(entry) = entry else {
+                return true;
+            };
+            if entry.file_name() == ".git" {
+                continue;
+            }
+            let path = entry.path();
+            if recent(&path) {
+                return true;
+            }
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                pending.push(path);
+            }
+        }
+    }
+    false
 }
 
 /// Remove the worktree of a run whose task never started, and its branch.

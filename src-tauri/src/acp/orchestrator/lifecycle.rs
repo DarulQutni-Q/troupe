@@ -30,7 +30,11 @@ impl OrchestratorEngine {
         progress: &Mutex<StartProgress>,
         end: RunEnd,
     ) {
-        let StartProgress { child, worktree } = std::mem::take(&mut *progress.lock());
+        let (child, worktree) = {
+            let mut progress = progress.lock();
+            progress.abandoned = true;
+            (progress.child.take(), progress.worktree.take())
+        };
         let announced = {
             let mut ledger = self.ledger.lock();
             let announced = match ledger.runs.get_mut(run) {
@@ -167,12 +171,10 @@ impl OrchestratorEngine {
         if let Some(starting) = &starting {
             starting.cancel();
         }
+        // Live with no new cancel target: still starting (cancelled above)
+        // or already stopping. Either way the run has not settled yet.
         let Some((child_agent, session)) = cancel else {
-            return Some(Ok(if starting.is_some() {
-                StopOutcome::Sent
-            } else {
-                StopOutcome::AlreadyEnded
-            }));
+            return Some(Ok(StopOutcome::Sent));
         };
         self.arm_backstop(run.clone());
         let result = self

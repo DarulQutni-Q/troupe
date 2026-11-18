@@ -148,13 +148,7 @@ async fn the_sweep_removes_aged_sub_worktrees_and_their_branches() {
     let prepared = prepare(&root, &run).await.expect("the worktree prepares");
     let path = prepared.workspace.path.expect("the worktree path");
     let branch = prepared.workspace.branch.expect("the branch");
-    let aged = std::process::Command::new("touch")
-        .arg("-d")
-        .arg("8 days ago")
-        .arg(&path)
-        .status()
-        .expect("touch runs");
-    assert!(aged.success());
+    age_tree(Path::new(&path));
     sweep_roots(vec![dir.path().to_path_buf()]).await;
     assert!(!Path::new(&path).exists(), "the aged worktree is removed");
     let branches = git(dir.path(), &["branch", "--list", &branch]);
@@ -183,4 +177,32 @@ async fn discard_removes_an_unused_worktree_and_its_branch() {
     discard(root, path.clone(), branch.clone()).await;
     assert!(!Path::new(&path).exists(), "the worktree is removed");
     assert!(git(dir.path(), &["branch", "--list", &branch]).is_empty());
+}
+
+/// Set every entry under `dir`, `dir` included, 8 days back.
+#[cfg(unix)]
+fn age_tree(dir: &Path) {
+    let aged = std::process::Command::new("find")
+        .arg(dir)
+        .args(["-exec", "touch", "-h", "-d", "8 days ago", "{}", "+"])
+        .status()
+        .expect("find runs");
+    assert!(aged.success());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn the_sweep_keeps_an_old_worktree_with_a_recent_edit_deep_inside() {
+    let dir = repo_with_commit();
+    let root = dir.path().to_string_lossy().into_owned();
+    let prepared = prepare(&root, &RunId::mint()).await.expect("the worktree prepares");
+    let path = prepared.workspace.path.expect("the worktree path");
+    let worktree = Path::new(&path);
+    std::fs::create_dir_all(worktree.join("src/deep")).expect("subfolders");
+    write(worktree, "src/deep/edited.txt", "old\n");
+    age_tree(worktree);
+    // Editing a file deep in the tree leaves every directory's mtime old.
+    write(worktree, "src/deep/edited.txt", "the child's recent edit\n");
+    sweep_roots(vec![dir.path().to_path_buf()]).await;
+    assert!(worktree.exists(), "a worktree edited recently survives the sweep");
 }
