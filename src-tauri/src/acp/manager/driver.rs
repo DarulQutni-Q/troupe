@@ -117,6 +117,13 @@ pub(super) fn run_agent(
     } else {
         emit_crash_terminators(&driver_state, &sinks, &agent_id);
     }
+    native_subagents::settle_orphaned_runs(
+        &runtime,
+        &driver_state,
+        persistence.as_ref(),
+        &sinks,
+        &agent_id,
+    );
 
     // Self-reap: remove our own registry entry so a crashed/EOFed agent does
     // not linger in `list_agents` with a dead command channel. We do NOT join
@@ -729,7 +736,12 @@ pub(super) async fn drive_connection(
                 // A permission request is agent activity — the turn is waiting
                 // on user input, not wedged. Nudge the idle deadline so a
                 // user-input wait doesn't false-fire the idle timeout.
-                perm_state.lock().signal_idle(&session_string);
+                {
+                    // The chat's turn, and an orchestrated child's own one.
+                    let mut state = perm_state.lock();
+                    state.signal_idle(&session_string);
+                    state.signal_idle(session_id.0.as_ref());
+                }
                 let (request_id, turn_id) = {
                     let mut state = perm_state.lock();
                     state.bind_tool_call(
@@ -794,7 +806,11 @@ pub(super) async fn drive_connection(
                 // A structured question is agent activity — the turn is waiting
                 // on user input, not wedged. Nudge the idle deadline so a
                 // user-input wait doesn't false-fire the idle timeout.
-                question_state.lock().signal_idle(&session_string);
+                {
+                    let mut state = question_state.lock();
+                    state.signal_idle(&session_string);
+                    state.signal_idle(&request.session_id);
+                }
                 let question_id = {
                     let mut state = question_state.lock();
                     state.register_question(session_string.clone(), responder)

@@ -146,3 +146,36 @@ fn an_orchestrated_child_works_for_its_chat_while_a_headless_session_stays_locke
         "an orchestrated child reaches files and terminals for its chat"
     );
 }
+
+#[test]
+fn an_orchestrated_child_keeps_its_own_root_mark_and_parked_prompts() {
+    // The child's private connection: its chat is not a session here.
+    let mut state = DriverState::new();
+    state.set_session_root("sess-child".to_string(), "/repo/wt".into());
+    state.mark_ephemeral("sess-child".to_string());
+    state.seed_child_route(&origin("chat-1", "chat-1", None), "sess-child");
+    assert_eq!(
+        state.session_root("sess-child"),
+        Some(std::path::PathBuf::from("/repo/wt")),
+        "the child works in its own worktree"
+    );
+    assert!(state.is_ephemeral("sess-child"), "the child keeps its own mark");
+    assert!(!state.is_headless("sess-child"));
+    assert!(
+        state.parked_for("sess-child", "chat-1"),
+        "a prompt parked under the foreign chat is the child's"
+    );
+}
+
+#[test]
+fn a_native_child_uses_its_chats_root_and_never_drains_the_chat() {
+    let mut state = DriverState::new();
+    state.set_session_root("chat-1".to_string(), "/repo".into());
+    state.register_subagent("chat-1", "sess-native");
+    assert_eq!(
+        state.session_root("sess-native"),
+        Some(std::path::PathBuf::from("/repo"))
+    );
+    assert!(!state.parked_for("sess-native", "chat-1"));
+    assert!(state.parked_for("chat-1", "chat-1"));
+}

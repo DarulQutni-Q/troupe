@@ -250,6 +250,87 @@ fn a_settle_record_without_a_stamp_gets_one() {
     );
 }
 
+#[test]
+fn a_working_snapshot_after_the_settle_is_ignored() {
+    let state = Mutex::new(DriverState::new());
+    let mut locked = state.lock();
+    orchestrated_updates(&mut locked, orchestrated_record(SubagentState::Running), None, 20);
+    orchestrated_updates(
+        &mut locked,
+        orchestrated_record(SubagentState::idle(SubagentEndReason::Cancelled)),
+        None,
+        30,
+    );
+    let stale =
+        orchestrated_updates(&mut locked, orchestrated_record(SubagentState::RequiresAction), None, 31);
+    assert!(stale.is_empty(), "a stale change card is dropped");
+    assert!(locked
+        .subagent_records()
+        .record(ROOT, "termul-subagent:sub-9f2c1a")
+        .is_some_and(|record| record.state.is_idle()));
+}
+
+#[test]
+fn a_failed_settle_without_content_marks_the_card_failed() {
+    let state = Mutex::new(DriverState::new());
+    let mut locked = state.lock();
+    orchestrated_updates(&mut locked, orchestrated_record(SubagentState::Running), None, 20);
+    let updates = orchestrated_updates(
+        &mut locked,
+        orchestrated_record(SubagentState::Idle {
+            end: SubagentEnd {
+                reason: SubagentEndReason::Failed,
+                error: Some("boom".to_string()),
+            },
+        }),
+        None,
+        30,
+    );
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0]["update"]["status"], "failed");
+}
+
+#[test]
+fn a_settle_for_a_forgotten_record_announces_with_its_result() {
+    let state = Mutex::new(DriverState::new());
+    let settled = orchestrated_record(SubagentState::idle(SubagentEndReason::Completed));
+    let updates = orchestrated_updates(&mut state.lock(), settled, Some("all green"), 40);
+    assert_eq!(updates.len(), 1);
+    let update = &updates[0]["update"];
+    assert_eq!(update["sessionUpdate"], "tool_call");
+    assert_eq!(update["status"], "completed");
+    assert_eq!(
+        update["content"],
+        json!([{ "type": "content", "content": { "type": "text", "text": "all green" } }])
+    );
+}
+
+#[test]
+fn a_routed_child_update_nudges_the_childs_own_turn() {
+    let state = Mutex::new(DriverState::new());
+    let origin = ChildOrigin {
+        root_session_id: ROOT.to_string(),
+        parent_session_id: ROOT.to_string(),
+        parent_dispatch_id: None,
+        dispatch_id: format!("termul-subagent:{RUN}"),
+        depth: 1,
+    };
+    state.lock().seed_child_route(&origin, "child-1");
+    let idle = state.lock().try_begin_turn("child-1").expect("turn").idle_rx;
+    let params = json!({
+        "sessionId": "child-1",
+        "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": { "type": "text", "text": "working" },
+        },
+    });
+    let _ = super::native_subagents::route_session_update(&state, &params, 20);
+    assert!(
+        idle.has_changed().expect("turn open"),
+        "a streaming child is not idle"
+    );
+}
+
 #[derive(Default)]
 struct EventLog(Mutex<Vec<(String, Option<String>, Value)>>);
 

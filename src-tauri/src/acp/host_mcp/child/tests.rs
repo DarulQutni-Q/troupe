@@ -769,6 +769,12 @@ async fn tools_list_carries_figcraft_tools_by_name_with_the_canvas_tag() {
             .filter(|name| !HOST_TOOLS.contains(name))
             .collect();
         canvas.sort_unstable();
+        for name in HOST_TOOLS.iter().filter(|name| name.starts_with("subagent_")) {
+            assert!(
+                tools.iter().any(|tool| tool["name"] == *name),
+                "{name} is advertised"
+            );
+        }
         let mut upstream = figcraft_mcp::TOOL_NAMES.to_vec();
         upstream.sort_unstable();
         assert_eq!(canvas, upstream);

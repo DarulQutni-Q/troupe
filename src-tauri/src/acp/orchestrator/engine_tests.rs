@@ -72,10 +72,14 @@ struct EngineTest {
 }
 
 fn engine_test(task_mode: &str) -> Option<EngineTest> {
-    let Some(python) = find_python() else {
-        let _ = task_mode;
-        return None;
-    };
+    let _ = task_mode;
+    let python = find_python()?;
+    Some(engine_with_child(python))
+}
+
+/// An engine whose registry names a mock child launched by `command`. The
+/// tests that never spawn the child pass a command that does not exist.
+fn engine_with_child(command: &str) -> EngineTest {
     let data = tempfile::tempdir().expect("data dir");
     let cwd = tempfile::tempdir().expect("cwd dir");
     let script = cwd.path().join("child.py");
@@ -83,7 +87,7 @@ fn engine_test(task_mode: &str) -> Option<EngineTest> {
     let agent = AgentConfig {
         config_id: Some("mock-sub".to_string()),
         name: "Mock Sub".to_string(),
-        command: python.to_string(),
+        command: command.to_string(),
         args: vec!["-u".to_string(), script.to_string_lossy().into_owned()],
         env: std::collections::HashMap::new(),
         allow_terminal: false,
@@ -106,7 +110,7 @@ fn engine_test(task_mode: &str) -> Option<EngineTest> {
         None,
         Handle::current(),
     ));
-    Some(EngineTest {
+    EngineTest {
         engine,
         caller: crate::acp::orchestrator::CallerRef {
             agent: parent,
@@ -114,7 +118,7 @@ fn engine_test(task_mode: &str) -> Option<EngineTest> {
         },
         _data: data,
         _cwd: cwd,
-    })
+    }
 }
 
 fn request(task: &str) -> StartRequest {
@@ -235,12 +239,19 @@ async fn every_waiter_resolves_exactly_once() {
     let caller = test.caller.clone();
     let summary = engine.start(caller.clone(), request("hang")).await.expect("run starts");
     let run = summary.run.clone();
-    let first = engine.wait(caller.clone(), run.clone(), Duration::from_secs(60));
-    let second = engine.wait(caller.clone(), run.clone(), Duration::from_secs(60));
+    let waiter = |engine: Arc<OrchestratorEngine>| {
+        let (caller, run) = (caller.clone(), run.clone());
+        tokio::spawn(async move { engine.wait(caller, run, Duration::from_secs(60)).await })
+    };
+    let first = waiter(engine.clone());
+    let second = waiter(engine.clone());
+    while engine.ledger.lock().runs.get(&run).map_or(0, |entry| entry.waiters.len()) < 2 {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     engine.stop(test.caller.clone(), run.clone()).await.expect("stop");
     let (first, second) = tokio::join!(first, second);
     for outcome in [first, second] {
-        let outcome = outcome.expect("waiter resolves");
+        let outcome = outcome.expect("waiter task").expect("waiter resolves");
         assert!(matches!(
             outcome,
             crate::acp::orchestrator::WaitOutcome::Settled(_)
@@ -280,9 +291,12 @@ async fn a_gone_parent_agent_stops_its_runs() {
     let engine = test.engine.clone();
     let caller = test.caller.clone();
     let summary = engine.start(caller.clone(), request("hang")).await.expect("run starts");
-    engine.on_agent_gone(&caller.agent);
+    let cards = engine.on_agent_gone(&caller.agent);
     let settled = wait_settled(&engine, &caller, &summary.run).await;
     assert_eq!(settled.state, RunState::Cancelled);
+    assert_eq!(cards.len(), 1, "the dying driver gets the settle card");
+    assert_eq!(cards[0].0.id, summary.run.0);
+    assert!(cards[0].0.state.is_idle());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -358,15 +372,14 @@ fn seeded_run(engine: &OrchestratorEngine, session: &str, depth: u8) -> RunId {
     run
 }
 
-fn refusal_engine() -> Option<EngineTest> {
-    engine_test("unused")
+/// An engine for the tests that never spawn the child: no python needed.
+fn refusal_engine() -> EngineTest {
+    engine_with_child("troupe-test-no-such-agent")
 }
 
 #[tokio::test]
 async fn start_refuses_each_settings_gate() {
-    let Some(test) = refusal_engine() else {
-        return;
-    };
+    let test = refusal_engine();
     let engine = &test.engine;
     let caller = test.caller.clone();
 
@@ -443,9 +456,7 @@ async fn start_refuses_each_settings_gate() {
 
 #[tokio::test]
 async fn status_and_wait_refuse_another_chats_run() {
-    let Some(test) = refusal_engine() else {
-        return;
-    };
+    let test = refusal_engine();
     let engine = &test.engine;
     let seeded = seeded_run(engine, "sess-seed", 1);
     let foreign = crate::acp::orchestrator::CallerRef {
@@ -471,9 +482,7 @@ async fn status_and_wait_refuse_another_chats_run() {
 
 #[tokio::test]
 async fn worktree_mode_is_refused_outside_a_repository() {
-    let Some(test) = refusal_engine() else {
-        return;
-    };
+    let test = refusal_engine();
     let engine = &test.engine;
     let worktree = StartRequest {
         workspace: SubagentWorkspaceMode::Worktree,
@@ -487,9 +496,7 @@ async fn worktree_mode_is_refused_outside_a_repository() {
 
 #[tokio::test]
 async fn the_listing_names_the_registry_agent_and_its_allowance() {
-    let Some(test) = refusal_engine() else {
-        return;
-    };
+    let test = refusal_engine();
     let engine = &test.engine;
     let listed = engine.list_agents();
     assert_eq!(
@@ -522,9 +529,7 @@ fn seeded_start(engine: &OrchestratorEngine, parent: &str) -> tokio_util::sync::
 
 #[tokio::test]
 async fn a_start_in_flight_holds_a_capacity_slot() {
-    let Some(test) = refusal_engine() else {
-        return;
-    };
+    let test = refusal_engine();
     let engine = &test.engine;
     engine
         .set_settings(OrchestratorSettings {
@@ -541,9 +546,7 @@ async fn a_start_in_flight_holds_a_capacity_slot() {
 
 #[tokio::test]
 async fn closing_the_chat_cancels_its_starts_in_flight() {
-    let Some(test) = refusal_engine() else {
-        return;
-    };
+    let test = refusal_engine();
     let engine = &test.engine;
     let cancel = seeded_start(engine, "agent-parent");
     engine.chat_closed("another-chat").await;
@@ -554,9 +557,7 @@ async fn closing_the_chat_cancels_its_starts_in_flight() {
 
 #[tokio::test]
 async fn a_gone_parent_agent_cancels_its_starts_in_flight() {
-    let Some(test) = refusal_engine() else {
-        return;
-    };
+    let test = refusal_engine();
     let engine = &test.engine;
     let mine = seeded_start(engine, "agent-parent");
     let other = seeded_start(engine, "agent-other");
@@ -567,9 +568,7 @@ async fn a_gone_parent_agent_cancels_its_starts_in_flight() {
 
 #[tokio::test]
 async fn a_finished_start_frees_its_slot() {
-    let Some(test) = refusal_engine() else {
-        return;
-    };
+    let test = refusal_engine();
     let engine = &test.engine;
     let refused = StartRequest {
         workspace: SubagentWorkspaceMode::Worktree,
@@ -584,43 +583,36 @@ async fn a_finished_start_frees_its_slot() {
 
 #[tokio::test]
 async fn an_agent_recorded_after_startup_is_listed_and_resolved() {
-    let Some(test) = refusal_engine() else {
-        return;
-    };
+    let test = refusal_engine();
     let engine = &test.engine;
     // The spawn path records into the automation service's registry, which
     // writes the same file; the engine must see it without a restart.
     let writer = crate::automation::agents::AgentRegistry::open(
         test._data.path().join(crate::automation::agents::FILE_NAME),
     );
-    writer.record(&AgentConfig {
-        config_id: Some("late-agent".to_string()),
-        name: "Late Agent".to_string(),
+    let late = |id: &str, name: &str| AgentConfig {
+        config_id: Some(id.to_string()),
+        name: name.to_string(),
         command: "late".to_string(),
         args: Vec::new(),
         env: std::collections::HashMap::new(),
         allow_terminal: false,
-    });
+    };
+    writer.record(&late("late-agent", "Late Agent"));
     assert!(engine
         .list_agents()
         .iter()
         .any(|agent| agent.name == "Late Agent"));
-    let key = crate::automation::agents::agent_key(&AgentConfig {
-        config_id: Some("late-agent".to_string()),
-        name: "Late Agent".to_string(),
-        command: "late".to_string(),
-        args: Vec::new(),
-        env: std::collections::HashMap::new(),
-        allow_terminal: false,
-    });
+    // Recorded after the listing refreshed: only resolve's own reload sees it.
+    let later = late("later-agent", "Later Agent");
+    writer.record(&later);
+    let key = crate::automation::agents::agent_key(&later);
     assert!(engine.resolve_agent(&key).is_ok());
 }
 
 #[tokio::test]
 async fn stopping_a_run_that_is_still_starting_cancels_the_start() {
-    let Some(test) = refusal_engine() else {
-        return;
-    };
+    let test = refusal_engine();
     let engine = &test.engine;
     let run = seeded_run(engine, "child-starting", 1);
     let cancel = tokio_util::sync::CancellationToken::new();
@@ -645,9 +637,7 @@ async fn stopping_a_run_that_is_still_starting_cancels_the_start() {
 
 #[tokio::test]
 async fn a_second_stop_before_the_run_settles_answers_sent() {
-    let Some(test) = refusal_engine() else {
-        return;
-    };
+    let test = refusal_engine();
     let engine = &test.engine;
     let run = seeded_run(engine, "child-stopping", 1);
     engine.ledger.lock().runs.get_mut(&run).expect("seeded").body = RunBody::Stopping {
@@ -663,9 +653,7 @@ async fn a_second_stop_before_the_run_settles_answers_sent() {
 
 #[tokio::test]
 async fn an_abandoned_start_leaves_no_run_and_frees_its_slot() {
-    let Some(test) = refusal_engine() else {
-        return;
-    };
+    let test = refusal_engine();
     let engine = &test.engine;
     let abandoned = tokio_util::sync::CancellationToken::new();
     abandoned.cancel();
@@ -681,5 +669,69 @@ async fn an_abandoned_start_leaves_no_run_and_frees_its_slot() {
     assert!(
         ledger.runs.values().all(|run| !run.is_live()),
         "no run is left live"
+    );
+}
+
+#[tokio::test]
+async fn a_gone_parent_agent_hands_back_its_runs_settle_cards() {
+    let test = refusal_engine();
+    let engine = &test.engine;
+    let run = seeded_run(engine, "child-orphan", 1);
+    let cards = engine.on_agent_gone(&AgentId("agent-parent".to_string()));
+    assert_eq!(cards.len(), 1);
+    let (record, content) = &cards[0];
+    assert_eq!(record.id, run.0);
+    assert_eq!(
+        record.state,
+        crate::acp::subagents::SubagentState::Idle {
+            end: crate::acp::subagents::SubagentEnd {
+                reason: crate::acp::subagents::SubagentEndReason::Cancelled,
+                error: None,
+            }
+        }
+    );
+    assert_eq!(*content, None);
+    assert!(
+        engine.on_agent_gone(&AgentId("agent-parent".to_string())).is_empty(),
+        "a settled run is not handed back twice"
+    );
+}
+
+#[tokio::test]
+async fn a_stop_is_accepted_without_waiting_on_the_child() {
+    let test = refusal_engine();
+    let engine = &test.engine;
+    // The seeded child agent is not running: its cancel cannot be delivered,
+    // and the stop still answers Sent, with the backstop owning the settle.
+    let run = seeded_run(engine, "child-gone", 1);
+    assert_eq!(
+        engine.stop_from_ui(CHAT, run.as_str()).await,
+        Some(Ok(crate::acp::orchestrator::StopOutcome::Sent))
+    );
+    assert!(matches!(
+        engine.ledger.lock().runs[&run].body,
+        RunBody::Stopping { .. }
+    ));
+}
+
+#[tokio::test]
+async fn a_timed_out_waiter_is_not_kept() {
+    let test = refusal_engine();
+    let engine = &test.engine;
+    let run = seeded_run(engine, "child-busy", 1);
+    for _ in 0..3 {
+        let outcome = engine
+            .wait(test.caller.clone(), run.clone(), Duration::from_millis(5))
+            .await
+            .expect("wait answers");
+        assert!(matches!(
+            outcome,
+            crate::acp::orchestrator::WaitOutcome::TimedOut { .. }
+        ));
+    }
+    assert_eq!(
+        engine.ledger.lock().runs[&run].waiters.len(),
+        1,
+        "each wait drops the registrations of callers that left"
     );
 }

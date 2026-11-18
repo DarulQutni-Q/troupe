@@ -18,8 +18,10 @@ use crate::acp::subagents::{
 /// Settled runs kept per chat; the durable chat history outlives the entry.
 const MAX_SETTLED_PER_CHAT: usize = 64;
 
-/// Host-minted run id, `sub-<6 hex>`. Also the record id the renderer stops
-/// and looks up; the dispatch tool call id is `termul-subagent:<run id>`.
+/// Host-minted run id, `sub-<12 hex>`: wide enough that an id is never
+/// reused, though the ledger forgets evicted runs and a restart forgets
+/// all. Also the record id the renderer stops and looks up; the dispatch
+/// tool call id is `termul-subagent:<run id>`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RunId(pub String);
 
@@ -27,7 +29,7 @@ impl RunId {
     pub(crate) fn mint() -> Self {
         Self(format!(
             "sub-{}",
-            &uuid::Uuid::new_v4().simple().to_string()[..6]
+            &uuid::Uuid::new_v4().simple().to_string()[..12]
         ))
     }
 
@@ -91,7 +93,6 @@ pub(crate) struct RunCapture {
 struct CaptureState {
     text: String,
     tool_uses: u64,
-    total_tokens: Option<u64>,
 }
 
 impl RunCapture {
@@ -111,10 +112,6 @@ impl RunCapture {
 
     pub(crate) fn note_tool_call(&self) {
         self.inner.lock().tool_uses += 1;
-    }
-
-    pub(crate) fn note_tokens(&self, used: u64) {
-        self.inner.lock().total_tokens = Some(used);
     }
 
     pub(crate) fn result_text(&self) -> String {
@@ -244,9 +241,9 @@ impl ChildRun {
         true
     }
 
-    /// The run's usage, merging what the watcher captured.
+    /// The run's usage, merging what the watcher captured. No token total:
+    /// ACP reports context occupancy, not a run's token use.
     pub(crate) fn usage(&self) -> Option<SubagentUsage> {
-        let total_tokens = self.capture.total_tokens();
         let duration = match &self.body {
             RunBody::Settled { at_ms, .. } => at_ms.saturating_sub(self.created_ms),
             _ => 0,
@@ -254,7 +251,7 @@ impl ChildRun {
         let usage = SubagentUsage {
             input_tokens: None,
             output_tokens: None,
-            total_tokens,
+            total_tokens: None,
             tool_uses: Some(self.capture.tool_uses()),
             duration_ms: Some(duration),
         };
@@ -347,10 +344,6 @@ impl ChildRun {
 }
 
 impl RunCapture {
-    fn total_tokens(&self) -> Option<u64> {
-        self.inner.lock().total_tokens
-    }
-
     fn tool_uses(&self) -> u64 {
         self.inner.lock().tool_uses
     }
@@ -459,14 +452,12 @@ pub enum StopOutcome {
 pub enum StopError {
     /// No run of the caller's chat has this id.
     NotFound,
-    Failed(String),
 }
 
 impl std::fmt::Display for StopError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotFound => f.write_str("no such subagent in this chat"),
-            Self::Failed(error) => write!(f, "could not stop the subagent: {error}"),
         }
     }
 }
@@ -541,14 +532,20 @@ impl RunLedger {
     }
 
     /// Keep at most [`MAX_SETTLED_PER_CHAT`] settled runs per chat: the
-    /// oldest settled entries are evicted (live runs are never evicted).
-    fn evict_settled(&mut self, root: &str) {
+    /// earliest settled entries are evicted, insertion order breaking ties
+    /// (live runs are never evicted). Called on insert and on every settle.
+    pub(crate) fn evict_settled(&mut self, root: &str) {
         while self.settled_of_root(root) > MAX_SETTLED_PER_CHAT {
-            let Some(victim) = self
-                .by_root
-                .get(root)
-                .and_then(|ids| ids.iter().find(|id| self.is_settled(id)).cloned())
-            else {
+            let Some(victim) = self.by_root.get(root).and_then(|ids| {
+                ids.iter()
+                    .enumerate()
+                    .filter_map(|(order, id)| {
+                        let run = self.runs.get(id).filter(|run| !run.is_live())?;
+                        Some(((run.ended_at_ms(), order), id))
+                    })
+                    .min_by_key(|(key, _)| *key)
+                    .map(|(_, id)| id.clone())
+            }) else {
                 return;
             };
             self.runs.remove(&victim);
@@ -577,18 +574,19 @@ impl RunLedger {
         };
         let mut runs: Vec<&ChildRun> = ids.iter().filter_map(|id| self.runs.get(id)).collect();
         runs.sort_by(|a, b| {
-            let key = |run: &ChildRun| (!run.is_live(), run.ended_at_ms());
+            let key = |run: &ChildRun| (run.is_live(), run.ended_at_ms());
             key(b).cmp(&key(a))
         });
         runs
     }
 
-    /// A run whose child session is `session` (the spawning run of a nested
-    /// caller).
-    pub(crate) fn run_with_session(&self, session: &str) -> Option<&ChildRun> {
-        self.runs
-            .values()
-            .find(|run| run.session().is_some_and(|id| id.0 == session))
+    /// The run whose child is the caller: its session and its agent both
+    /// match (the spawning run of a nested caller). Session ids come from
+    /// each agent, so the session alone could name another agent's run.
+    pub(crate) fn run_with_session(&self, caller: &CallerRef) -> Option<&ChildRun> {
+        self.runs.values().find(|run| {
+            run.session() == Some(&caller.session) && run.child_agent() == Some(&caller.agent)
+        })
     }
 
     /// Live runs whose parent agent is `agent`.

@@ -114,3 +114,30 @@ fn a_malformed_input_names_the_missing_field() {
     let message = parse::<SubagentRefInput>(Some(json!({ "id": "sub-1" }))).unwrap_err();
     assert!(message.contains("subagentId"), "{message}");
 }
+
+#[test]
+fn status_previews_a_long_result_and_flags_the_cut() {
+    let summary = RunSummary {
+        run: RunId("sub-000002".to_string()),
+        state: RunState::Completed,
+        title: "Codex".to_string(),
+        ended_at: Some(5),
+        result: Some("é".repeat(1_500)),
+        error: None,
+        workspace: None,
+        usage: None,
+    };
+    let value = status_json(&summary);
+    assert_eq!(value["result"], json!("é".repeat(1_000)));
+    assert_eq!(value["resultTruncated"], json!(true));
+    assert_eq!(
+        summary_json(&summary)["result"],
+        json!("é".repeat(1_500)),
+        "wait keeps the whole result"
+    );
+    let short = RunSummary {
+        result: Some("done".to_string()),
+        ..summary
+    };
+    assert_eq!(status_json(&short), summary_json(&short));
+}

@@ -44,13 +44,85 @@ fn a_corrupt_file_is_backed_up_and_the_defaults_load() {
     std::fs::write(dir.path().join(FILE_NAME), b"{not json").expect("write");
     let store = SettingsStore::open(dir.path());
     assert_eq!(store.get(), OrchestratorSettings::default());
-    assert!(
-        std::fs::read_dir(dir.path())
-            .expect("dir")
-            .filter_map(|entry| entry.ok())
-            .any(|entry| entry.file_name().to_string_lossy().contains(FILE_NAME)),
-        "the corrupt file was kept aside"
-    );
+    let backups = corrupt_backups(dir.path());
+    assert_eq!(backups.len(), 1, "the corrupt file was kept aside");
+    assert_eq!(std::fs::read(&backups[0]).expect("backup"), b"{not json");
+}
+
+fn corrupt_backups(dir: &Path) -> Vec<PathBuf> {
+    let prefix = format!("{FILE_NAME}.corrupt-");
+    std::fs::read_dir(dir)
+        .expect("dir")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            name.starts_with(&prefix) && name.ends_with(".bak")
+        })
+        .collect()
+}
+
+#[test]
+fn a_newer_file_loads_the_defaults_and_is_never_overwritten() {
+    let dir = dir();
+    let path = dir.path().join(FILE_NAME);
+    let newer = br#"{"schema_version":2,"futureField":true}"#;
+    std::fs::write(&path, newer).expect("write");
+    let store = SettingsStore::open(dir.path());
+    assert_eq!(store.get(), OrchestratorSettings::default());
+
+    let error = store
+        .set(OrchestratorSettings::default())
+        .expect_err("a newer file is read-only");
+    assert!(error.contains("newer Troupe"), "{error}");
+    assert_eq!(std::fs::read(&path).expect("file"), newer);
+    assert!(corrupt_backups(dir.path()).is_empty());
+}
+
+#[test]
+fn concurrent_updates_keep_each_others_changes() {
+    let dir = dir();
+    let store = std::sync::Arc::new(SettingsStore::open(dir.path()));
+    let writers: Vec<_> = (0..8)
+        .map(|index| {
+            let store = store.clone();
+            std::thread::spawn(move || {
+                store
+                    .update(|settings| {
+                        settings.agents.insert(format!("agent-{index}"), false);
+                    })
+                    .expect("saved");
+            })
+        })
+        .collect();
+    for writer in writers {
+        writer.join().expect("writer");
+    }
+    let saved = SettingsStore::open(dir.path()).get();
+    assert_eq!(saved.agents.len(), 8);
+    assert_eq!(store.get(), saved);
+}
+
+#[test]
+fn a_refused_update_leaves_the_settings_unchanged() {
+    let dir = dir();
+    let store = SettingsStore::open(dir.path());
+    store
+        .update(|settings| settings.max_depth = 3)
+        .expect("saved");
+    let error = store
+        .update(|settings| {
+            settings.enabled = false;
+            settings.max_running = 0;
+        })
+        .expect_err("out of range");
+    assert!(error.contains("max_running"), "{error}");
+    let expected = OrchestratorSettings {
+        max_depth: 3,
+        ..OrchestratorSettings::default()
+    };
+    assert_eq!(store.get(), expected);
+    assert_eq!(SettingsStore::open(dir.path()).get(), expected);
 }
 
 #[test]

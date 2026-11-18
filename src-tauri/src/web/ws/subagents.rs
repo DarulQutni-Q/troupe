@@ -110,11 +110,11 @@ pub(super) struct SubagentSettingsPayload {
     agents: Option<Vec<AgentAllowPayload>>,
 }
 
-/// The settings with the payload's fields applied over them.
+/// Apply the payload's fields over `settings`.
 fn merge_settings(
-    mut settings: crate::acp::orchestrator::OrchestratorSettings,
+    settings: &mut crate::acp::orchestrator::OrchestratorSettings,
     patch: SubagentSettingsPayload,
-) -> crate::acp::orchestrator::OrchestratorSettings {
+) {
     if let Some(enabled) = patch.enabled {
         settings.enabled = enabled;
     }
@@ -127,7 +127,6 @@ fn merge_settings(
     for agent in patch.agents.unwrap_or_default() {
         settings.agents.insert(agent.agent_id, agent.allowed);
     }
-    settings
 }
 
 /// `subagent_settings_set` → merge into the current settings, persist, and
@@ -146,7 +145,7 @@ pub(super) fn handle_subagent_settings_set(id: String, payload: &Value) -> WsRep
     let Some(engine) = crate::acp::orchestrator::installed() else {
         return no_engine(id);
     };
-    match engine.set_settings(merge_settings(engine.settings_view(), parsed)) {
+    match engine.update_settings(|settings| merge_settings(settings, parsed)) {
         Ok(_) => WsReply::ok(id, Some(settings_view(&engine))),
         Err(error) => WsReply::err_with_code(id, "VALIDATION_ERROR", error),
     }

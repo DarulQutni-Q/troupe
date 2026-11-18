@@ -39,14 +39,14 @@ fn settings_patch(payload: Value) -> SubagentSettingsPayload {
 
 #[test]
 fn a_settings_patch_keeps_every_omitted_field() {
-    let current = crate::acp::orchestrator::OrchestratorSettings {
+    let mut merged = crate::acp::orchestrator::OrchestratorSettings {
         enabled: true,
         max_running: 4,
         max_depth: 2,
         agents: [("codex".to_string(), false)].into_iter().collect(),
     };
-    let merged = merge_settings(
-        current,
+    merge_settings(
+        &mut merged,
         settings_patch(json!({
             "maxDepth": 3,
             "agents": [{ "agentId": "gemini", "allowed": false }],
@@ -61,12 +61,12 @@ fn a_settings_patch_keeps_every_omitted_field() {
 
 #[test]
 fn a_settings_patch_turns_an_agent_back_on() {
-    let current = crate::acp::orchestrator::OrchestratorSettings {
+    let mut merged = crate::acp::orchestrator::OrchestratorSettings {
         agents: [("codex".to_string(), false)].into_iter().collect(),
         ..Default::default()
     };
-    let merged = merge_settings(
-        current,
+    merge_settings(
+        &mut merged,
         settings_patch(json!({
             "enabled": false,
             "agents": [{ "agentId": "codex", "allowed": true }],

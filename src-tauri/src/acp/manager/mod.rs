@@ -1703,12 +1703,14 @@ impl AcpManager {
         gate_close_session(&caps)?;
         let tx = self.command_tx(agent_id)?;
         let closed_session = session_id.0.clone();
-        send_command(&tx, |reply| AcpCommand::CloseSession { session_id, reply }).await?;
-        // A closed chat stops its orchestrated subagents; their own agents
-        // are private and would otherwise keep running unnoticed.
+        let closed = send_command(&tx, |reply| AcpCommand::CloseSession { session_id, reply }).await;
+        // A closed chat stops its orchestrated subagents, whatever the agent
+        // answered: their own agents are private and would otherwise keep
+        // running unnoticed.
         if let Some(engine) = crate::acp::orchestrator::installed() {
             engine.chat_closed(&closed_session).await;
         }
+        closed?;
         self.release_session_tickets(&closed_session);
         Ok(())
     }
@@ -2311,10 +2313,8 @@ impl AcpManager {
             }
             entry
         };
-        // Orchestrated runs whose parent agent is this one stop with it.
-        if let Some(engine) = crate::acp::orchestrator::installed() {
-            engine.on_agent_gone(agent_id);
-        }
+        // Orchestrated runs whose parent agent is this one stop with it in
+        // the driver teardown (`settle_orphaned_runs`), which every exit runs.
         let mut entry = entry?;
         log::info!("[acp] stopping agent {agent_id} ({intent:?})");
         // The driver teardown announces the stop to every sink (and so to the

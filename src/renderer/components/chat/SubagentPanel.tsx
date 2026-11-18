@@ -1,4 +1,4 @@
-import type { SubagentWorkspace } from '@shared/types/subagent'
+import type { Subagent, SubagentWorkspace } from '@shared/types/subagent'
 import { useReducedMotion } from 'framer-motion'
 import { type ReactNode, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, Clock, FileDiff, Folder, GitBranch, Square, X } from '@/components/icons'
@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { IconActionButton } from '@/components/ui/icon-action-button'
 import type { ToolCall } from '@/lib/acp-api'
 import { getAgentById } from '@/lib/agents/custom-agents'
+import type { FilePathResolutionContext } from '@/lib/file-path-links'
 import { cn } from '@/lib/utils'
 import { AgentProse } from './chat-agent-prose'
 import { SubagentGroup } from './SubagentGroup'
@@ -159,6 +160,21 @@ function DiffSummary({
   )
 }
 
+/**
+ * Paths a worktree run names resolve in its own checkout, so a relative link
+ * never opens the chat's copy of the same file.
+ */
+function useRecordFilePathContext(
+  record: Subagent | undefined
+): FilePathResolutionContext | undefined {
+  const { filePathContext } = useSubagentSurface()
+  const path = record?.workspace?.path
+  return useMemo(
+    () => (path ? { cwd: path, projectRoot: path } : filePathContext),
+    [path, filePathContext]
+  )
+}
+
 type ActivitySegment =
   | { kind: 'tool'; toolCall: ToolCall }
   | { kind: 'subagents'; key: string; calls: ToolCall[] }
@@ -186,7 +202,7 @@ function Activity({
   parentTurn: ParentTurn
   agentName: string
 }): React.JSX.Element {
-  const { filePathContext } = useSubagentSurface()
+  const filePathContext = useRecordFilePathContext(toolCall.subagent)
   const hidden = Math.max(0, childCalls.length - MAX_SUBAGENT_ACTIVITY_ROWS)
   const segments = useMemo(
     () => activitySegments(hidden > 0 ? childCalls.slice(hidden) : childCalls),
@@ -232,8 +248,8 @@ function Outcome({
   agentName: string
 }): React.JSX.Element {
   const reduced = useReducedMotion() ?? false
-  const { filePathContext } = useSubagentSurface()
   const record = toolCall.subagent
+  const filePathContext = useRecordFilePathContext(record)
   const prose = (text: string, streaming: boolean) => (
     <AgentProse
       text={text}
@@ -277,7 +293,7 @@ function Outcome({
     return (
       <>
         <Missing>
-          {record?.background
+          {record?.background && record.source !== 'orchestrated'
             ? `This subagent ran in the background and reported to ${agentName}, not to this chat.`
             : 'The subagent returned no result.'}
         </Missing>

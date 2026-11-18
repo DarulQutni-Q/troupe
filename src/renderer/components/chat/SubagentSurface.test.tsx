@@ -27,6 +27,12 @@ vi.mock('framer-motion', async () => {
 
 vi.mock('@/lib/log-api', () => ({ logFrontendError: vi.fn() }))
 
+const openFilePathFromTerminal = vi.hoisted(() => vi.fn(() => Promise.resolve({ ok: true })))
+vi.mock('@/lib/file-path-links', async () => ({
+  ...(await vi.importActual<typeof import('@/lib/file-path-links')>('@/lib/file-path-links')),
+  openFilePathFromTerminal
+}))
+
 function prose({
   text,
   filePathContext
@@ -406,6 +412,22 @@ describe('subagents in the transcript', () => {
     expect(result).toHaveAttribute('data-project-root', '/proj')
   })
 
+  it('says a background subagent with no result reported to the agent, not this chat', () => {
+    renderChat({
+      toolCalls: [
+        dispatch(
+          'a',
+          { title: 'Watch the build', background: true, state: endedState() },
+          { status: 'completed' }
+        )
+      ]
+    })
+    fireEvent.click(row(/^Watch the build/))
+    expect(panel()).toHaveTextContent(
+      'This subagent ran in the background and reported to The agent, not to this chat.'
+    )
+  })
+
   it('opens a full-height bottom sheet on the phone and closes it with system Back', () => {
     mobileRef.current = true
     renderChat({ toolCalls: [dispatch('a', { title: 'Audit auth flow' })] })
@@ -636,5 +658,63 @@ describe('orchestrated subagents in the transcript', () => {
     expect(result?.querySelector('.text-destructive')).toHaveTextContent('−7')
     // The branch shows twice: in the Workspace section and the diff summary.
     expect(within(panel()).getAllByText('troupe/sub/retry-fix')).toHaveLength(2)
+  })
+
+  it('says a stopped run returned no result, not that it reported to the agent', () => {
+    renderChat({
+      toolCalls: [orchestrated('sub-1', { state: endedState('cancelled') }, { status: 'failed' })]
+    })
+    fireEvent.click(row(/^Implement the retry fix/))
+    expect(panel()).toHaveTextContent('The subagent returned no result.')
+    expect(panel()).not.toHaveTextContent('ran in the background')
+  })
+
+  it('resolves the result and activity paths in the run worktree, not the chat checkout', () => {
+    openFilePathFromTerminal.mockClear()
+    const worktree = '/work/.termul/worktrees/sub-retry-fix'
+    renderChat({
+      toolCalls: [
+        orchestrated(
+          'sub-1',
+          { state: endedState() },
+          { status: 'completed', rawOutput: { text: 'Wrote [Report](./report.md).' } }
+        ),
+        child('sub-1', 'c1')
+      ],
+      filePathContext: { cwd: '/work', projectRoot: '/work' }
+    })
+    fireEvent.click(row(/^Implement the retry fix/))
+
+    const result = within(panel()).getByTestId('agent-prose')
+    expect(result).toHaveTextContent('Wrote [Report](./report.md).')
+    expect(result).toHaveAttribute('data-cwd', worktree)
+    expect(result).toHaveAttribute('data-project-root', worktree)
+
+    fireEvent.click(within(panel()).getByRole('button', { name: 'Open file' }))
+    expect(openFilePathFromTerminal).toHaveBeenCalledWith('src/auth/refresh.rs', {
+      cwd: worktree,
+      projectRoot: worktree
+    })
+  })
+
+  it('keeps the chat file-path context for a run in the chat folder', () => {
+    renderChat({
+      toolCalls: [
+        orchestrated(
+          'sub-1',
+          {
+            state: endedState(),
+            workspace: { mode: 'shared', path: undefined, branch: undefined }
+          },
+          { status: 'completed', rawOutput: { text: 'Edited src/foo.ts.' } }
+        )
+      ],
+      filePathContext: { cwd: '/work/sub', projectRoot: '/work' }
+    })
+    fireEvent.click(row(/^Implement the retry fix/))
+
+    const result = within(panel()).getByTestId('agent-prose')
+    expect(result).toHaveAttribute('data-cwd', '/work/sub')
+    expect(result).toHaveAttribute('data-project-root', '/work')
   })
 })

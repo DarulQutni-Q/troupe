@@ -41,8 +41,16 @@ for line in sys.stdin:
                                       "kind": "allow_once"}]}})
         pending_prompt = rid
     elif "result" in msg and rid == perm_id:
-        # The host answered the permission request; end the turn.
-        send({"jsonrpc": "2.0", "id": pending_prompt, "result": {"stopReason": "end_turn"}})
+        # The turn's stop reason reports the host's answer: end_turn for the
+        # allow option, cancelled for a cancel, refusal for anything else.
+        outcome = msg["result"].get("outcome", {})
+        if outcome.get("outcome") == "selected" and outcome.get("optionId") == "allow":
+            reason = "end_turn"
+        elif outcome.get("outcome") == "cancelled":
+            reason = "cancelled"
+        else:
+            reason = "refusal"
+        send({"jsonrpc": "2.0", "id": pending_prompt, "result": {"stopReason": reason}})
         pending_prompt = None
 "#;
 
@@ -195,7 +203,11 @@ async fn an_unseeded_ephemeral_session_still_answers_permissions_headlessly() {
     .await
     .expect("turn bounded")
     .expect("turn completes");
-    assert_eq!(stop, StopReason::EndTurn);
+    assert_eq!(
+        stop,
+        StopReason::Cancelled,
+        "with no allowlist the host cancels the permission"
+    );
     assert!(
         log.0.lock().is_empty(),
         "no permission event reaches a sink for a headless session"

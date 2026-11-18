@@ -84,7 +84,7 @@ pub(crate) async fn diff_stat(path: &str, base: Option<&str>) -> Option<String> 
     let base = base?.to_string();
     let moved_path = path.to_string();
     let stat = tokio::task::spawn_blocking(move || {
-        let tree = working_tree(&moved_path).ok()?;
+        let tree = working_tree(&moved_path, "HEAD").ok()?;
         let numstat = run_git_env_success(
             &["diff", "--numstat", &base, &tree, "--"],
             Some(&moved_path),
@@ -121,8 +121,9 @@ pub(crate) async fn diff_stat(path: &str, base: Option<&str>) -> Option<String> 
     stat
 }
 
-/// Remove `sub-*` worktrees older than [`SWEEP_AGE`] under `roots`, then
-/// delete their `troupe/sub/*` branches. Best-effort: failures log and
+/// Remove `sub-*` worktrees older than [`SWEEP_AGE`] in each root's
+/// `.termul/worktrees` directory, where [`prepare`] makes them, then delete
+/// their `troupe/sub/*` branches. Best-effort: failures log and
 /// continue. Runs at install time only; the ledger is empty then, so a
 /// worktree's age alone decides.
 pub(crate) fn sweep(handle: &Handle, roots: Vec<PathBuf>) {
@@ -137,6 +138,9 @@ pub(crate) async fn sweep_roots(roots: Vec<PathBuf>) {
     tokio::task::spawn_blocking(move || {
         for root in roots {
             let root_text = root.to_string_lossy().into_owned();
+            let Ok(managed) = std::fs::canonicalize(root.join(".termul").join("worktrees")) else {
+                continue;
+            };
             let listed = match WorktreeManager::list(&root_text) {
                 Ok(entries) => entries,
                 Err(error) => {
@@ -149,6 +153,11 @@ pub(crate) async fn sweep_roots(roots: Vec<PathBuf>) {
             };
             for entry in listed {
                 if !entry.name.starts_with("sub-") || !entry.branch.starts_with("troupe/sub/") {
+                    continue;
+                }
+                let in_managed = std::fs::canonicalize(&entry.path)
+                    .is_ok_and(|path| path.parent() == Some(managed.as_path()));
+                if !in_managed {
                     continue;
                 }
                 let cutoff = std::time::SystemTime::now()
@@ -205,8 +214,10 @@ fn touched_since(dir: &Path, cutoff: std::time::SystemTime) -> bool {
             if recent(&path) {
                 return true;
             }
-            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-                pending.push(path);
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => pending.push(path),
+                Ok(_) => {}
+                Err(_) => return true,
             }
         }
     }
@@ -244,10 +255,12 @@ struct Snapshot {
 }
 
 /// Snapshot the working state at `root` — HEAD plus uncommitted changes —
-/// as a commit without touching the working tree or the real index:
-/// `read-tree HEAD` into a temporary index, `add -A`, `write-tree`,
-/// `commit-tree -p HEAD`. `None` in a repository with no commits yet (the
-/// worktree then starts empty; there is no base to name). The snapshot
+/// as a commit without touching the working tree or the real index: the
+/// [`working_tree`], committed with `commit-tree -p <head>`. The short id,
+/// the clean-tree check and the parent all use the one captured `head`, so
+/// a HEAD that moves mid-capture cannot pair one commit with another's
+/// tree. `None` in a repository with no commits yet (the worktree then
+/// starts empty; there is no base to name). The snapshot
 /// commit carries the host's identity, never the user's: the user did not
 /// make it.
 fn snapshot_ref(root: &str) -> Result<Option<Snapshot>, String> {
@@ -255,15 +268,19 @@ fn snapshot_ref(root: &str) -> Result<Option<Snapshot>, String> {
         Ok(head) => head,
         Err(_) => return Ok(None),
     };
-    let short = run_git_env_success(&["rev-parse", "--short", "HEAD"], Some(root), &[])
+    let short = run_git_env_success(&["rev-parse", "--short", &head], Some(root), &[])
         .unwrap_or_else(|_| head.chars().take(7).collect());
     let branch = run_git_env_success(&["rev-parse", "--abbrev-ref", "HEAD"], Some(root), &[])
         .unwrap_or_else(|_| "HEAD".to_string());
     let failure = |step: &str, error: String| format!("snapshot_failed at {step}: {error}");
-    let tree = working_tree(root)?;
+    let tree = working_tree(root, &head)?;
     let branch_label = if branch == "HEAD" { short.clone() } else { branch };
-    let head_tree = run_git_env_success(&["rev-parse", "HEAD^{tree}"], Some(root), &[])
-        .map_err(|error| failure("rev-parse", error))?;
+    let head_tree = run_git_env_success(
+        &["rev-parse", &format!("{head}^{{tree}}")],
+        Some(root),
+        &[],
+    )
+    .map_err(|error| failure("rev-parse", error))?;
     if tree == head_tree {
         return Ok(Some(Snapshot {
             commit: head,
@@ -296,10 +313,14 @@ fn snapshot_ref(root: &str) -> Result<Option<Snapshot>, String> {
     }))
 }
 
-/// The tree of everything in the working directory at `dir` — HEAD plus
-/// staged, unstaged and untracked (not ignored) changes — written through a
+/// The tree of everything in the working directory at `dir` — the index
+/// plus unstaged and untracked (not ignored) changes — written through a
 /// temporary index, so neither the working tree nor the real index changes.
-fn working_tree(dir: &str) -> Result<String, String> {
+/// The temporary index starts as a copy of the real one, so a file tracked
+/// only there (a force-added ignored file) stays, and `add -A` reuses its
+/// stat cache instead of hashing every file; with no real index it starts
+/// from `seed`.
+fn working_tree(dir: &str, seed: &str) -> Result<String, String> {
     let index = format!(
         "{}/troupe-subagent-index-{}",
         std::env::temp_dir().to_string_lossy(),
@@ -308,8 +329,12 @@ fn working_tree(dir: &str) -> Result<String, String> {
     let _cleanup = RemoveOnDrop(&index);
     let env: [(&str, &str); 1] = [("GIT_INDEX_FILE", index.as_str())];
     let failure = |step: &str, error: String| format!("snapshot_failed at {step}: {error}");
-    run_git_env_success(&["read-tree", "HEAD"], Some(dir), &env)
-        .map_err(|error| failure("read-tree", error))?;
+    let copied = run_git_env_success(&["rev-parse", "--absolute-git-dir"], Some(dir), &[])
+        .is_ok_and(|git_dir| std::fs::copy(Path::new(&git_dir).join("index"), &index).is_ok());
+    if !copied {
+        run_git_env_success(&["read-tree", seed], Some(dir), &env)
+            .map_err(|error| failure("read-tree", error))?;
+    }
     run_git_env_success(&["add", "-A", "--", "."], Some(dir), &env)
         .map_err(|error| failure("add", error))?;
     run_git_env_success(&["write-tree"], Some(dir), &env).map_err(|error| failure("write-tree", error))

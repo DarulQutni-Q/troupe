@@ -40,7 +40,7 @@ fn child_run(body: RunBody) -> ChildRun {
 fn a_minted_run_id_has_the_wire_shape() {
     let run = RunId::mint();
     assert!(run.0.starts_with("sub-"));
-    assert_eq!(run.0.len(), 10, "sub- plus 6 hex characters");
+    assert_eq!(run.0.len(), 16, "sub- plus 12 hex characters");
     assert!(run.0[4..].bytes().all(|byte| byte.is_ascii_hexdigit()));
     assert_eq!(run.dispatch_id(), format!("termul-subagent:{}", run.0));
 }
@@ -256,8 +256,15 @@ fn a_live_run_is_never_evicted() {
     assert_eq!(ledger.runs.len(), 65);
 }
 
+fn caller(agent: &str, session: &str) -> CallerRef {
+    CallerRef {
+        agent: AgentId(agent.to_string()),
+        session: SessionId(session.to_string()),
+    }
+}
+
 #[test]
-fn a_run_is_found_by_its_child_session() {
+fn a_run_is_found_by_its_child_session_and_agent() {
     let mut ledger = RunLedger::new();
     ledger.insert(child_run(RunBody::Live {
         child_agent: AgentId("agent-child".to_string()),
@@ -266,13 +273,95 @@ fn a_run_is_found_by_its_child_session() {
     }));
     assert_eq!(
         ledger
-            .run_with_session("sess-child")
+            .run_with_session(&caller("agent-child", "sess-child"))
             .expect("the run")
             .run
             .0,
         "sub-9f2c1a"
     );
-    assert!(ledger.run_with_session("sess-other").is_none());
+    assert!(ledger
+        .run_with_session(&caller("agent-child", "sess-other"))
+        .is_none());
+    assert!(
+        ledger
+            .run_with_session(&caller("agent-elsewhere", "sess-child"))
+            .is_none(),
+        "another agent reporting the same session id is not the run's child"
+    );
+}
+
+#[test]
+fn status_lists_live_runs_first_then_the_newest_settled() {
+    let mut ledger = RunLedger::new();
+    for (id, at_ms) in [("sub-000001", 50), ("sub-000002", 70)] {
+        let mut run = child_run(RunBody::Settled {
+            end: RunEnd::Completed,
+            at_ms,
+        });
+        run.run = RunId(id.to_string());
+        ledger.insert(run);
+    }
+    let mut live = child_run(RunBody::Live {
+        child_agent: AgentId("agent-child".to_string()),
+        session: SessionId("sess-live".to_string()),
+        awaiting_permission: false,
+    });
+    live.run = RunId("sub-000003".to_string());
+    ledger.insert(live);
+    let order: Vec<&str> = ledger
+        .runs_of_root("chat-1")
+        .into_iter()
+        .map(|run| run.run.as_str())
+        .collect();
+    assert_eq!(order, vec!["sub-000003", "sub-000002", "sub-000001"]);
+}
+
+#[test]
+fn eviction_drops_the_earliest_settled_not_the_earliest_inserted() {
+    let mut ledger = RunLedger::new();
+    for index in 0..=64u64 {
+        let mut run = child_run(RunBody::Settled {
+            end: RunEnd::Completed,
+            // The first inserted run finished last.
+            at_ms: if index == 0 { 1_000 } else { 100 + index },
+        });
+        run.run = RunId(format!("sub-{index:06x}"));
+        ledger.insert(run);
+    }
+    assert!(
+        ledger.runs.contains_key(&RunId("sub-000000".to_string())),
+        "the most recently settled run stays"
+    );
+    assert!(
+        !ledger.runs.contains_key(&RunId("sub-000001".to_string())),
+        "the earliest settled run is evicted"
+    );
+}
+
+#[test]
+fn settling_a_live_run_then_evicting_holds_the_cap() {
+    let mut ledger = RunLedger::new();
+    let mut live = child_run(RunBody::Live {
+        child_agent: AgentId("agent-child".to_string()),
+        session: SessionId("sess-live".to_string()),
+        awaiting_permission: false,
+    });
+    live.run = RunId("sub-0000ff".to_string());
+    ledger.insert(live);
+    for index in 0..64u64 {
+        let mut run = child_run(RunBody::Settled {
+            end: RunEnd::Completed,
+            at_ms: 100 + index,
+        });
+        run.run = RunId(format!("sub-{index:06x}"));
+        ledger.insert(run);
+    }
+    let live = RunId("sub-0000ff".to_string());
+    assert!(ledger.runs.get_mut(&live).expect("live").settle(RunEnd::Completed, 500));
+    ledger.evict_settled("chat-1");
+    assert_eq!(ledger.runs.len(), 64);
+    assert!(ledger.runs.contains_key(&live), "the run that just settled stays");
+    assert!(!ledger.runs.contains_key(&RunId("sub-000000".to_string())));
 }
 
 #[test]

@@ -92,6 +92,24 @@ pub(super) fn summary_json(summary: &RunSummary) -> Value {
     value
 }
 
+/// Result text one `subagent_status` entry carries: 64 settled runs of full
+/// results would overflow the child's 1 MiB frame, so the listing previews
+/// and `subagent_wait` returns the whole result.
+const STATUS_RESULT_CHARS: usize = 1_000;
+
+/// One run as `subagent_status` reports it: [`summary_json`] with the result
+/// cut to [`STATUS_RESULT_CHARS`], flagged `resultTruncated` when cut.
+pub(super) fn status_json(summary: &RunSummary) -> Value {
+    let mut value = summary_json(summary);
+    if let Some(result) = &summary.result {
+        if let Some((cut, _)) = result.char_indices().nth(STATUS_RESULT_CHARS) {
+            value["result"] = json!(&result[..cut]);
+            value["resultTruncated"] = json!(true);
+        }
+    }
+    value
+}
+
 impl HostPlanServer {
     pub(super) async fn subagent_call(
         &self,
@@ -248,7 +266,7 @@ fn status(engine: &OrchestratorEngine, caller: CallerRef, input: SubagentStatusI
         .map(|ids| ids.into_iter().map(RunId).collect());
     match engine.status(caller, runs) {
         Ok(summaries) => FrameReply::ok_with(json!({
-            "runs": summaries.iter().map(summary_json).collect::<Vec<_>>(),
+            "runs": summaries.iter().map(status_json).collect::<Vec<_>>(),
         })),
         Err(_) => not_found(),
     }
@@ -263,7 +281,6 @@ async fn stop(
         Ok(StopOutcome::Sent) => FrameReply::ok_with(json!({ "outcome": "sent" })),
         Ok(StopOutcome::AlreadyEnded) => FrameReply::ok_with(json!({ "outcome": "already_ended" })),
         Err(StopError::NotFound) => not_found(),
-        Err(error @ StopError::Failed(_)) => refusal("stop_failed", error.to_string()),
     }
 }
 

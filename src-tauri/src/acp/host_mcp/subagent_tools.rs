@@ -48,8 +48,8 @@ pub enum SubagentWorkspaceInput {
 pub struct SubagentStartInput {
     /// The `agentId` of an allowed agent from `subagent_list_agents`.
     pub agent: String,
-    /// The complete task for the subagent, 1 to 8000 characters. It sees
-    /// nothing of this chat but this text and its workspace.
+    /// The complete task for the subagent, 1 to 8000 characters. This
+    /// chat's transcript is not included in its prompt.
     pub task: String,
     /// `worktree` (default) or `shared`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -102,7 +102,8 @@ enabled is true; the user changes both in Preferences.";
 
 pub const START_DESCRIPTION: &str = "Start another installed agent (Codex, Gemini CLI, ...) as \
 a subagent on a task, in the background. `agent` is an agentId from subagent_list_agents; \
-`task` must be complete on its own, because the subagent sees nothing of this chat. \
+`task` must be complete on its own, because this chat's transcript is not included in the \
+subagent's prompt. \
 `workspace` is `worktree` (default: a private git worktree on a snapshot of the current \
 state, uncommitted changes included, so its edits never touch yours) or `shared` (this chat's \
 directory). The user sees it as a sub-agent row with its live transcript and a Stop button, \
@@ -120,7 +121,8 @@ then wait again.";
 
 pub const STATUS_DESCRIPTION: &str = "Report this chat's subagents without waiting: every run, \
 or the ones named in `subagentIds`. Returns JSON {runs: [{subagentId, state, title, endedAt?, \
-result?, error?, workspace?, usage?}]}.";
+result?, resultTruncated?, error?, workspace?, usage?}]}. A result longer than 1000 characters \
+is cut, with resultTruncated true; subagent_wait on that run returns the whole result.";
 
 pub const STOP_DESCRIPTION: &str = "Stop a running subagent. Returns JSON {outcome: \"sent\"} \
 or {outcome: \"already_ended\"} when it had already finished. Its partial work stays in its \

@@ -50,7 +50,7 @@ impl EventSink for RerouteFilter {
 }
 
 /// Feeds the run: counts tool calls, keeps the child's last agent-role text
-/// (tail-capped), records tokens, and mirrors the permission fork into the
+/// (tail-capped), and mirrors the permission fork into the
 /// ledger's `awaiting_permission` flag. The child's death is not watched
 /// here: the driver teardown drops the prompt reply, which the supervision
 /// task turns into a Failed settle.
@@ -101,13 +101,7 @@ impl EventSink for RunWatcher {
                 self.capture.note_tool_call();
                 self.engine.note_permission(&self.run, false);
             }
-            events::EVENT_USAGE_UPDATE => {
-                if let Some(used) = event.payload["used"].as_u64() {
-                    self.capture.note_tokens(used);
-                }
-                self.engine.note_permission(&self.run, false);
-            }
-            events::EVENT_TOOL_CALL_UPDATE => {
+            events::EVENT_USAGE_UPDATE | events::EVENT_TOOL_CALL_UPDATE => {
                 self.engine.note_permission(&self.run, false);
             }
             _ => {}

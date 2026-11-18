@@ -203,6 +203,18 @@ impl super::DriverState {
         self.subagents.root_of(session_id).to_string()
     }
 
+    /// Whether a prompt parked under `parked` belongs to `session_id`. An
+    /// orchestrated child's prompts are parked under its chat, which lives
+    /// on another connection; on its own private connection that chat key
+    /// names this child alone, so draining the child drains them too.
+    pub(crate) fn parked_for(&self, session_id: &str, parked: &str) -> bool {
+        if parked == session_id {
+            return true;
+        }
+        let root = self.subagents.root_of(session_id);
+        root != session_id && parked == root && !self.session_roots.contains_key(root)
+    }
+
     /// Whether `session_id` runs headless, locked out of the client's file
     /// and terminal methods: its chat (itself, or the chat an orchestrated
     /// child is routed under) is ephemeral. An orchestrated child is

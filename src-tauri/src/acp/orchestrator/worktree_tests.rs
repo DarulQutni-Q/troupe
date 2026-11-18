@@ -75,6 +75,20 @@ async fn snapshot_carries_uncommitted_changes_into_the_worktree() {
 }
 
 #[tokio::test]
+async fn a_force_added_ignored_file_carries_into_the_worktree() {
+    let dir = repo_with_commit();
+    write(dir.path(), ".gitignore", "*.log\n");
+    commit(dir.path(), "ignore logs");
+    write(dir.path(), "kept.log", "staged on purpose\n");
+    git(dir.path(), &["add", "-f", "kept.log"]);
+    let root = dir.path().to_string_lossy().into_owned();
+    let prepared = prepare(&root, &RunId::mint()).await.expect("the worktree prepares");
+    let path = prepared.workspace.path.expect("the worktree path");
+    let kept = std::fs::read_to_string(Path::new(&path).join("kept.log"));
+    assert_eq!(kept.ok().as_deref(), Some("staged on purpose\n"));
+}
+
+#[tokio::test]
 async fn a_clean_tree_starts_on_head_itself() {
     let dir = repo_with_commit();
     let root = dir.path().to_string_lossy().into_owned();
@@ -182,12 +196,18 @@ async fn discard_removes_an_unused_worktree_and_its_branch() {
 /// Set every entry under `dir`, `dir` included, 8 days back.
 #[cfg(unix)]
 fn age_tree(dir: &Path) {
-    let aged = std::process::Command::new("find")
-        .arg(dir)
-        .args(["-exec", "touch", "-h", "-d", "8 days ago", "{}", "+"])
-        .status()
-        .expect("find runs");
-    assert!(aged.success());
+    let aged = std::time::SystemTime::now() - std::time::Duration::from_secs(8 * 24 * 60 * 60);
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(path) = pending.pop() {
+        if path.symlink_metadata().expect("the entry stats").is_dir() {
+            for entry in std::fs::read_dir(&path).expect("the directory reads") {
+                pending.push(entry.expect("the entry reads").path());
+            }
+        }
+        std::fs::File::open(&path)
+            .and_then(|file| file.set_modified(aged))
+            .expect("the mtime sets");
+    }
 }
 
 #[cfg(unix)]
@@ -205,4 +225,25 @@ async fn the_sweep_keeps_an_old_worktree_with_a_recent_edit_deep_inside() {
     write(worktree, "src/deep/edited.txt", "the child's recent edit\n");
     sweep_roots(vec![dir.path().to_path_buf()]).await;
     assert!(worktree.exists(), "a worktree edited recently survives the sweep");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn the_sweep_keeps_a_sub_worktree_outside_the_managed_directory() {
+    let dir = repo_with_commit();
+    let root = dir.path().to_string_lossy().into_owned();
+    // With no `.termul/worktrees` at all the sweep skips the root, which
+    // would pass this test without the location check.
+    prepare(&root, &RunId::mint()).await.expect("the worktree prepares");
+    let elsewhere = TempDir::new().expect("temp dir");
+    let path = elsewhere.path().join("sub-x");
+    let path_text = path.to_string_lossy().into_owned();
+    git(
+        dir.path(),
+        &["worktree", "add", "-b", "troupe/sub/x", "--", path_text.as_str(), "HEAD"],
+    );
+    age_tree(&path);
+    sweep_roots(vec![dir.path().to_path_buf()]).await;
+    assert!(path.exists(), "a worktree outside .termul/worktrees survives the sweep");
+    assert!(!git(dir.path(), &["branch", "--list", "troupe/sub/x"]).is_empty());
 }

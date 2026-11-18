@@ -97,7 +97,7 @@ impl OrchestratorEngine {
     /// nested call), with the ids a new run derives from it.
     fn caller_context(&self, caller: &CallerRef) -> (String, Option<RunId>, AgentId, u8) {
         let ledger = self.ledger.lock();
-        if let Some(parent) = ledger.run_with_session(caller.session.0.as_str()) {
+        if let Some(parent) = ledger.run_with_session(caller) {
             return (
                 parent.root.clone(),
                 Some(parent.run.clone()),
@@ -113,7 +113,7 @@ impl OrchestratorEngine {
     fn caller_root(&self, caller: &CallerRef) -> String {
         let ledger = self.ledger.lock();
         ledger
-            .run_with_session(caller.session.0.as_str())
+            .run_with_session(caller)
             .map(|run| run.root.clone())
             .unwrap_or_else(|| caller.session.0.clone())
     }
@@ -500,9 +500,11 @@ impl OrchestratorEngine {
             entry.model = model;
         }
 
-        // Announce: from here on, failures settle through the card path.
+        // Announce: from here on, failures settle through the card path,
+        // even while the announce itself is still queued on the driver.
         let announce = self.ledger.lock().runs.get(&run).map(|entry| entry.record());
         if let Some(record) = announce {
+            progress.lock().announced = true;
             if let Err(error) = self
                 .manager
                 .upsert_subagent_record(&self.parent_agent_of(&run), record, None)
@@ -574,6 +576,9 @@ impl OrchestratorEngine {
             if !entry.is_live() {
                 None
             } else {
+                // A waiter whose caller timed out or hung up is dropped here,
+                // so a wait-and-retry loop cannot grow the list.
+                entry.waiters.retain(|waiter| !waiter.is_closed());
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 entry.waiters.push(tx);
                 Some(rx)
@@ -659,6 +664,15 @@ impl OrchestratorEngine {
     pub fn set_settings(&self, input: SettingsInput) -> Result<OrchestratorSettings, String> {
         self.settings.set(input)
     }
+
+    /// Apply `edit` to the current settings under the store's writer lock,
+    /// so concurrent patches keep each other's changes.
+    pub fn update_settings(
+        &self,
+        edit: impl FnOnce(&mut OrchestratorSettings),
+    ) -> Result<OrchestratorSettings, String> {
+        self.settings.update(edit)
+    }
 }
 
 /// What a start has made so far, for the cleanup of a start that fails or
@@ -671,6 +685,8 @@ pub(super) struct StartProgress {
     /// Set by the cleanup: a worktree finished after it is removed by the
     /// task that made it.
     pub(super) abandoned: bool,
+    /// The announce card was submitted, so the chat may show the run.
+    pub(super) announced: bool,
 }
 
 /// A held capacity slot; dropping it frees the slot.
