@@ -109,6 +109,10 @@ mod native_subagents_loop_tests;
 #[cfg(test)]
 mod native_subagents_tests;
 #[cfg(test)]
+mod orchestrated_cards_tests;
+#[cfg(test)]
+mod orchestrated_origin_tests;
+#[cfg(test)]
 pub(crate) mod real_loop_tests;
 
 pub(crate) use history::*;
@@ -173,6 +177,13 @@ pub struct SessionCreationContext {
     /// promoted to a durable chat later via `promote_session` without losing
     /// the plan tool. Meaningless for non-ephemeral sessions (always injected).
     pub promotable: bool,
+    /// Set by the subagent orchestrator: this session is an orchestrated
+    /// child, routed under the chat named by the origin. The driver seeds
+    /// the child route from it inside `session/new`, so the child's
+    /// permission requests, questions and transcript surface in the chat.
+    /// The host injects the `troupe` MCP server for such a session (it may
+    /// recurse while the engine's depth setting allows).
+    pub child_origin: Option<ChildOrigin>,
     /// Worktree path the agent runs in (CAP-3). When set, the durable record
     /// carries it so relaunch reattaches without a second `git worktree add`
     /// and the chat indicator (CAP-6) survives reload. State isolation still
@@ -196,6 +207,22 @@ pub struct SessionCreationContext {
     pub quick_chat_id: Option<String>,
 }
 
+/// Where an orchestrated child session renders: every id the child's route
+/// needs, supplied by the engine (no parent walk on the driver).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChildOrigin {
+    /// The chat the child renders in (never itself a child session).
+    pub root_session_id: String,
+    /// The session that spawned the child: the chat, or another child.
+    pub parent_session_id: String,
+    /// The dispatch of the run that spawned this one (nested runs).
+    pub parent_dispatch_id: Option<String>,
+    /// This run's dispatch tool call id, `termul-subagent:<run id>`.
+    pub dispatch_id: String,
+    /// 1 = the chat's agent spawned the run directly.
+    pub depth: u8,
+}
+
 /// Commands sent from Tauri command handlers to an agent's driver thread.
 ///
 /// Every variant that expects a result carries a `oneshot::Sender`; the driver
@@ -209,6 +236,7 @@ enum AcpCommand {
         runtime_agent_id: String,
         project_id: Option<String>,
         ephemeral: bool,
+        child_origin: Option<ChildOrigin>,
         worktree_path: Option<String>,
         worktree_branch: Option<String>,
         additional_directories: Vec<PathBuf>,
@@ -286,6 +314,16 @@ enum AcpCommand {
                 crate::acp::subagents::StopSubagentError,
             >,
         >,
+    },
+    /// Upsert an orchestrated subagent's record into the chat it renders in
+    /// and deliver its card (announce, change or settle + result). Sent by
+    /// the orchestrator engine to the chat's agent driver; registers no
+    /// route.
+    UpsertSubagent {
+        record: crate::acp::subagents::Subagent,
+        /// The settle result text, when this is the settle card.
+        content: Option<String>,
+        reply: oneshot::Sender<Result<(), String>>,
     },
     /// Session ids whose workspace roots are registered on this agent's
     /// driver — the authoritative "which live agent owns which session" set
@@ -654,6 +692,12 @@ impl AcpManager {
     #[must_use]
     pub fn persistence(&self) -> Option<Arc<SessionPersistence>> {
         self.persistence.clone()
+    }
+
+    /// The sinks every host-spawned agent reaches (the orchestrator's
+    /// reroute filter forwards re-addressed child traffic to them).
+    pub(crate) fn sinks(&self) -> Vec<Arc<dyn EventSink>> {
+        self.sinks.clone()
     }
 
     /// The canvas call router renderers report their mounts and replies to.
@@ -1218,9 +1262,13 @@ impl AcpManager {
         // evict the token so it doesn't leak (CodeRabbit #6).
         // Story 8: a promotable ephemeral session (warm pool) still gets the
         // plan tool — it becomes a durable chat on promotion, and plan-MCP
-        // injection is `session/new`-time only.
+        // injection is `session/new`-time only. An orchestrated child session
+        // gets it too: it may spawn subagents of its own while the engine's
+        // depth setting allows, and its own tool calls route through the
+        // same host.
+        let inject_host_tools = !context.ephemeral || context.promotable || context.child_origin.is_some();
         let (combined_mcp_servers, plan_token): (Vec<McpServer>, Option<String>) =
-            if !context.ephemeral || context.promotable {
+            if inject_host_tools {
                 let (port, token, provisional_sid) =
                     self.host_plan_server.register_session(&agent_id.0);
                 let internal =
@@ -1249,6 +1297,7 @@ impl AcpManager {
                 runtime_agent_id: agent_id.0.clone(),
                 project_id: context.project_id,
                 ephemeral: context.ephemeral,
+                child_origin: context.child_origin,
                 worktree_path: context.worktree_path,
                 worktree_branch: context.worktree_branch,
                 additional_directories,
@@ -1489,6 +1538,11 @@ impl AcpManager {
         let tx = self.command_tx(agent_id)?;
         let closed_session = session_id.0.clone();
         send_command(&tx, |reply| AcpCommand::CloseSession { session_id, reply }).await?;
+        // A closed chat stops its orchestrated subagents; their own agents
+        // are private and would otherwise keep running unnoticed.
+        if let Some(engine) = crate::acp::orchestrator::installed() {
+            engine.chat_closed(&closed_session).await;
+        }
         self.release_session_tickets(&closed_session);
         Ok(())
     }
@@ -1644,7 +1698,9 @@ impl AcpManager {
 
     /// Stop subagent `subagent_id` of chat `root_session_id`. Converges: a
     /// subagent whose work already ended answers `AlreadyEnded` and nothing
-    /// is sent. The agent confirms a stop on the subagent's record.
+    /// is sent. The agent confirms a stop on the subagent's record. An
+    /// orchestrated run answers from the orchestrator engine first; only a
+    /// run the engine does not know falls through to the agent.
     pub(crate) async fn stop_subagent(
         &self,
         agent_id: &AgentId,
@@ -1653,6 +1709,11 @@ impl AcpManager {
     ) -> Result<crate::acp::subagents::StopSubagentOutcome, crate::acp::subagents::StopSubagentError>
     {
         use crate::acp::subagents::StopSubagentError;
+        if let Some(engine) = crate::acp::orchestrator::installed() {
+            if let Some(result) = engine.stop_from_ui(&root_session_id, &subagent_id).await {
+                return result.map(stop_outcome_to_wire).map_err(stop_error_from_engine);
+            }
+        }
         let subagent = crate::logging::redact_session_id(&subagent_id);
         let chat = crate::logging::redact_session_id(&root_session_id);
         log::info!("[acp] stop of subagent {subagent} in chat {chat} requested");
@@ -1689,6 +1750,25 @@ impl AcpManager {
             }
         }
         result
+    }
+
+    /// Upsert an orchestrated subagent's record into the chat it renders in,
+    /// on the chat's agent driver, and deliver its card. The engine's one
+    /// write path into a chat: persistence, relay and reopened chats read
+    /// the same record.
+    pub(crate) async fn upsert_subagent_record(
+        &self,
+        agent_id: &AgentId,
+        record: crate::acp::subagents::Subagent,
+        content: Option<String>,
+    ) -> Result<(), String> {
+        let tx = self.command_tx(agent_id)?;
+        send_command(&tx, |reply| AcpCommand::UpsertSubagent {
+            record,
+            content,
+            reply,
+        })
+        .await
     }
 
     /// Issue #837 split-brain guard: reject a reopen (`session/load` /
@@ -2050,6 +2130,10 @@ impl AcpManager {
             }
             entry
         };
+        // Orchestrated runs whose parent agent is this one stop with it.
+        if let Some(engine) = crate::acp::orchestrator::installed() {
+            engine.on_agent_gone(agent_id);
+        }
         let mut entry = entry?;
         log::info!("[acp] stopping agent {agent_id} ({intent:?})");
         // The driver teardown announces the stop to every sink (and so to the
@@ -2511,6 +2595,12 @@ impl AcpManager {
                             .iter()
                             .any(|(id, _, active)| *id == session_id.0 && *active)));
                     }
+                    // The orchestrator engine's card writes answer Ok here;
+                    // the cards themselves are asserted through the engine
+                    // tests' real spawn paths.
+                    AcpCommand::UpsertSubagent { reply, .. } => {
+                        let _ = reply.send(Ok(()));
+                    }
                     _ => {}
                 }
             }
@@ -2661,6 +2751,29 @@ impl AcpManager {
             None => Ok(()),
         }
     }
+}
+
+/// Map the engine's stop outcome onto the wire type `stop_subagent` answers
+/// with.
+fn stop_outcome_to_wire(
+    outcome: crate::acp::orchestrator::StopOutcome,
+) -> crate::acp::subagents::StopSubagentOutcome {
+    match outcome {
+        crate::acp::orchestrator::StopOutcome::Sent => {
+            crate::acp::subagents::StopSubagentOutcome::Sent
+        }
+        crate::acp::orchestrator::StopOutcome::AlreadyEnded => {
+            crate::acp::subagents::StopSubagentOutcome::AlreadyEnded
+        }
+    }
+}
+
+/// Map the engine's stop error onto the wire type `stop_subagent` answers
+/// with.
+fn stop_error_from_engine(
+    error: crate::acp::orchestrator::StopError,
+) -> crate::acp::subagents::StopSubagentError {
+    crate::acp::subagents::StopSubagentError::Failed(error.to_string())
 }
 
 #[cfg(test)]

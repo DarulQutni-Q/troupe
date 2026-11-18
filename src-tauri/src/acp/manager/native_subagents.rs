@@ -201,7 +201,7 @@ pub(super) async fn deliver_cursor_task(
 
 /// Fan routed `session/update` params out through the typed notification
 /// path.
-async fn deliver_routed(
+pub(super) async fn deliver_routed(
     state: &Mutex<DriverState>,
     persistence: Option<&Arc<SessionPersistence>>,
     sinks: &[Arc<dyn EventSink>],
@@ -602,6 +602,78 @@ fn change(state: &mut DriverState, child: &str, edit: impl FnOnce(&mut Subagent)
         .flatten();
     let title = (before.title != after.title).then_some(after.title.as_str());
     SessionRoute::Claimed(vec![record_update(&after, status, title)])
+}
+
+/// Upsert the orchestrated `record` into its chat's records and build the
+/// card updates that carry it: the dispatch `tool_call` announce for a
+/// record the chat has not seen, a `tool_call_update` for a change, and the
+/// `content` blocks of a settle result. Registers no route: the orchestrated
+/// child's route lives on the child's own driver.
+pub(super) fn orchestrated_updates(
+    state: &mut DriverState,
+    record: Subagent,
+    content: Option<&str>,
+    now_ms: u64,
+) -> Vec<Value> {
+    let mut after = record;
+    if after.state.is_idle() && after.ended_at.is_none() {
+        after.ended_at = Some(now_ms);
+    }
+    let root = after.root_session_id.clone();
+    let dispatch = after.dispatch_tool_call_id.clone();
+    let before = state.subagent_records().record(&root, &dispatch).cloned();
+    state
+        .subagent_records()
+        .upsert(
+            &root,
+            &dispatch,
+            || subagents::DispatchEntry {
+                record: after.clone(),
+                view: subagents::ToolView::default(),
+            },
+            |entry| entry.record = after.clone(),
+        );
+    if before.is_none() {
+        let mut meta = Map::new();
+        meta.insert(SUBAGENT_META_KEY.to_string(), after.meta_value());
+        if let Some(parent) = &after.parent_id {
+            meta.insert(
+                "claudeCode".to_string(),
+                json!({ "parentToolUseId": format!("termul-subagent:{parent}") }),
+            );
+        }
+        return vec![json!({
+            "sessionId": root,
+            "update": {
+                "sessionUpdate": "tool_call",
+                "toolCallId": dispatch,
+                "title": after.title,
+                "kind": "think",
+                "status": card_status(&after.state).unwrap_or("in_progress"),
+                "_meta": meta,
+            }
+        })];
+    }
+    let changed = before.as_ref() != Some(&after);
+    let Some(content) = content else {
+        return if changed {
+            vec![record_update(&after, None, None)]
+        } else {
+            Vec::new()
+        };
+    };
+    let mut update = json!({
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": dispatch,
+        "content": [{ "type": "content", "content": { "type": "text", "text": content } }],
+    });
+    if changed && before.as_ref().map(|before| &before.state) != Some(&after.state) {
+        if let Some(status) = card_status(&after.state) {
+            update["status"] = json!(status);
+        }
+    }
+    update["_meta"] = json!({ SUBAGENT_META_KEY: after.meta_value() });
+    vec![json!({ "sessionId": root, "update": update })]
 }
 
 /// Keep the child route's work flag (the idle reaper's evidence) in step

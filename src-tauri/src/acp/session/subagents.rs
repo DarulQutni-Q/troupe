@@ -44,6 +44,31 @@ impl SubagentRoutes {
         self.children.get(session_id)
     }
 
+    /// Insert the route of an orchestrated child session, built entirely
+    /// from `origin` (the engine supplies every id; no parent walk, unlike
+    /// [`Self::register`]). A repeated seed for the same child is a no-op
+    /// that returns the existing route.
+    pub(super) fn seed(
+        &mut self,
+        origin: &crate::acp::manager::ChildOrigin,
+        child: &str,
+    ) -> ChildRoute {
+        if let Some(existing) = self.children.get(child) {
+            return existing.clone();
+        }
+        let route = ChildRoute {
+            root_session_id: origin.root_session_id.clone(),
+            parent_session_id: origin.parent_session_id.clone(),
+            dispatch_id: origin.dispatch_id.clone(),
+            parent_dispatch_id: origin.parent_dispatch_id.clone(),
+            ended: false,
+        };
+        self.evict_if_full();
+        self.children.insert(child.to_string(), route.clone());
+        self.order.push(child.to_string());
+        route
+    }
+
     /// The chat session for `session_id`: its root when it is a child,
     /// otherwise itself.
     pub(super) fn root_of<'a>(&'a self, session_id: &'a str) -> &'a str {
@@ -138,6 +163,16 @@ impl super::DriverState {
     /// Record a native subagent session spawned from `parent`.
     pub(crate) fn register_subagent(&mut self, parent: &str, child: &str) -> Option<ChildRoute> {
         self.subagents.register(parent, child)
+    }
+
+    /// Seed the route of an orchestrated child session from the origin the
+    /// engine supplied at `session/new` time.
+    pub(crate) fn seed_child_route(
+        &mut self,
+        origin: &crate::acp::manager::ChildOrigin,
+        session_id: &str,
+    ) -> ChildRoute {
+        self.subagents.seed(origin, session_id)
     }
 
     /// Mark a running native subagent session ended.
