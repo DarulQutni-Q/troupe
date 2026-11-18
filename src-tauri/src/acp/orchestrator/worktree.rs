@@ -115,7 +115,7 @@ pub(crate) async fn diff_stat(path: &str, base: Option<&str>) -> Option<String> 
     if stat.is_none() {
         log::debug!(
             "[orchestrator] no diff stat for the worktree of run {}",
-            crate::logging::redact_session_id(&path)
+            crate::logging::redact_session_id(path)
         );
     }
     stat
@@ -163,12 +163,7 @@ pub(crate) async fn sweep_roots(roots: Vec<PathBuf>) {
                 if age < SWEEP_AGE {
                     continue;
                 }
-                let path = entry.path.clone();
-                let branch = entry.branch.clone();
-                let root_text = root_text.clone();
-                let removed = WorktreeManager::remove(&root_text, &path, true)
-                    .and_then(|()| WorktreeManager::delete_branch(&root_text, &branch));
-                match removed {
+                match remove_with_branch(&root_text, &entry.path, &entry.branch) {
                     Ok(()) => log::info!(
                         "[orchestrator] sweep removed the abandoned worktree {}",
                         crate::logging::redact_session_id(&entry.name)
@@ -184,6 +179,29 @@ pub(crate) async fn sweep_roots(roots: Vec<PathBuf>) {
     })
     .await
     .ok();
+}
+
+/// Remove the worktree of a run whose task never started, and its branch.
+/// Best-effort: a failure logs.
+pub(crate) async fn discard(root: String, path: String, branch: String) {
+    let removed = tokio::task::spawn_blocking(move || remove_with_branch(&root, &path, &branch)).await;
+    match removed {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => log::warn!(
+            "[orchestrator] could not remove an unused subagent worktree ({})",
+            error.error_code()
+        ),
+        Err(error) => log::warn!("[orchestrator] worktree removal task failed: {error}"),
+    }
+}
+
+fn remove_with_branch(
+    root: &str,
+    path: &str,
+    branch: &str,
+) -> Result<(), crate::worktree::WorktreeError> {
+    WorktreeManager::remove(root, path, true)
+        .and_then(|()| WorktreeManager::delete_branch(root, branch))
 }
 
 /// One snapshot: the commit the worktree starts from, and the human label

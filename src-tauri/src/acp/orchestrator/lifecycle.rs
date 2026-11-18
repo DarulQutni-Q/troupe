@@ -10,9 +10,9 @@ use parking_lot::Mutex;
 
 use crate::acp::config::AgentId;
 use crate::acp::manager::{AcpManager, StartedPrompt};
-use crate::acp::orchestrator::engine::OrchestratorEngine;
+use crate::acp::orchestrator::engine::{OrchestratorEngine, StartProgress};
 use crate::acp::orchestrator::run::{bounded, RunBody, RunEnd, RunId};
-use crate::acp::orchestrator::run::{StopError, StopOutcome};
+use crate::acp::orchestrator::run::{StartError, StopError, StopOutcome};
 use crate::acp::subagents::SubagentWorkspaceMode;
 
 /// After a stop, how long the cancel has to settle before the child is
@@ -20,29 +20,43 @@ use crate::acp::subagents::SubagentWorkspaceMode;
 const STOP_BACKSTOP: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl OrchestratorEngine {
-    /// A spawn that hit the engine's spawn bound: remove the unannounced
-    /// run (no card, no ledger entry), or settle an announced one as
-    /// Failed.
-    pub(super) fn abort_spawn(self: &Arc<Self>, run: &RunId, child: &Mutex<Option<AgentId>>) {
-        let announced = self
-            .ledger
-            .lock()
-            .runs
-            .get(run)
-            .is_some_and(|entry| entry.session().is_some());
+    /// Clean up a start that failed, timed out or was cancelled. Nothing
+    /// ran yet: no prompt was accepted. An announced run (its card is out)
+    /// settles as Failed; an unannounced one is forgotten. The child is
+    /// killed and the worktree made for it is removed with its branch.
+    pub(super) async fn abort_start(
+        self: &Arc<Self>,
+        run: &RunId,
+        progress: &Mutex<StartProgress>,
+        error: &StartError,
+    ) {
+        let StartProgress { child, worktree } = std::mem::take(&mut *progress.lock());
+        let announced = {
+            let mut ledger = self.ledger.lock();
+            let announced = match ledger.runs.get_mut(run) {
+                Some(entry) if entry.session().is_some() => {
+                    if worktree.is_some() {
+                        entry.workspace.path = None;
+                        entry.workspace.branch = None;
+                    }
+                    true
+                }
+                _ => false,
+            };
+            if !announced {
+                ledger.remove(run);
+            }
+            announced
+        };
         if announced {
-            let engine = self.clone();
-            let run = run.clone();
-            self.handle.spawn(async move {
-                engine
-                    .finish(&run, RunEnd::Failed("spawn timed out".to_string()))
-                    .await;
-            });
-        } else {
-            self.ledger.lock().remove(run);
+            self.finish(run, RunEnd::Failed(bounded(&error.to_string(), 512)))
+                .await;
         }
-        if let Some(child) = child.lock().clone() {
+        if let Some(child) = child {
             self.manager.kill_detached(&child);
+        }
+        if let Some((root, path, branch)) = worktree {
+            crate::acp::orchestrator::worktree::discard(root, path, branch).await;
         }
     }
 
@@ -139,9 +153,7 @@ impl OrchestratorEngine {
     ) -> Option<Result<StopOutcome, StopError>> {
         let cancel = {
             let mut ledger = self.ledger.lock();
-            let Some(entry) = ledger.runs.get_mut(run) else {
-                return None;
-            };
+            let entry = ledger.runs.get_mut(run)?;
             if entry.root != root {
                 return None;
             }
@@ -217,7 +229,17 @@ impl OrchestratorEngine {
 
     /// Stop every live run of a closed chat.
     pub(crate) async fn chat_closed(&self, root: &str) {
-        let runs = self.ledger.lock().live_runs_of_root(root);
+        let (runs, starts) = {
+            let ledger = self.ledger.lock();
+            let starts = ledger.cancel_starts(|start| start.root == root);
+            (ledger.live_runs_of_root(root), starts)
+        };
+        if starts > 0 {
+            log::info!(
+                "[orchestrator] chat {} closed: cancelled {starts} start(s)",
+                crate::logging::redact_session_id(root)
+            );
+        }
         if runs.is_empty() {
             return;
         }
@@ -250,7 +272,11 @@ impl OrchestratorEngine {
     /// dropped prompt reply wakes the supervision task, whose settle loses
     /// to this one).
     pub(crate) fn on_agent_gone(self: &Arc<Self>, agent: &AgentId) {
-        let runs = self.ledger.lock().live_runs_of_agent(agent);
+        let runs = {
+            let ledger = self.ledger.lock();
+            ledger.cancel_starts(|start| &start.parent_agent == agent);
+            ledger.live_runs_of_agent(agent)
+        };
         if runs.is_empty() {
             return;
         }

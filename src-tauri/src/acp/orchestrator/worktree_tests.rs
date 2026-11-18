@@ -172,3 +172,15 @@ async fn the_sweep_keeps_fresh_sub_worktrees() {
     sweep_roots(vec![dir.path().to_path_buf()]).await;
     assert!(Path::new(&path).exists(), "a fresh worktree survives the sweep");
 }
+
+#[tokio::test]
+async fn discard_removes_an_unused_worktree_and_its_branch() {
+    let dir = repo_with_commit();
+    let root = dir.path().to_string_lossy().into_owned();
+    let prepared = prepare(&root, &RunId::mint()).await.expect("the worktree prepares");
+    let path = prepared.workspace.path.expect("the worktree path");
+    let branch = prepared.workspace.branch.expect("the branch");
+    discard(root, path.clone(), branch.clone()).await;
+    assert!(!Path::new(&path).exists(), "the worktree is removed");
+    assert!(git(dir.path(), &["branch", "--list", &branch]).is_empty());
+}

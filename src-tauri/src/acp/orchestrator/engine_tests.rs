@@ -505,3 +505,79 @@ async fn the_listing_names_the_registry_agent_and_its_allowance() {
     engine.set_settings(disallowed).expect("settings");
     assert!(!engine.list_agents()[0].allowed);
 }
+
+/// Seed a start in flight for `CHAT`, as `reserve` records one.
+fn seeded_start(engine: &OrchestratorEngine, parent: &str) -> tokio_util::sync::CancellationToken {
+    let cancel = tokio_util::sync::CancellationToken::new();
+    engine.ledger.lock().starting.insert(
+        RunId::mint(),
+        crate::acp::orchestrator::run::Starting {
+            root: CHAT.to_string(),
+            parent_agent: AgentId(parent.to_string()),
+            cancel: cancel.clone(),
+        },
+    );
+    cancel
+}
+
+#[tokio::test]
+async fn a_start_in_flight_holds_a_capacity_slot() {
+    let Some(test) = refusal_engine() else {
+        return;
+    };
+    let engine = &test.engine;
+    engine
+        .set_settings(OrchestratorSettings {
+            max_running: 1,
+            ..OrchestratorSettings::default()
+        })
+        .expect("settings");
+    let _pending = seeded_start(engine, "agent-parent");
+    assert_eq!(
+        engine.start(test.caller.clone(), request("finish")).await,
+        Err(crate::acp::orchestrator::StartError::Capacity { max: 1 })
+    );
+}
+
+#[tokio::test]
+async fn closing_the_chat_cancels_its_starts_in_flight() {
+    let Some(test) = refusal_engine() else {
+        return;
+    };
+    let engine = &test.engine;
+    let cancel = seeded_start(engine, "agent-parent");
+    engine.chat_closed("another-chat").await;
+    assert!(!cancel.is_cancelled(), "another chat's close leaves it");
+    engine.chat_closed(CHAT).await;
+    assert!(cancel.is_cancelled());
+}
+
+#[tokio::test]
+async fn a_gone_parent_agent_cancels_its_starts_in_flight() {
+    let Some(test) = refusal_engine() else {
+        return;
+    };
+    let engine = &test.engine;
+    let mine = seeded_start(engine, "agent-parent");
+    let other = seeded_start(engine, "agent-other");
+    engine.on_agent_gone(&AgentId("agent-parent".to_string()));
+    assert!(mine.is_cancelled());
+    assert!(!other.is_cancelled());
+}
+
+#[tokio::test]
+async fn a_finished_start_frees_its_slot() {
+    let Some(test) = refusal_engine() else {
+        return;
+    };
+    let engine = &test.engine;
+    let refused = StartRequest {
+        workspace: SubagentWorkspaceMode::Worktree,
+        ..request("finish")
+    };
+    assert!(engine.start(test.caller.clone(), refused).await.is_err());
+    assert!(
+        engine.ledger.lock().starting.is_empty(),
+        "a failed start releases its reservation"
+    );
+}

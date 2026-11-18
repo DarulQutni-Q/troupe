@@ -14,8 +14,9 @@ use crate::acp::install::AcpInstallService;
 use crate::acp::manager::{AcpManager, ChildOrigin, SessionCreationContext};
 use crate::acp::orchestrator::lifecycle::{now_millis, ChildLease};
 use crate::acp::orchestrator::run::{
-    bounded, AgentListing, CallerRef, ChildRun, RunBody, RunCapture, RunEnd, RunId, RunLedger,
-    RunLookupError, RunSummary, StartError, StartRequest, StopError, StopOutcome, WaitOutcome,
+    bounded, AgentListing, CallerRef, ChildRun, RunBody, RunCapture, RunId, RunLedger,
+    RunLookupError, RunSummary, StartError, StartRequest, Starting, StopError, StopOutcome,
+    WaitOutcome,
 };
 use crate::acp::orchestrator::settings::{OrchestratorSettings, SettingsInput, SettingsStore};
 use crate::acp::orchestrator::sinks::{RerouteFilter, RunWatcher};
@@ -203,12 +204,6 @@ impl OrchestratorEngine {
                 max: settings.max_depth,
             });
         }
-        let live = self.ledger.lock().live_runs_of_root(&root).len();
-        if live >= settings.max_running as usize {
-            return Err(StartError::Capacity {
-                max: settings.max_running,
-            });
-        }
         let config = self.resolve_agent(agent)?;
         Ok(StartChecks {
             root,
@@ -226,35 +221,69 @@ impl OrchestratorEngine {
         req: StartRequest,
     ) -> Result<RunSummary, StartError> {
         let checks = self.checks(&caller, &req)?;
-        let run = loop {
-            let candidate = RunId::mint();
-            if !self.ledger.lock().runs.contains_key(&candidate) {
-                break candidate;
-            }
-        };
-        let run = Arc::new(run);
-        let spawned_child: Arc<Mutex<Option<AgentId>>> = Arc::new(Mutex::new(None));
+        let reservation = self.reserve(&checks)?;
+        let run = Arc::new(reservation.run.clone());
+        let cancel = reservation.cancel.clone();
+        let progress: Arc<Mutex<StartProgress>> = Arc::default();
         let start = {
             let engine = self.clone();
             let run = Arc::clone(&run);
-            let spawned_child = Arc::clone(&spawned_child);
+            let progress = Arc::clone(&progress);
             let caller = caller.clone();
             let req = req.clone();
             async move {
                 engine
-                    .start_inner(&caller, &req, checks, run, spawned_child)
+                    .start_inner(&caller, &req, checks, run, progress)
                     .await
             }
         };
-        match tokio::time::timeout(SPAWN_BOUND, start).await {
-            Ok(outcome) => outcome,
-            Err(_) => {
-                self.abort_spawn(&run, &spawned_child);
-                Err(StartError::SpawnFailed(
-                    "starting the subagent timed out".to_string(),
-                ))
-            }
+        // A timeout or a cancel drops `start_inner` at an await point; every
+        // failure, wherever it happened, is cleaned up below.
+        let outcome = tokio::select! {
+            biased;
+            outcome = tokio::time::timeout(SPAWN_BOUND, start) => outcome.unwrap_or_else(|_| {
+                Err(StartError::SpawnFailed("starting the subagent timed out".to_string()))
+            }),
+            () = cancel.cancelled() => Err(StartError::SpawnFailed(
+                "the chat closed while the subagent was starting".to_string(),
+            )),
+        };
+        if let Err(error) = &outcome {
+            self.abort_start(&run, &progress, error).await;
         }
+        drop(reservation);
+        outcome
+    }
+
+    /// Take a capacity slot for a new run of the checked chat: the check
+    /// and the claim happen under one lock, so parallel starts cannot both
+    /// pass it. The slot is released when the returned reservation drops.
+    fn reserve(self: &Arc<Self>, checks: &StartChecks) -> Result<Reservation, StartError> {
+        let mut ledger = self.ledger.lock();
+        let max = checks.settings.max_running;
+        if ledger.occupied_of_root(&checks.root) >= max as usize {
+            return Err(StartError::Capacity { max });
+        }
+        let run = loop {
+            let candidate = RunId::mint();
+            if !ledger.runs.contains_key(&candidate) && !ledger.starting.contains_key(&candidate) {
+                break candidate;
+            }
+        };
+        let cancel = tokio_util::sync::CancellationToken::new();
+        ledger.starting.insert(
+            run.clone(),
+            Starting {
+                root: checks.root.clone(),
+                parent_agent: checks.parent_agent.clone(),
+                cancel: cancel.clone(),
+            },
+        );
+        Ok(Reservation {
+            engine: self.clone(),
+            run,
+            cancel,
+        })
     }
 
     async fn start_inner(
@@ -263,7 +292,7 @@ impl OrchestratorEngine {
         req: &StartRequest,
         checks: StartChecks,
         run: Arc<RunId>,
-        spawned_child: Arc<Mutex<Option<AgentId>>>,
+        progress: Arc<Mutex<StartProgress>>,
     ) -> Result<RunSummary, StartError> {
         let StartChecks {
             root,
@@ -289,7 +318,15 @@ impl OrchestratorEngine {
             ),
             SubagentWorkspaceMode::Worktree => {
                 match crate::acp::orchestrator::worktree::prepare(&cwd, &run).await {
-                    Ok(prepared) => (prepared.workspace, prepared.base_commit),
+                    Ok(prepared) => {
+                        if let (Some(path), Some(branch)) =
+                            (&prepared.workspace.path, &prepared.workspace.branch)
+                        {
+                            progress.lock().worktree =
+                                Some((cwd.clone(), path.clone(), branch.clone()));
+                        }
+                        (prepared.workspace, prepared.base_commit)
+                    }
                     Err(error) => return Err(StartError::WorkspaceUnavailable(error)),
                 }
             }
@@ -317,7 +354,7 @@ impl OrchestratorEngine {
                 log::warn!("[orchestrator] agent {agent_name} spawn failed: {error}");
                 StartError::SpawnFailed(error)
             })?;
-        *spawned_child.lock() = Some(spawned.agent_id.clone());
+        progress.lock().child = Some(spawned.agent_id.clone());
         let child_agent = spawned.agent_id;
         let parent_dispatch_id = parent_run.as_ref().map(|parent| parent.dispatch_id());
         let entry = ChildRun {
@@ -377,8 +414,6 @@ impl OrchestratorEngine {
             Ok(created) => created.session_id,
             Err(error) => {
                 log::warn!("[orchestrator] run {run_log} session/new failed: {error}");
-                self.ledger.lock().remove(&run);
-                self.manager.kill_detached(&child_agent);
                 return Err(StartError::SpawnFailed(error));
             }
         };
@@ -420,8 +455,6 @@ impl OrchestratorEngine {
                 .await
             {
                 log::warn!("[orchestrator] run {run_log} announce failed: {error}");
-                self.finish(&run, RunEnd::Failed("the chat agent is gone".to_string()))
-                    .await;
                 return Err(StartError::SpawnFailed(error));
             }
         }
@@ -437,8 +470,7 @@ impl OrchestratorEngine {
             Ok(started) => started,
             Err(error) => {
                 log::warn!("[orchestrator] run {run_log} prompt failed: {error}");
-                self.finish(&run, RunEnd::Failed(bounded(&error, 512))).await;
-                return Err(StartError::SpawnFailed(error));
+                return Err(StartError::SpawnFailed(bounded(&error, 512)));
             }
         };
         let engine = self.clone();
@@ -575,13 +607,34 @@ impl OrchestratorEngine {
     }
 }
 
+/// What a start has made so far, for the cleanup of a start that fails or
+/// is cancelled partway.
+#[derive(Default)]
+pub(super) struct StartProgress {
+    pub(super) child: Option<AgentId>,
+    /// `(repository root, worktree path, branch)`.
+    pub(super) worktree: Option<(String, String, String)>,
+}
+
+/// A held capacity slot; dropping it frees the slot.
+struct Reservation {
+    engine: Arc<OrchestratorEngine>,
+    run: RunId,
+    cancel: tokio_util::sync::CancellationToken,
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        self.engine.ledger.lock().starting.remove(&self.run);
+    }
+}
+
 struct StartChecks {
     root: String,
     parent_run: Option<RunId>,
     parent_agent: AgentId,
     depth: u8,
     config: AgentConfig,
-    #[allow(dead_code)]
     settings: OrchestratorSettings,
 }
 

@@ -292,16 +292,13 @@ export function isSubagentActive(subagent: Subagent): boolean {
  * reported one. Ends those records as `unexplained`. Returns the same map when
  * nothing was running.
  *
- * `spareOrchestrated` (an agent-level tear): an orchestrated child runs as
- * its own host process, and the host settles it (cancelled, when the parent
- * agent goes) with a card that ends the row, so those records keep their
- * state here.
+ * Orchestrated runs end here too: when the chat's agent goes, the host stops
+ * their children, and no settle card can reach this chat without its agent.
  */
 export function cancelRunningSubagents(
   state: Pick<AcpState, 'toolCalls' | 'messages'>,
   sessionIds: readonly string[],
-  endedAt: number,
-  { spareOrchestrated = false }: { spareOrchestrated?: boolean } = {}
+  endedAt: number
 ): Record<string, ToolCall[]> {
   const { toolCalls } = state
   let next: Record<string, ToolCall[]> | null = null
@@ -313,7 +310,6 @@ export function cancelRunningSubagents(
     const settled = calls.map((call): ToolCall => {
       const record = call.subagent
       if (!record || !isSubagentActive(record)) return call
-      if (spareOrchestrated && record.source === 'orchestrated') return call
       if (!record.caps.liveProgress && !background.has(call)) return call
       count += 1
       return {

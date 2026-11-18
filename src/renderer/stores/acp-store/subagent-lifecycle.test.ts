@@ -285,7 +285,7 @@ describe('cancelRunningSubagents', () => {
     })
   })
 
-  it('spares orchestrated runs on an agent-level tear, and ends them on a chat close', () => {
+  it('ends orchestrated runs when the chat agent goes: no settle card can arrive', () => {
     const child = subagentToolCall(
       {
         source: 'orchestrated',
@@ -295,15 +295,8 @@ describe('cancelRunningSubagents', () => {
       },
       { toolCallId: 'sub-1', status: 'in_progress' }
     )
-    const toolCalls = { s1: [child] }
-
-    const spared = cancelRunningSubagents({ toolCalls, messages: {} }, ['s1'], 20, {
-      spareOrchestrated: true
-    })
-    expect(spared).toBe(toolCalls)
-
-    const closed = cancelRunningSubagents({ toolCalls, messages: {} }, ['s1'], 30)
-    expect(closed.s1[0]?.subagent).toMatchObject({
+    const ended = cancelRunningSubagents({ toolCalls: { s1: [child] }, messages: {} }, ['s1'], 30)
+    expect(ended.s1[0]?.subagent).toMatchObject({
       activity: 'idle',
       end: { reason: 'unexplained' },
       endedAt: 30

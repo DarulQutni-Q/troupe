@@ -471,10 +471,20 @@ impl std::fmt::Display for StopError {
     }
 }
 
+/// A start in flight, from the capacity check until `start` returns. It
+/// holds a capacity slot, and a closing chat or a dying parent agent
+/// cancels it.
+pub(crate) struct Starting {
+    pub(crate) root: String,
+    pub(crate) parent_agent: AgentId,
+    pub(crate) cancel: tokio_util::sync::CancellationToken,
+}
+
 /// The runs of every chat, under the engine's one mutex.
 pub(crate) struct RunLedger {
     pub(crate) runs: HashMap<RunId, ChildRun>,
     pub(crate) by_root: BTreeMap<String, Vec<RunId>>,
+    pub(crate) starting: HashMap<RunId, Starting>,
 }
 
 impl RunLedger {
@@ -482,7 +492,30 @@ impl RunLedger {
         Self {
             runs: HashMap::new(),
             by_root: BTreeMap::new(),
+            starting: HashMap::new(),
         }
+    }
+
+    /// The capacity slots `root` holds: its live runs plus its starts that
+    /// are not live runs yet.
+    pub(crate) fn occupied_of_root(&self, root: &str) -> usize {
+        let live = self.live_runs_of_root(root);
+        let pending = self
+            .starting
+            .iter()
+            .filter(|(id, start)| start.root == root && !live.contains(id))
+            .count();
+        live.len() + pending
+    }
+
+    /// Cancel every start `matches` selects.
+    pub(crate) fn cancel_starts(&self, matches: impl Fn(&Starting) -> bool) -> usize {
+        let mut cancelled = 0;
+        for start in self.starting.values().filter(|start| matches(start)) {
+            start.cancel.cancel();
+            cancelled += 1;
+        }
+        cancelled
     }
 
     pub(crate) fn insert(&mut self, run: ChildRun) {
