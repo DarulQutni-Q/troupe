@@ -48,7 +48,8 @@ const spoken = (reading: UsageReading): string =>
 
 /** Composer chip for a Codex chat. */
 export function CodexAccountChip({ sessionId }: { sessionId: string }): React.JSX.Element | null {
-  return <AccountChip ctx={useChatCodexAccount(sessionId)} />
+  const ctx = useChatCodexAccount(sessionId)
+  return <AccountChip ctx={ctx} chat={ctx} />
 }
 
 /** The same chip before a chat exists (the agent launcher). */
@@ -57,10 +58,16 @@ export function ProjectCodexAccountChip({
 }: {
   projectId: string
 }): React.JSX.Element | null {
-  return <AccountChip ctx={useProjectCodexAccount(projectId)} />
+  return <AccountChip ctx={useProjectCodexAccount(projectId)} chat={null} />
 }
 
-function AccountChip({ ctx }: { ctx: ProjectCodexAccount | null }): React.JSX.Element | null {
+function AccountChip({
+  ctx,
+  chat
+}: {
+  ctx: ProjectCodexAccount | null
+  chat: ChatCodexAccount | null
+}): React.JSX.Element | null {
   const openAppSettings = useSettingsModalStore((s) => s.openApp)
   const [switching, setSwitching] = useState(false)
   if (!ctx) return null
@@ -72,7 +79,6 @@ function AccountChip({ ctx }: { ctx: ProjectCodexAccount | null }): React.JSX.El
   const tone = usageTone(Math.max(0, ...segments.map((segment) => segment.percent)))
   const snapshot = ctx.accounts.snapshot
 
-  const chat = 'ownAccount' in ctx ? (ctx as ChatCodexAccount) : null
   const choose = async (accountId: string | null): Promise<void> => {
     const nextId = accountId ?? (chat ? chat.projectAccount.id : snapshot?.defaultAccountId) ?? null
     const next = snapshot?.accounts.find((a) => a.id === nextId)
@@ -113,8 +119,9 @@ function AccountChip({ ctx }: { ctx: ProjectCodexAccount | null }): React.JSX.El
   }
 
   const name = ctx.current.account.name
-  const defaultReadiness = ctx.defaultAccount
-    ? codexAccountReadiness(ctx.defaultAccount, ctx.accounts.usage[ctx.defaultAccount.id])
+  const followAccount = chat ? chat.projectAccount : ctx.defaultAccount
+  const followReadiness = followAccount
+    ? codexAccountReadiness(followAccount, ctx.accounts.usage[followAccount.id])
     : 'ready'
 
   return (
@@ -159,9 +166,9 @@ function AccountChip({ ctx }: { ctx: ProjectCodexAccount | null }): React.JSX.El
         <DropdownMenuLabel>
           {chat ? 'Account for this chat' : 'Account for this project'}
         </DropdownMenuLabel>
-        {ctx.defaultAccount && (
+        {followAccount && (
           <DropdownMenuItem
-            disabled={defaultReadiness !== 'ready'}
+            disabled={followReadiness !== 'ready'}
             onSelect={() => void choose(null)}
             className="flex items-center gap-2"
           >
@@ -170,10 +177,10 @@ function AccountChip({ ctx }: { ctx: ProjectCodexAccount | null }): React.JSX.El
                 {chat ? 'Follow project' : 'Follow default'}
               </span>
               <span className="truncate text-2xs text-muted-foreground">
-                Uses {chat ? chat.projectAccount.name : ctx.defaultAccount.name}
-                {defaultReadiness === 'ready'
+                Uses {followAccount.name}
+                {followReadiness === 'ready'
                   ? ''
-                  : ` · ${CODEX_NOT_READY_REASON[defaultReadiness].toLowerCase()}`}
+                  : ` · ${CODEX_NOT_READY_REASON[followReadiness].toLowerCase()}`}
               </span>
             </span>
             <span className="flex size-4 shrink-0 items-center justify-center">

@@ -8,6 +8,7 @@ import { CodexCliAuthSync } from '@/components/agents/CodexCliAuthSync'
 import { ChatRoute } from '@/components/ChatRoute'
 import { useClaudeLimitActions } from '@/components/chat/claude-account/limit-actions'
 import { useCodexAutoSwitch } from '@/components/chat/codex-account/auto-switch'
+import { useCodexLimitActions } from '@/components/chat/codex-account/limit-actions'
 import { DirectoryPicker } from '@/components/DirectoryPicker'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { ExternalLinkConfirmHost } from '@/components/external-link/ExternalLinkConfirm'
@@ -196,6 +197,9 @@ function AppEffects(): null {
   // A Claude chat at its account's limit continues on another account, even
   // off screen. Mounted on both renderer roots for parity.
   useClaudeLimitActions()
+  // A Codex chat at its account's limit continues on another account, even
+  // off screen. Mounted on both renderer roots for parity.
+  useCodexLimitActions()
   useCodexAutoSwitch()
   // A chat agent's proposed automation opens for review. Both roots.
   useAutomationProposals()

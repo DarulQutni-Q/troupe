@@ -8,6 +8,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Spinner } from '@/components/ui/spinner'
 import { useServerAdmitsRemoteWrites } from '@/hooks/use-server-admits-remote-writes'
+import { codexAccountsApi } from '@/lib/codex-accounts-api'
 import { useSettingsModalStore } from '@/stores/settings-modal-store'
 import {
   COMPOSER_DOCK_TEXT_ACTION_CLASS,
@@ -58,7 +59,10 @@ export function CodexLimitNotice({ sessionId }: { sessionId: string }): React.JS
             Continues at {formatClock(scheduledAt)}
             <button
               type="button"
-              onClick={() => cancelResume(sessionId)}
+              onClick={() => {
+                cancelResume(sessionId)
+                void codexAccountsApi.setResume(sessionId, null).catch(() => undefined)
+              }}
               className="font-medium text-foreground underline-offset-2 hover:underline focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-focus-ring"
             >
               Cancel

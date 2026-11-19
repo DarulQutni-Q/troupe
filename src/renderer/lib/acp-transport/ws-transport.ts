@@ -18,7 +18,8 @@ import type {
 import type {
   CodexAccount,
   CodexAccountsSnapshot,
-  CodexAccountUsage
+  CodexAccountUsage,
+  RemovedCodexAccount
 } from '@shared/types/codex-accounts.types'
 import type {
   McpCatalogIconPayload,
@@ -1245,18 +1246,25 @@ export class WsAcpTransport implements AcpTransport {
     await this.request('rename_codex_account', { accountId, name })
   }
 
-  async removeCodexAccount(accountId: string): Promise<string[]> {
+  async removeCodexAccount(accountId: string): Promise<RemovedCodexAccount> {
     await this.connect()
-    const reply = await this.request<{ movedProjectIds?: unknown }>('remove_codex_account', {
-      accountId
-    })
+    const reply = await this.request<{ movedProjectIds?: unknown; movedChatIds?: unknown }>(
+      'remove_codex_account',
+      { accountId }
+    )
     if (!Array.isArray(reply.movedProjectIds)) {
       throw new AcpTransportError(
         'protocol',
         'malformed remove_codex_account reply (missing movedProjectIds)'
       )
     }
-    return reply.movedProjectIds.filter((id): id is string => typeof id === 'string')
+    const ids = (list: unknown[]): string[] =>
+      list.filter((id): id is string => typeof id === 'string')
+    return {
+      movedProjectIds: ids(reply.movedProjectIds),
+      // A host older than per-chat Accounts sends no `movedChatIds`.
+      movedChatIds: Array.isArray(reply.movedChatIds) ? ids(reply.movedChatIds) : []
+    }
   }
 
   async startCodexAccountLogin(

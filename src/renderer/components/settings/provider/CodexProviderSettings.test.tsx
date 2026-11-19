@@ -5,9 +5,17 @@ import { useProjectStore } from '@/stores/project-store'
 import type { Project } from '@/types/project'
 import { CodexProviderSettings } from './CodexProviderSettings'
 
-const { api, toast, admits, applyProjectCodexAccount, signInCodexAccount } = vi.hoisted(() => ({
+const {
+  api,
+  toast,
+  admits,
+  applyProjectCodexAccount,
+  applyRemovedCodexAccount,
+  signInCodexAccount
+} = vi.hoisted(() => ({
   admits: { value: true },
   applyProjectCodexAccount: vi.fn(),
+  applyRemovedCodexAccount: vi.fn(),
   signInCodexAccount: vi.fn(),
   api: {
     list: vi.fn(),
@@ -33,7 +41,10 @@ vi.mock('@/lib/codex-account-sign-in', () => ({
   signInCodexAccount
 }))
 vi.mock('sonner', () => ({ toast }))
-vi.mock('@/stores/codex-account-switch', () => ({ applyProjectCodexAccount }))
+vi.mock('@/stores/codex-account-switch', () => ({
+  applyProjectCodexAccount,
+  applyRemovedCodexAccount
+}))
 vi.mock('@/hooks/use-server-admits-remote-writes', () => ({
   useServerAdmitsRemoteWrites: () => admits.value
 }))
@@ -65,7 +76,7 @@ beforeEach(() => {
   api.list.mockResolvedValue(SNAPSHOT)
   api.add.mockResolvedValue({ id: 'cd34', name: 'Side', createdAt: 1 })
   api.rename.mockResolvedValue(undefined)
-  api.remove.mockResolvedValue(['office'])
+  api.remove.mockResolvedValue({ movedProjectIds: ['office'], movedChatIds: [] })
   api.setDefault.mockResolvedValue(undefined)
   api.setAutoSwitch.mockResolvedValue(undefined)
   api.usage.mockResolvedValue([])
@@ -232,7 +243,11 @@ describe('CodexProviderSettings', () => {
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Remove' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Remove' }))
     await waitFor(() => expect(api.remove).toHaveBeenCalledWith('ab12'))
-    expect(applyProjectCodexAccount).toHaveBeenCalledWith('office')
+    expect(applyRemovedCodexAccount).toHaveBeenCalledWith(
+      { movedProjectIds: ['office'], movedChatIds: [] },
+      []
+    )
+    expect(applyProjectCodexAccount).not.toHaveBeenCalled()
   })
 
   it('does not make a signed-out account the default', async () => {

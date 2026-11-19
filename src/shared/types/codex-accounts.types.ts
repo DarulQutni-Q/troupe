@@ -41,6 +41,30 @@ export interface CodexAccountsSnapshot {
   autoSwitch: boolean
 }
 
+export interface CodexAccountRef {
+  id: string
+  name: string
+}
+
+/**
+ * What the host did for one Codex chat at its Account's limit. Mirrors
+ * `acp:codex_limit_action`.
+ */
+export type CodexLimitActionEvent = { sessionId: string; projectId: string } & (
+  | {
+      action: 'switched'
+      from: CodexAccountRef
+      to: CodexAccountRef
+      fromAgentId: string
+      newAgentId: string
+    }
+  /** `at`: epoch milliseconds. */
+  | { action: 'resume_scheduled'; at: number }
+  | { action: 'resume_cancelled' }
+  | { action: 'resumed'; fromAgentId: string | null; newAgentId: string }
+  | { action: 'failed'; reason: string }
+)
+
 /** What removing a Codex Account moved. */
 export interface RemovedCodexAccount {
   /** Projects that used the Account and now follow the Default Account. */

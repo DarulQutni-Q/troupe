@@ -24,7 +24,8 @@ import type {
 import type {
   CodexAccount,
   CodexAccountsSnapshot,
-  CodexAccountUsage
+  CodexAccountUsage,
+  RemovedCodexAccount
 } from '@shared/types/codex-accounts.types'
 import type { IpcResult } from '@shared/types/ipc.types'
 import type {
@@ -301,7 +302,8 @@ export function createInvokeAcpTransport(): AcpTransport {
     renameCodexAccount: async (accountId, name) => {
       await invoke('codex_accounts_rename', { accountId, name })
     },
-    removeCodexAccount: (accountId) => invoke<string[]>('codex_accounts_remove', { accountId }),
+    removeCodexAccount: (accountId) =>
+      invoke<RemovedCodexAccount>('codex_accounts_remove', { accountId }),
     startCodexAccountLogin: (accountId, config, options) =>
       invokeCommand<SpawnAgentResult>('codex_accounts_start_login', { accountId, config }, options),
     spawnAgent: (config, options, projectId, sessionId) =>

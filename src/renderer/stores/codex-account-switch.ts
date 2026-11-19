@@ -7,6 +7,7 @@
  * the chat continues in a new session with a summary handoff.
  */
 
+import type { RemovedCodexAccount } from '@shared/types/codex-accounts.types'
 import { toast } from 'sonner'
 import { runningBackgroundCommands } from '@/components/chat/background-commands'
 import { ownChatAccountId } from '@/components/chat/codex-account/use-project-codex-account'
@@ -386,6 +387,32 @@ export async function switchProjectCodexAccount(
   if (!applied) return false
   await applyProjectCodexAccount(projectId, { credentialsRenewed: true })
   return true
+}
+
+/**
+ * Restart the chats an Account removal moved: the open Codex chats of each
+ * moved Project that follow it, and each chat that had the removed Account
+ * as its own. Each runs the Account it resolves to now.
+ */
+export async function applyRemovedCodexAccount(
+  removed: RemovedCodexAccount,
+  followerProjectIds: readonly string[] = []
+): Promise<void> {
+  const projects = new Set([...removed.movedProjectIds, ...followerProjectIds])
+  const sessions = useAcpStore.getState().sessions
+  const chats = removed.movedChatIds.filter((id) => {
+    const projectId = sessions[id]?.projectId
+    return projectId !== undefined && !projects.has(projectId)
+  })
+  void logFrontendError({
+    level: 'info',
+    source: 'codexAccountSwitch.remove',
+    message: `Codex account removed; restarting chats of ${projects.size} projects and ${chats.length} of ${removed.movedChatIds.length} chats that ran it as their own`
+  })
+  await Promise.all([
+    ...[...projects].map((projectId) => applyProjectCodexAccount(projectId)),
+    ...chats.map((id) => restartCodexSession(id))
+  ])
 }
 
 export function chatSwitchNotice(from: string, to: string, window: string): string {

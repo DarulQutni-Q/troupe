@@ -13,7 +13,8 @@
 import type {
   CodexAccount,
   CodexAccountsSnapshot,
-  CodexAccountUsage
+  CodexAccountUsage,
+  RemovedCodexAccount
 } from '@shared/types/codex-accounts.types'
 import type { AgentConfig, SpawnAgentResult } from '@/lib/acp-api'
 import { getAcpTransport } from './acp-transport'
@@ -116,8 +117,8 @@ export const codexAccountsApi = {
       notifyCodexAccountListChanged()
     }),
 
-  /** Resolves to the ids of the Projects that moved to the Default Account. */
-  remove: (accountId: string): Promise<string[]> =>
+  /** Projects that moved to the Default Account, and chats that now follow their Project. */
+  remove: (accountId: string): Promise<RemovedCodexAccount> =>
     logged('remove', async () => {
       const moved = await getAcpTransport().removeCodexAccount(accountId)
       notifyCodexAccountListChanged()

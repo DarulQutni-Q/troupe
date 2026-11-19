@@ -94,6 +94,28 @@ describe('CodexAccountChip', () => {
     expect(switcher.switchChatCodexAccount).not.toHaveBeenCalled()
   })
 
+  it('disables Follow project from the project account, not the default', async () => {
+    api.list.mockResolvedValue({
+      accounts: [
+        { id: 'default', name: 'Personal', builtin: true, signedIn: true },
+        { id: 'ab12', name: 'Work', builtin: false, signedIn: false }
+      ],
+      defaultAccountId: 'default',
+      projectAccounts: { office: 'ab12' },
+      chatAccounts: { s1: 'default' },
+      autoSwitch: false
+    })
+    render(<CodexAccountChip sessionId="s1" />)
+    fireEvent.pointerDown(await screen.findByTestId('codex-account-chip'), {
+      button: 0,
+      ctrlKey: false
+    })
+    const follow = await screen.findByRole('menuitem', { name: /Follow project/ })
+    expect(follow).toHaveTextContent('Uses Work')
+    expect(follow).toHaveTextContent(/signed out/i)
+    expect(follow).toHaveAttribute('data-disabled')
+  })
+
   it('does not offer a signed-out account', async () => {
     render(<CodexAccountChip sessionId="s1" />)
     fireEvent.pointerDown(await screen.findByTestId('codex-account-chip'), {

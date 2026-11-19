@@ -19,6 +19,7 @@ import {
 } from '@/stores/workspace-store'
 import {
   applyProjectCodexAccount,
+  applyRemovedCodexAccount,
   CODEX_AGENT_CONFIG_ID,
   isCodexSession,
   restartCodexSession,
@@ -522,5 +523,11 @@ describe('a switch the host refuses', () => {
     expect(killAgent).not.toHaveBeenCalled()
     expect(retryCrashedSession).not.toHaveBeenCalled()
     expect(useAcpStore.getState().sessions).toBe(before)
+  })
+
+  it('restarts a chat that had the removed account as its own', async () => {
+    await applyRemovedCodexAccount({ movedProjectIds: [], movedChatIds: ['c1', 'closed'] })
+    expect(retryCrashedSession.mock.calls).toEqual([['c1', { resend: false }]])
+    expect(killAgent.mock.calls).toEqual([['agent-c1']])
   })
 })

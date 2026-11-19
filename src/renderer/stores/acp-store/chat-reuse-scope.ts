@@ -24,11 +24,7 @@ export async function readOwnChatAccount(sessionId: string): Promise<string | nu
   }
 }
 
-/**
- * The chat id the agent that reopens existing chat `sessionId` is keyed to
- * ({@link reuseScopeFor}). Only a managed Claude chat can run its own
- * Account, so any other agent reads nothing and shares its Project's agents.
- */
+/** The chat's own Codex Account; `null` when it follows its Project. */
 async function readOwnCodexChatAccount(sessionId: string): Promise<string | null | undefined> {
   try {
     return ownCodexChatAccountId(await codexAccountsApi.list(), sessionId)
@@ -42,6 +38,11 @@ async function readOwnCodexChatAccount(sessionId: string): Promise<string | null
   }
 }
 
+/**
+ * The chat id the agent that reopens existing chat `sessionId` is keyed to
+ * ({@link reuseScopeFor}). A managed Claude or Codex chat can run its own
+ * Account; any other agent reads nothing and shares its Project's agents.
+ */
 export async function readReuseScope(
   configId: string,
   sessionId: string
