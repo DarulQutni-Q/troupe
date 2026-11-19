@@ -63,7 +63,9 @@ describe('RailAgentStack', () => {
     expect(container.querySelector('span.absolute.rounded-full')).toHaveClass(
       'bg-background',
       'group-hover/rail-chat:bg-row-hover-solid',
-      '[[data-open]_&]:bg-[var(--keycap-fill)]'
+      'group-data-[state=open]/rail-chat:bg-row-hover-solid',
+      '[[data-open]_&]:!bg-[var(--keycap-fill)]',
+      '[[data-rail-surface]_&]:[[data-open]_&]:!bg-[var(--rail-keycap-fill)]'
     )
   })
 })

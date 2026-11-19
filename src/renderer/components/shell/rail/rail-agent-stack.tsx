@@ -55,10 +55,19 @@ const STACK_MAX = 5
 /**
  * The cutout behind a glyph that sits in front of another: the row's own
  * surface, so the glyph behind reads as passing under it. Rest = the Rail
- * background, hover = the flattened row-hover wash, open = the keycap fill.
+ * background. Hover and an open menu = the flattened row-hover wash (the
+ * row keeps that wash while the menu is open). The current chat = the
+ * keycap fill, and the Rail keycap when the row sits on the Rail surface.
+ * The open fills use `!` so they win over the menu wash: a current chat
+ * stays on the keycap while its menu is open.
  */
-const CUTOUT_CLASS =
-  'bg-background group-hover/rail-chat:bg-row-hover-solid [[data-open]_&]:bg-[var(--keycap-fill)]'
+const CUTOUT_CLASS = [
+  'bg-background',
+  'group-hover/rail-chat:bg-row-hover-solid',
+  'group-data-[state=open]/rail-chat:bg-row-hover-solid',
+  '[[data-open]_&]:!bg-[var(--keycap-fill)]',
+  '[[data-rail-surface]_&]:[[data-open]_&]:!bg-[var(--rail-keycap-fill)]'
+].join(' ')
 
 /** Consecutive duplicates collapse (a → a → b is two agents); order is kept. */
 export function stackAgentIds(agents: readonly string[] | undefined): string[] {

@@ -350,6 +350,7 @@ export function RailProjectChats({
   const group = (
     <RailChatGroup
       ref={groupRef}
+      expandedKey={peek ? undefined : project.id}
       id={peek ? undefined : railChatsListId(project.id)}
       total={cards.length}
       pinnedIndex={openIndex === -1 ? undefined : openIndex}

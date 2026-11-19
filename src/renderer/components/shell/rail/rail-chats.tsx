@@ -1,4 +1,13 @@
-import { createContext, forwardRef, useContext, useMemo, useState } from 'react'
+import {
+  createContext,
+  forwardRef,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore
+} from 'react'
 import { MoreHorizontal } from '@/components/icons'
 import {
   CHAT_LIVE_STATE_WORD,
@@ -40,6 +49,32 @@ export function isRailChatRowShown(
 }
 
 /**
+ * Whether a project's Rail chat group has Show more open. The project row
+ * reads it so a needs-you count drops a chat once its row is on screen.
+ * The peek does not publish: it is a second copy of the list.
+ */
+const railChatListExpanded = new Map<string, boolean>()
+const railChatListExpandedListeners = new Set<() => void>()
+
+function publishRailChatListExpanded(key: string, expanded: boolean): void {
+  if ((railChatListExpanded.get(key) === true) === expanded) return
+  if (expanded) railChatListExpanded.set(key, true)
+  else railChatListExpanded.delete(key)
+  for (const listener of railChatListExpandedListeners) listener()
+}
+
+export function useRailChatListExpanded(key: string): boolean {
+  return useSyncExternalStore(
+    (listener) => {
+      railChatListExpandedListeners.add(listener)
+      return () => railChatListExpandedListeners.delete(listener)
+    },
+    () => railChatListExpanded.get(key) === true,
+    () => false
+  )
+}
+
+/**
  * A project's chat row starts its fill 22px in, so the fill runs x 30–240
  * on the Rail and the row reads as the project's child.
  */
@@ -70,6 +105,11 @@ export interface RailChatGroupProps extends React.ComponentPropsWithoutRef<'div'
    * the limit: the open chat must never hide behind "Show N more".
    */
   pinnedIndex?: number
+  /**
+   * Project id whose needs-you count should follow this group's Show more
+   * state. Omit it on the peek.
+   */
+  expandedKey?: string
 }
 
 /**
@@ -79,13 +119,24 @@ export interface RailChatGroupProps extends React.ComponentPropsWithoutRef<'div'
  * `RailChatGroup > RailChatList > RailChatItem > RailChatRow`, then `RailShowMore`.
  */
 export const RailChatGroup = forwardRef<HTMLDivElement, RailChatGroupProps>(function RailChatGroup(
-  { total, pinnedIndex, className, children, ...props },
+  { total, pinnedIndex, expandedKey, className, children, ...props },
   ref
 ) {
-  const [expanded, setExpanded] = useState(false)
+  const [expanded, setExpandedState] = useState(false)
+  const setExpanded = useCallback(
+    (next: boolean) => {
+      setExpandedState(next)
+      if (expandedKey) publishRailChatListExpanded(expandedKey, next)
+    },
+    [expandedKey]
+  )
+  useEffect(() => {
+    if (!expandedKey) return
+    return () => publishRailChatListExpanded(expandedKey, false)
+  }, [expandedKey])
   const value = useMemo(
     () => ({ total, pinnedIndex, expanded, setExpanded }),
-    [total, pinnedIndex, expanded]
+    [total, pinnedIndex, expanded, setExpanded]
   )
   return (
     <RailChatGroupContext.Provider value={value}>

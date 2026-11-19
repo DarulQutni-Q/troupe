@@ -124,6 +124,10 @@ describe('attentionOutsideRows', () => {
       count: 0,
       sessionId: undefined
     })
+    expect(attentionOutsideRows('p1', needsYou, cards, null, true)).toEqual({
+      count: 0,
+      sessionId: undefined
+    })
   })
 })
 

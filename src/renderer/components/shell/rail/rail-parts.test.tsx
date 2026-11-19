@@ -10,7 +10,8 @@ import {
   RailChatRow,
   RailChatStatusDot,
   RailChatTitle,
-  RailShowMore
+  RailShowMore,
+  useRailChatListExpanded
 } from './rail-chats'
 import { RailDensityProvider } from './rail-density'
 import { RailNav, RailNavRow } from './rail-nav'
@@ -112,6 +113,30 @@ function ChatGroup({
     </RailChatGroup>
   )
 }
+
+describe('Rail chat list expanded state', () => {
+  function Flag(): React.JSX.Element {
+    const open = useRailChatListExpanded('p1')
+    return <span data-testid="list-open">{open ? 'yes' : 'no'}</span>
+  }
+
+  it('publishes Show more for the project row and clears it on unmount', () => {
+    const view = render(
+      <>
+        <Flag />
+        <RailChatGroup total={6} expandedKey="p1">
+          <RailShowMore />
+        </RailChatGroup>
+      </>
+    )
+    expect(screen.getByTestId('list-open')).toHaveTextContent('no')
+    fireEvent.click(screen.getByRole('button', { name: 'Show 1 more' }))
+    expect(screen.getByTestId('list-open')).toHaveTextContent('yes')
+    view.unmount()
+    render(<Flag />)
+    expect(screen.getByTestId('list-open')).toHaveTextContent('no')
+  })
+})
 
 describe('RailChatGroup parts', () => {
   const rows = () =>
