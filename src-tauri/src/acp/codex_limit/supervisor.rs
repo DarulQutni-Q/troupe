@@ -196,6 +196,13 @@ impl Supervisor {
             resets_at.map_or(now + SHORTEST_WINDOW, epoch),
         );
         if self.clock.started_since(&session_id.0, turn_mark) {
+            // The account stays limited. This signal did not move the chat,
+            // so a later limit for the same reset can still switch or resume.
+            self.attempts.remove(&Attempt {
+                session_id: session_id.0.clone(),
+                resets_at,
+                account_id: agent_account.clone(),
+            });
             log::info!(
                 "[codex-limit] chat {chat} started a newer turn during the limit check; left alone"
             );
