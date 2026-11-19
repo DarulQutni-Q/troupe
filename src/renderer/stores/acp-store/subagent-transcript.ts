@@ -91,10 +91,12 @@ function boundSubagentMessages(messages: SubagentMessage[]): SubagentMessage[] {
   return kept
 }
 
+/** Counted in code points, as the host counts `chars()`, so both keep the same ids. */
 function boundedMessageId(id: unknown): { messageId?: string } {
-  return typeof id === 'string' && id.length > 0 && id.length <= MAX_MESSAGE_ID_CHARS
-    ? { messageId: id }
-    : {}
+  if (typeof id !== 'string' || id.length === 0 || id.length > 2 * MAX_MESSAGE_ID_CHARS) return {}
+  let count = 0
+  for (const _ of id) count++
+  return count <= MAX_MESSAGE_ID_CHARS ? { messageId: id } : {}
 }
 
 /** The subagent text a chunk adds; null for thought, user, and non-text chunks. */

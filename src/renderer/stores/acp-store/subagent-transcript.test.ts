@@ -175,6 +175,15 @@ describe('subagent transcript ingest (live)', () => {
     ])
   })
 
+  it('keeps a messageId of 256 code points apart, as the host does, even past 256 UTF-16 units', () => {
+    const first = `${'\u{1F600}'.repeat(128)}a`
+    const second = `${'\u{1F600}'.repeat(128)}b`
+    toolCall({ toolCallId: 'd1', status: 'in_progress', rawInput: dispatchInput })
+    chunk('Checking now.', 'd1', 'agent', first)
+    chunk('Done.', 'd1', 'agent', second)
+    expect(texts('d1')).toEqual(['Checking now.', 'Done.'])
+  })
+
   it('keeps one message across tool calls another subagent or the main turn made', () => {
     toolCall({ toolCallId: 'd1', status: 'in_progress', rawInput: dispatchInput })
     toolCall({ toolCallId: 'd2', status: 'in_progress', rawInput: dispatchInput })
