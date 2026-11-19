@@ -34,7 +34,10 @@ beforeEach(() => {
   transport.listCodexAccounts.mockResolvedValue(SNAPSHOT)
   transport.setProjectCodexAccount.mockResolvedValue(true)
   transport.addCodexAccount.mockResolvedValue({ id: 'ab12', name: 'Work', createdAt: 1 })
-  transport.removeCodexAccount.mockResolvedValue(['office'])
+  transport.removeCodexAccount.mockResolvedValue({
+    movedProjectIds: ['office'],
+    movedChatIds: ['s1']
+  })
   transport.startCodexAccountLogin.mockResolvedValue({
     agentId: 'a1',
     capabilities: {},
@@ -61,7 +64,10 @@ describe('codexAccountsApi', () => {
   it('adds, renames, removes, and starts a sign-in spawn', async () => {
     await expect(codexAccountsApi.add('Work')).resolves.toMatchObject({ id: 'ab12' })
     await codexAccountsApi.rename('ab12', 'Office')
-    await expect(codexAccountsApi.remove('ab12')).resolves.toEqual(['office'])
+    await expect(codexAccountsApi.remove('ab12')).resolves.toEqual({
+      movedProjectIds: ['office'],
+      movedChatIds: ['s1']
+    })
     const config = { name: 'Codex', command: 'npx', args: [], env: {} }
     await expect(codexAccountsApi.startLogin('ab12', config)).resolves.toMatchObject({
       agentId: 'a1'

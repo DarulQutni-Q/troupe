@@ -15,7 +15,8 @@ import type {
 import type {
   CodexAccount,
   CodexAccountsSnapshot,
-  CodexAccountUsage
+  CodexAccountUsage,
+  RemovedCodexAccount
 } from '@shared/types/codex-accounts.types'
 import type {
   McpCatalogIconPayload,
@@ -391,15 +392,28 @@ export interface AcpTransport {
     accountId: string | null,
     expectedAccountId?: string
   ): Promise<boolean>
+  /**
+   * `null` makes the chat follow its Project again. With `expectedAccountId`
+   * the host applies the choice only while the chat still runs on that Account.
+   */
+  setChatCodexAccount(
+    projectId: string,
+    sessionId: string,
+    accountId: string | null,
+    expectedAccountId?: string
+  ): Promise<boolean>
   setCodexAutoSwitch(enabled: boolean): Promise<void>
+  /** Continue the chat at `at` (epoch ms), or cancel with `null`. */
+  setCodexResume(sessionId: string, at: number | null): Promise<void>
   /** Add a signed-out Account; a same-id resend answers with the first one. */
   addCodexAccount(name: string, options?: CommandCallOptions): Promise<CodexAccount>
   renameCodexAccount(accountId: string, name: string): Promise<void>
   /**
-   * Remove an Account and resolve the ids of the Projects that moved to the
-   * Default Account; `[]` when it was already gone.
+   * Remove an Account. `movedProjectIds` are the Projects that now follow the
+   * Default Account. `movedChatIds` are the chats that had it as their own and
+   * now follow their Project. Both are empty when it was already gone.
    */
-  removeCodexAccount(accountId: string): Promise<string[]>
+  removeCodexAccount(accountId: string): Promise<RemovedCodexAccount>
   /**
    * Spawn the Codex agent with this Account's home. The caller then
    * authenticates it with `chat-gpt` or `chat-gpt-device-code`.

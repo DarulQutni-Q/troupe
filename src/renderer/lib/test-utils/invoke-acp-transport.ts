@@ -24,7 +24,8 @@ import type {
 import type {
   CodexAccount,
   CodexAccountsSnapshot,
-  CodexAccountUsage
+  CodexAccountUsage,
+  RemovedCodexAccount
 } from '@shared/types/codex-accounts.types'
 import type { IpcResult } from '@shared/types/ipc.types'
 import type {
@@ -287,15 +288,26 @@ export function createInvokeAcpTransport(): AcpTransport {
         accountId,
         expectedAccountId: expectedAccountId ?? null
       }),
+    setChatCodexAccount: (projectId, sessionId, accountId, expectedAccountId) =>
+      invoke<boolean>('codex_accounts_set_chat', {
+        projectId,
+        sessionId,
+        accountId,
+        expectedAccountId: expectedAccountId ?? null
+      }),
     setCodexAutoSwitch: async (enabled) => {
       await invoke('codex_accounts_set_auto_switch', { enabled })
+    },
+    setCodexResume: async (sessionId, at) => {
+      await invoke('codex_accounts_set_resume', { sessionId, at })
     },
     addCodexAccount: (name, options) =>
       invokeCommand<CodexAccount>('codex_accounts_add', { name }, options),
     renameCodexAccount: async (accountId, name) => {
       await invoke('codex_accounts_rename', { accountId, name })
     },
-    removeCodexAccount: (accountId) => invoke<string[]>('codex_accounts_remove', { accountId }),
+    removeCodexAccount: (accountId) =>
+      invoke<RemovedCodexAccount>('codex_accounts_remove', { accountId }),
     startCodexAccountLogin: (accountId, config, options) =>
       invokeCommand<SpawnAgentResult>('codex_accounts_start_login', { accountId, config }, options),
     spawnAgent: (config, options, projectId, sessionId) =>

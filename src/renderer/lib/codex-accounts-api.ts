@@ -13,7 +13,8 @@
 import type {
   CodexAccount,
   CodexAccountsSnapshot,
-  CodexAccountUsage
+  CodexAccountUsage,
+  RemovedCodexAccount
 } from '@shared/types/codex-accounts.types'
 import type { AgentConfig, SpawnAgentResult } from '@/lib/acp-api'
 import { getAcpTransport } from './acp-transport'
@@ -71,6 +72,26 @@ export const codexAccountsApi = {
       return applied
     }),
 
+  setChatAccount: (
+    projectId: string,
+    sessionId: string,
+    accountId: string | null,
+    options: { expectedAccountId?: string } = {}
+  ): Promise<boolean> =>
+    logged('setChatAccount', async () => {
+      const applied = await getAcpTransport().setChatCodexAccount(
+        projectId,
+        sessionId,
+        accountId,
+        options.expectedAccountId
+      )
+      if (applied) notifyCodexAccountListChanged()
+      return applied
+    }),
+
+  setResume: (sessionId: string, at: number | null): Promise<void> =>
+    logged('setResume', () => getAcpTransport().setCodexResume(sessionId, at)),
+
   /** A chat at its limit continues on the signed-in Account with the most room. */
   setAutoSwitch: (enabled: boolean): Promise<void> =>
     logged('setAutoSwitch', async () => {
@@ -96,8 +117,8 @@ export const codexAccountsApi = {
       notifyCodexAccountListChanged()
     }),
 
-  /** Resolves to the ids of the Projects that moved to the Default Account. */
-  remove: (accountId: string): Promise<string[]> =>
+  /** Projects that moved to the Default Account, and chats that now follow their Project. */
+  remove: (accountId: string): Promise<RemovedCodexAccount> =>
     logged('remove', async () => {
       const moved = await getAcpTransport().removeCodexAccount(accountId)
       notifyCodexAccountListChanged()

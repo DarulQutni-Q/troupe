@@ -19,13 +19,16 @@ import {
 } from '@/stores/workspace-store'
 import {
   applyProjectCodexAccount,
+  applyRemovedCodexAccount,
   CODEX_AGENT_CONFIG_ID,
   isCodexSession,
   restartCodexSession,
   switchProjectCodexAccount
 } from './codex-account-switch'
 
-const { api } = vi.hoisted(() => ({ api: { setProjectAccount: vi.fn() } }))
+const { api } = vi.hoisted(() => ({
+  api: { setProjectAccount: vi.fn(), list: vi.fn(), setChatAccount: vi.fn() }
+}))
 vi.mock('@/lib/codex-accounts-api', () => ({ codexAccountsApi: api }))
 vi.mock('@/lib/log-api', () => ({ logFrontendError: vi.fn() }))
 vi.mock('@/lib/acp-api', async (importActual) => ({
@@ -101,6 +104,8 @@ beforeEach(() => {
     }))
   })
   api.setProjectAccount.mockResolvedValue(true)
+  api.setChatAccount.mockResolvedValue(true)
+  api.list.mockResolvedValue({ accounts: [], chatAccounts: {}, projectAccounts: {} })
   useAcpStore.setState({
     ...FRESH,
     killAgent,
@@ -142,6 +147,41 @@ describe('claude account switch', () => {
     const state = useAcpStore.getState()
     expect(isCodexSession(state, 'c1')).toBe(true)
     expect(isCodexSession(state, 'other')).toBe(false)
+  })
+
+  it('closes only this chat when another open chat still uses the agent', async () => {
+    const closeSession = vi.spyOn(acpApi, 'closeSession').mockResolvedValue(undefined)
+    useAcpStore.setState((s) => ({
+      sessions: {
+        ...s.sessions,
+        c1: { ...s.sessions.c1, agentId: 'agent-shared' },
+        c2: { ...s.sessions.c2, agentId: 'agent-shared', activeTurn: false, openTurnId: null }
+      }
+    }))
+    await expect(restartCodexSession('c1')).resolves.toBe(true)
+    expect(closeSession).toHaveBeenCalledWith('agent-shared', 'c1')
+    expect(killAgent).not.toHaveBeenCalled()
+    closeSession.mockRestore()
+  })
+
+  it('reports a continuation notice the restarted chat did not accept', async () => {
+    const sendPrompt = vi.fn(async () => {
+      throw new Error('offline')
+    })
+    useAcpStore.setState({ sendPrompt } as never)
+    await expect(restartCodexSession('c1', { notice: 'go on' })).resolves.toBe('notice-failed')
+    expect(sendPrompt).toHaveBeenCalledWith('c1', 'go on')
+    expect(killAgent).toHaveBeenCalledWith('agent-c1')
+    expect(useAcpStore.getState().sessions.c1?.status).toBe('active')
+  })
+
+  it('still restarts followers when the account list cannot be read', async () => {
+    api.list.mockRejectedValue(new Error('offline'))
+    useAcpStore.setState((s) => ({
+      sessions: { ...s.sessions, c2: { ...s.sessions.c2, activeTurn: false, openTurnId: null } }
+    }))
+    await applyProjectCodexAccount('office')
+    expect(retryCrashedSession).toHaveBeenCalledWith('c1', { resend: false })
   })
 
   it('restarts an idle chat on a fresh process without resending, and clears the old limit', async () => {
@@ -281,18 +321,17 @@ describe('claude account switch', () => {
     expect(retryCrashedSession).toHaveBeenCalledWith('c2', { resend: true })
   })
 
-  it('restarts only the Claude chats of the project, continuing the one that hit the limit', async () => {
-    await expect(
-      applyProjectCodexAccount('office', { continueSessionIds: ['c2'] })
-    ).resolves.toEqual(['c2'])
+  it('restarts the chats that follow the project and does not resend the last prompt', async () => {
+    api.list.mockResolvedValue({
+      accounts: [{ id: 'spare', name: 'Spare', builtin: false, signedIn: true }],
+      defaultAccountId: 'default',
+      projectAccounts: {},
+      chatAccounts: { c2: 'spare' },
+      autoSwitch: true
+    })
+    await applyProjectCodexAccount('office')
     const restarted = retryCrashedSession.mock.calls.map(([id, o]) => [id, o.resend])
-    expect(restarted).toEqual(
-      expect.arrayContaining([
-        ['c1', false],
-        ['c2', true]
-      ])
-    )
-    expect(restarted).toHaveLength(2)
+    expect(restarted).toEqual([['c1', false]])
   })
 
   it('does not reopen a busy chat whose tab closed while it waited', async () => {
@@ -306,7 +345,7 @@ describe('claude account switch', () => {
   })
 
   it('saves the project account on the host before restarting', async () => {
-    await expect(switchProjectCodexAccount('office', 'ab12')).resolves.toEqual([])
+    await expect(switchProjectCodexAccount('office', 'ab12')).resolves.toBe(true)
     expect(api.setProjectAccount).toHaveBeenCalledWith('office', 'ab12', {
       expectedAccountId: undefined
     })
@@ -479,6 +518,35 @@ describe('claude account switch when the new account cannot resume the session',
     expect(display).toEqual([{ type: 'text', text: 'fix the login bug' }])
   })
 
+  describe('of a chat on its own account', () => {
+    const chatKey = (id: string) => agentReuseKey(CODEX_AGENT_CONFIG_ID, '/work', 'office', id)
+
+    beforeEach(() => {
+      api.list.mockResolvedValue({
+        accounts: [{ id: 'work', name: 'Work', builtin: false, signedIn: true }],
+        defaultAccountId: 'default',
+        projectAccounts: {},
+        chatAccounts: { c1: 'work' },
+        autoSwitch: true
+      })
+      useAcpStore.setState({
+        configToLiveAgent: { [chatKey('c1')]: 'agent-new' }
+      })
+      failReopenWith(new AcpTransportError('not_found', 'Resource not found: {"uri": "c1"}'))
+    })
+
+    it('continues on the agent of the chat account and keeps that account for the new session', async () => {
+      await restartCodexSession('c1')
+
+      expect(vi.mocked(acpApi.sendPrompt).mock.calls[0]?.slice(0, 2)).toEqual([
+        'agent-new',
+        's-new'
+      ])
+      expect(api.setChatAccount.mock.calls).toEqual([['office', 's-new', 'work']])
+      expect(useAcpStore.getState().configToLiveAgent[chatKey('s-new')]).toBe('agent-new')
+    })
+  })
+
   it('keeps the chat stopped when the reopen fails for another reason', async () => {
     failReopenWith(new AcpTransportError('timeout', 'session/load timed out after 30s'))
 
@@ -514,16 +582,19 @@ describe('a switch the host refuses', () => {
     const before = useAcpStore.getState().sessions
     api.setProjectAccount.mockResolvedValue(false)
     await expect(
-      switchProjectCodexAccount('office', 'ab12', {
-        continueSessionIds: ['c1'],
-        expectedAccountId: 'default'
-      })
-    ).resolves.toBeNull()
+      switchProjectCodexAccount('office', 'ab12', { expectedAccountId: 'default' })
+    ).resolves.toBe(false)
     expect(api.setProjectAccount).toHaveBeenCalledWith('office', 'ab12', {
       expectedAccountId: 'default'
     })
     expect(killAgent).not.toHaveBeenCalled()
     expect(retryCrashedSession).not.toHaveBeenCalled()
     expect(useAcpStore.getState().sessions).toBe(before)
+  })
+
+  it('restarts a chat that had the removed account as its own', async () => {
+    await applyRemovedCodexAccount({ movedProjectIds: [], movedChatIds: ['c1', 'closed'] })
+    expect(retryCrashedSession.mock.calls).toEqual([['c1', { resend: false }]])
+    expect(killAgent.mock.calls).toEqual([['agent-c1']])
   })
 })

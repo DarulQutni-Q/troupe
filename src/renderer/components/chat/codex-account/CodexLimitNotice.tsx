@@ -1,3 +1,5 @@
+import { useState } from 'react'
+import { toast } from 'sonner'
 import { ChevronDown, Clock, Shuffle } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import {
@@ -8,6 +10,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Spinner } from '@/components/ui/spinner'
 import { useServerAdmitsRemoteWrites } from '@/hooks/use-server-admits-remote-writes'
+import { codexAccountsApi } from '@/lib/codex-accounts-api'
 import { useSettingsModalStore } from '@/stores/settings-modal-store'
 import {
   COMPOSER_DOCK_TEXT_ACTION_CLASS,
@@ -34,8 +37,24 @@ export function CodexLimitNotice({ sessionId }: { sessionId: string }): React.JS
   const openAppSettings = useSettingsModalStore((s) => s.openApp)
   const scheduledAt = useCodexResumeStore((s) => s.at[sessionId] ?? null)
   const schedule = useCodexResumeStore((s) => s.schedule)
-  const cancelResume = useCodexResumeStore((s) => s.cancel)
   const canAddAccount = useServerAdmitsRemoteWrites()
+  const [cancelling, setCancelling] = useState(false)
+  async function cancelOnHost(): Promise<void> {
+    if (cancelling) return
+    setCancelling(true)
+    try {
+      await codexAccountsApi.setResume(sessionId, null)
+      useCodexResumeStore.getState().forget(sessionId)
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      toast.error('Could not cancel the continue', {
+        description: detail,
+        action: { label: 'Retry', onClick: () => void cancelOnHost() }
+      })
+    } finally {
+      setCancelling(false)
+    }
+  }
   if (!state || !isAtLimit(state.limit)) return null
 
   const { ctx, limit, name, reset, switchTo, switchingTo: switching } = state
@@ -58,10 +77,11 @@ export function CodexLimitNotice({ sessionId }: { sessionId: string }): React.JS
             Continues at {formatClock(scheduledAt)}
             <button
               type="button"
-              onClick={() => cancelResume(sessionId)}
-              className="font-medium text-foreground underline-offset-2 hover:underline focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-focus-ring"
+              disabled={cancelling}
+              onClick={() => void cancelOnHost()}
+              className="font-medium text-foreground underline-offset-2 hover:underline focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-focus-ring disabled:opacity-60"
             >
-              Cancel
+              {cancelling ? 'Cancelling…' : 'Cancel'}
             </button>
           </span>
         )}

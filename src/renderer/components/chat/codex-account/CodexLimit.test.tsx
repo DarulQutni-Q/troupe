@@ -11,8 +11,8 @@ import { useCodexResumeStore } from './use-codex-limit'
 const { api, switcher, openApp, admits } = vi.hoisted(() => ({
   admits: { value: true },
   openApp: vi.fn(),
-  api: { list: vi.fn(), usage: vi.fn() },
-  switcher: { switchProjectCodexAccount: vi.fn() }
+  api: { list: vi.fn(), usage: vi.fn(), setResume: vi.fn() },
+  switcher: { switchProjectCodexAccount: vi.fn(), switchChatCodexAccount: vi.fn() }
 }))
 
 vi.mock('@/lib/codex-accounts-api', () => ({ codexAccountsApi: api }))
@@ -29,7 +29,11 @@ vi.mock('@/stores/codex-account-switch', async () => {
   const actual = await vi.importActual<typeof import('@/stores/codex-account-switch')>(
     '@/stores/codex-account-switch'
   )
-  return { ...actual, switchProjectCodexAccount: switcher.switchProjectCodexAccount }
+  return {
+    ...actual,
+    switchProjectCodexAccount: switcher.switchProjectCodexAccount,
+    switchChatCodexAccount: switcher.switchChatCodexAccount
+  }
 })
 
 const read = (
@@ -85,7 +89,10 @@ beforeEach(() => {
     chatAccounts: {},
     autoSwitch: true
   })
-  switcher.switchProjectCodexAccount.mockResolvedValue(['s1'])
+  switcher.switchProjectCodexAccount.mockResolvedValue(true)
+  switcher.switchChatCodexAccount.mockResolvedValue('restarted')
+  api.setResume.mockResolvedValue(undefined)
+  useCodexResumeStore.setState({ at: {}, turns: {}, timers: {} })
 })
 
 describe('CodexLimitWarning', () => {
@@ -97,10 +104,11 @@ describe('CodexLimitWarning', () => {
     expect(warning).toHaveAttribute('data-composer-dock', 'warning')
     fireEvent.click(screen.getByRole('button', { name: 'Switch to Work' }))
     await vi.waitFor(() =>
-      expect(switcher.switchProjectCodexAccount).toHaveBeenCalledWith('office', 'ab12', {
-        continueSessionIds: undefined,
-        expectedAccountId: 'default'
-      })
+      expect(switcher.switchChatCodexAccount).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: 's1', runsOn: 'default' }),
+        'ab12',
+        {}
+      )
     )
   })
 
@@ -126,20 +134,24 @@ describe('CodexLimitNotice', () => {
     fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' })
     fireEvent.click(switchButton)
     await vi.waitFor(() =>
-      expect(switcher.switchProjectCodexAccount).toHaveBeenCalledWith('office', 'ab12', {
-        continueSessionIds: ['s1'],
-        expectedAccountId: 'default'
-      })
+      expect(switcher.switchChatCodexAccount).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: 's1', runsOn: 'default' }),
+        'ab12',
+        expect.objectContaining({ notice: expect.stringContaining('Codex account Personal') })
+      )
     )
   })
 
   it('reports a lost compare-and-set instead of a successful switch', async () => {
-    switcher.switchProjectCodexAccount.mockResolvedValue(null)
+    switcher.switchChatCodexAccount.mockResolvedValue('lost')
     api.usage.mockResolvedValue([read('default', 100), read('ab12', 4), read('cd34', 40)])
     render(<CodexLimitNotice sessionId="s1" />)
     fireEvent.click(await screen.findByRole('button', { name: 'Switch to Work and continue' }))
     await vi.waitFor(() =>
-      expect(toast.info).toHaveBeenCalledWith('That account was changed on another client')
+      expect(toast.info).toHaveBeenCalledWith(
+        'The account of this chat already changed',
+        expect.objectContaining({ description: expect.any(String) })
+      )
     )
     expect(toast.success).not.toHaveBeenCalled()
   })
@@ -151,6 +163,75 @@ describe('CodexLimitNotice', () => {
     expect(await screen.findByRole('button', { name: 'Cancel' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Switch to Work and continue' })).toBeInTheDocument()
     useCodexResumeStore.getState().cancel('s1')
+  })
+
+  it('offers the project account when this chat is pinned to another one', async () => {
+    api.list.mockResolvedValue({
+      accounts: [
+        { id: 'default', name: 'Personal', builtin: true, signedIn: true },
+        { id: 'ab12', name: 'Work', builtin: false, signedIn: true },
+        { id: 'cd34', name: 'Side', builtin: false, signedIn: true }
+      ],
+      defaultAccountId: 'default',
+      projectAccounts: { office: 'ab12' },
+      chatAccounts: { s1: 'default' },
+      autoSwitch: true
+    })
+    api.usage.mockResolvedValue([read('default', 100), read('ab12', 4), read('cd34', 100)])
+    render(<CodexLimitNotice sessionId="s1" />)
+    expect(
+      await screen.findByRole('button', { name: 'Switch to Work and continue' })
+    ).toBeInTheDocument()
+  })
+
+  it('tells the host to drop a scheduled continue before switching', async () => {
+    api.usage.mockResolvedValue([read('default', 100), read('ab12', 4), read('cd34', 40)])
+    useCodexResumeStore.getState().schedule('s1', Date.now() + 60_000)
+    render(<CodexLimitNotice sessionId="s1" />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Switch to Work and continue' }))
+    await vi.waitFor(() => expect(api.setResume).toHaveBeenCalledWith('s1', null))
+    expect(switcher.switchChatCodexAccount).toHaveBeenCalled()
+  })
+
+  it('drops a resume the host refused and keeps the wait button', async () => {
+    api.setResume.mockRejectedValue(new Error('offline'))
+    const resetsAt = new Date(Date.now() + 3_600_000).toISOString()
+    api.usage.mockResolvedValue([
+      read('default', 100, resetsAt),
+      read('ab12', 100, resetsAt),
+      read('cd34', 100, resetsAt)
+    ])
+    render(<CodexLimitNotice sessionId="s1" />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue when it resets' }))
+    await vi.waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith('Could not schedule the continue: offline')
+    )
+    expect(screen.getByRole('button', { name: 'Continue when it resets' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument()
+  })
+
+  it('keeps the scheduled continue when cancelling it fails', async () => {
+    const resetsAt = new Date(Date.now() + 3_600_000).toISOString()
+    api.usage.mockResolvedValue([
+      read('default', 100, resetsAt),
+      read('ab12', 100, resetsAt),
+      read('cd34', 100, resetsAt)
+    ])
+    render(<CodexLimitNotice sessionId="s1" />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue when it resets' }))
+    expect(await screen.findByRole('button', { name: 'Cancel' })).toBeInTheDocument()
+    api.setResume.mockRejectedValue(new Error('offline'))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await vi.waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        'Could not cancel the continue',
+        expect.objectContaining({
+          description: 'offline',
+          action: expect.objectContaining({ label: 'Retry' })
+        })
+      )
+    )
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument()
   })
 
   it('offers wait for reset and Add account when no other account has room', async () => {

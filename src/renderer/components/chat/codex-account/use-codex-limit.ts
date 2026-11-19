@@ -1,18 +1,20 @@
 import type { ClaudeRateLimit } from '@shared/types/claude-accounts.types'
 import type { CodexAccountUsage, CodexUsageWindow } from '@shared/types/codex-accounts.types'
 import { useEffect, useState } from 'react'
-import { toast } from 'sonner'
 import { create } from 'zustand'
 import { toastAccountChoiceError } from '@/components/settings/provider/account-choice-error'
+import { codexAccountsApi } from '@/lib/codex-accounts-api'
 import { codexResetSeconds, formatUsageReset, primaryCodexWindow } from '@/lib/codex-usage-format'
 import { logFrontendError } from '@/lib/log-api'
 import { useAcpStore } from '@/stores/acp-store'
-import { restartCodexSession, switchProjectCodexAccount } from '@/stores/codex-account-switch'
+import {
+  chatSwitchNotice,
+  chatSwitchToast,
+  showChatSwitchToast,
+  switchChatCodexAccount
+} from '@/stores/codex-account-switch'
 import { useChatCodexAccount } from './use-chat-codex-account'
 import type { CodexAccountChoice, ProjectCodexAccount } from './use-project-codex-account'
-
-/** Grace after a reset time before the prompt is sent again. */
-const RESUME_GRACE_MS = 15_000
 
 const WINDOW_NAMES: Record<string, string> = {
   five_hour: '5-hour',
@@ -69,6 +71,9 @@ interface ResumeState {
   turns: Record<string, string | null>
   timers: Record<string, ReturnType<typeof setTimeout>>
   schedule: (sessionId: string, at: number) => void
+  /** Drop the local schedule. Does not talk to the host. */
+  forget: (sessionId: string) => void
+  /** Drop the local schedule and ask the host to drop it. */
   cancel: (sessionId: string) => void
 }
 
@@ -78,53 +83,73 @@ function turnReplaced(scheduled: string | null, current: string | null): boolean
   return current !== null && current !== scheduled
 }
 
+function ownsResume(sessionId: string, at: number, turnId: string | null): boolean {
+  const state = useCodexResumeStore.getState()
+  return state.at[sessionId] === at && state.turns[sessionId] === turnId
+}
+
+/** Drop the local schedule. The host copy is a separate call. */
+function forgetResume(
+  set: (partial: Partial<ResumeState>) => void,
+  get: () => ResumeState,
+  sessionId: string
+): void {
+  const timer = get().timers[sessionId]
+  if (timer) clearTimeout(timer)
+  set({
+    at: Object.fromEntries(Object.entries(get().at).filter(([id]) => id !== sessionId)),
+    turns: Object.fromEntries(Object.entries(get().turns).filter(([id]) => id !== sessionId)),
+    timers: Object.fromEntries(Object.entries(get().timers).filter(([id]) => id !== sessionId))
+  })
+}
+
 export const useCodexResumeStore = create<ResumeState>((set, get) => ({
   at: {},
   turns: {},
   timers: {},
   schedule: (sessionId, at) => {
-    get().cancel(sessionId)
-    const sessionAtSchedule = useAcpStore.getState().sessions[sessionId]
-    const turnId = sessionAtSchedule?.openTurnId ?? null
-    const agentId = sessionAtSchedule?.agentId ?? null
-    const timer = setTimeout(
-      () => {
-        const session = useAcpStore.getState().sessions[sessionId]
-        const current = session?.openTurnId ?? null
-        // A probe card can schedule this with no session rateLimit. Continue
-        // while the same agent and turn are still the ones that were scheduled.
-        const sameChat =
-          session != null && session.agentId === agentId && !turnReplaced(turnId, current)
-        set((state) => {
-          const { [sessionId]: _at, ...nextAt } = state.at
-          const { [sessionId]: _turn, ...turns } = state.turns
-          const { [sessionId]: _timer, ...timers } = state.timers
-          return { at: nextAt, turns, timers }
-        })
-        if (!sameChat) return
-        void logFrontendError({
-          level: 'info',
-          source: 'codexLimit.resume',
-          message: `Limit window reset; continuing chat ${sessionId}`
-        })
-        void restartCodexSession(sessionId, { resend: true, cancelTurn: true })
-      },
-      Math.max(0, at - Date.now() + RESUME_GRACE_MS)
-    )
+    forgetResume(set, get, sessionId)
+    const turnId = useAcpStore.getState().sessions[sessionId]?.openTurnId ?? null
     set((state) => ({
       at: { ...state.at, [sessionId]: at },
-      turns: { ...state.turns, [sessionId]: turnId },
-      timers: { ...state.timers, [sessionId]: timer }
+      turns: { ...state.turns, [sessionId]: turnId }
     }))
+    void codexAccountsApi.setResume(sessionId, at).then(
+      () => {
+        const current = useAcpStore.getState().sessions[sessionId]?.openTurnId ?? null
+        const owns = ownsResume(sessionId, at, turnId)
+        const slotEmpty = !(sessionId in get().at)
+        // A newer schedule for this chat owns the host wait. Cancelling here
+        // would drop that newer time. Cancel only this attempt, or a slot
+        // that is already empty because the user cleared it locally.
+        if (owns && turnReplaced(turnId, current)) {
+          return codexAccountsApi.setResume(sessionId, null).then(() => {
+            if (ownsResume(sessionId, at, turnId)) get().forget(sessionId)
+          })
+        }
+        if (!owns && slotEmpty) return codexAccountsApi.setResume(sessionId, null)
+      },
+      (error: unknown) => {
+        void logFrontendError({
+          level: 'warn',
+          source: 'codexLimit.resume',
+          message: `Could not ask the host to continue chat ${sessionId}: ${error instanceof Error ? error.message : String(error)}`
+        })
+        if (!ownsResume(sessionId, at, turnId)) return
+        get().forget(sessionId)
+        toastAccountChoiceError(error, 'Could not schedule the continue')
+      }
+    )
   },
+  forget: (sessionId) => forgetResume(set, get, sessionId),
   cancel: (sessionId) => {
-    const timer = get().timers[sessionId]
-    if (timer) clearTimeout(timer)
-    set((state) => {
-      const { [sessionId]: _at, ...nextAt } = state.at
-      const { [sessionId]: _turn, ...turns } = state.turns
-      const { [sessionId]: _timer, ...timers } = state.timers
-      return { at: nextAt, turns, timers }
+    forgetResume(set, get, sessionId)
+    void codexAccountsApi.setResume(sessionId, null).catch((error: unknown) => {
+      void logFrontendError({
+        level: 'warn',
+        source: 'codexLimit.resume',
+        message: `Could not cancel the continue for chat ${sessionId}: ${error instanceof Error ? error.message : String(error)}`
+      })
     })
   }
 }))
@@ -196,28 +221,48 @@ export function useCodexLimit(sessionId: string): CodexLimit | null {
 
   const projectId = ctx.projectId
   const currentAccountId = ctx.current.account.id
+  const currentName = ctx.current.account.name
+  const ownAccountId = ctx.ownAccount ? currentAccountId : null
+  const projectAccountId = ctx.projectAccount.id
   const reloadAccounts = ctx.accounts.reload
   const atLimit = limit.status === 'rejected'
+  const limitWindow = windowName(limit)
   async function switchTo(target: CodexAccountChoice): Promise<void> {
     if (useCodexSwitchingStore.getState()[sessionId]) return
     setSwitchingTo(sessionId, target.account.name)
-    cancelResume(sessionId)
+    const savedAt = useCodexResumeStore.getState().at[sessionId]
+    const savedTurn = useCodexResumeStore.getState().turns[sessionId]
+    const hadResume = sessionId in useCodexResumeStore.getState().at
+    useCodexResumeStore.getState().forget(sessionId)
     try {
-      const continued = await switchProjectCodexAccount(projectId, target.account.id, {
-        continueSessionIds: atLimit ? [sessionId] : undefined,
-        expectedAccountId: currentAccountId
-      })
+      const moved = await switchChatCodexAccount(
+        {
+          sessionId,
+          projectId,
+          runsOn: currentAccountId,
+          ownAccountId,
+          projectAccountId
+        },
+        target.account.id,
+        atLimit ? { notice: chatSwitchNotice(currentName, target.account.name, limitWindow) } : {}
+      )
       await reloadAccounts()
-      if (continued === null) {
-        toast.info('That account was changed on another client')
-        return
+      if (moved === 'restarted' || moved === 'pending' || moved === 'notice-failed') {
+        void codexAccountsApi.setResume(sessionId, null).catch(() => undefined)
+      } else if (hadResume) {
+        useCodexResumeStore.setState((state) => ({
+          at: { ...state.at, [sessionId]: savedAt },
+          turns: { ...state.turns, [sessionId]: savedTurn }
+        }))
       }
-      if (atLimit && !continued.includes(sessionId)) {
-        toast.info(`Switched to ${target.account.name}, but this chat did not continue`)
-        return
-      }
-      toast.success(`Switched to ${target.account.name}`)
+      showChatSwitchToast(chatSwitchToast(moved, target.account.name))
     } catch (err) {
+      if (hadResume && !(sessionId in useCodexResumeStore.getState().at)) {
+        useCodexResumeStore.setState((state) => ({
+          at: { ...state.at, [sessionId]: savedAt },
+          turns: { ...state.turns, [sessionId]: savedTurn }
+        }))
+      }
       toastAccountChoiceError(err, 'Could not switch')
       void reloadAccounts()
     } finally {

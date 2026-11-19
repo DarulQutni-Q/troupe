@@ -18,7 +18,8 @@ import type {
 import type {
   CodexAccount,
   CodexAccountsSnapshot,
-  CodexAccountUsage
+  CodexAccountUsage,
+  RemovedCodexAccount
 } from '@shared/types/codex-accounts.types'
 import type {
   McpCatalogIconPayload,
@@ -1188,7 +1189,10 @@ export class WsAcpTransport implements AcpTransport {
 
   async listCodexAccounts(): Promise<CodexAccountsSnapshot> {
     await this.connect()
-    return this.request<CodexAccountsSnapshot>('list_codex_accounts', {})
+    const reply = await this.request<
+      Omit<CodexAccountsSnapshot, 'chatAccounts'> & { chatAccounts?: unknown }
+    >('list_codex_accounts', {})
+    return { ...reply, chatAccounts: stringRecord(reply.chatAccounts) }
   }
 
   async listCodexUsage(force = false): Promise<CodexAccountUsage[]> {
@@ -1216,9 +1220,30 @@ export class WsAcpTransport implements AcpTransport {
     return reply?.applied !== false
   }
 
+  async setChatCodexAccount(
+    projectId: string,
+    sessionId: string,
+    accountId: string | null,
+    expectedAccountId?: string
+  ): Promise<boolean> {
+    await this.connect()
+    const reply = await this.request<{ applied?: boolean }>('set_chat_codex_account', {
+      projectId,
+      sessionId,
+      accountId,
+      ...(expectedAccountId ? { expectedAccountId } : {})
+    })
+    return reply?.applied !== false
+  }
+
   async setCodexAutoSwitch(enabled: boolean): Promise<void> {
     await this.connect()
     await this.request('set_codex_auto_switch', { enabled })
+  }
+
+  async setCodexResume(sessionId: string, at: number | null): Promise<void> {
+    await this.connect()
+    await this.request('set_codex_resume', { sessionId, at })
   }
 
   async addCodexAccount(name: string, options?: CommandCallOptions): Promise<CodexAccount> {
@@ -1231,18 +1256,25 @@ export class WsAcpTransport implements AcpTransport {
     await this.request('rename_codex_account', { accountId, name })
   }
 
-  async removeCodexAccount(accountId: string): Promise<string[]> {
+  async removeCodexAccount(accountId: string): Promise<RemovedCodexAccount> {
     await this.connect()
-    const reply = await this.request<{ movedProjectIds?: unknown }>('remove_codex_account', {
-      accountId
-    })
+    const reply = await this.request<{ movedProjectIds?: unknown; movedChatIds?: unknown }>(
+      'remove_codex_account',
+      { accountId }
+    )
     if (!Array.isArray(reply.movedProjectIds)) {
       throw new AcpTransportError(
         'protocol',
         'malformed remove_codex_account reply (missing movedProjectIds)'
       )
     }
-    return reply.movedProjectIds.filter((id): id is string => typeof id === 'string')
+    const ids = (list: unknown[]): string[] =>
+      list.filter((id): id is string => typeof id === 'string')
+    return {
+      movedProjectIds: ids(reply.movedProjectIds),
+      // A host older than per-chat Accounts sends no `movedChatIds`.
+      movedChatIds: Array.isArray(reply.movedChatIds) ? ids(reply.movedChatIds) : []
+    }
   }
 
   async startCodexAccountLogin(

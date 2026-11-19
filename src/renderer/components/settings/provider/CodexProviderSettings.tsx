@@ -11,7 +11,7 @@ import { planLabel } from '@/lib/codex-usage-format'
 import { getColorClasses } from '@/lib/colors'
 import { cn } from '@/lib/utils'
 import { READ_ONLY_SERVER_REASON } from '@/lib/write-gate'
-import { applyProjectCodexAccount } from '@/stores/codex-account-switch'
+import { applyRemovedCodexAccount } from '@/stores/codex-account-switch'
 import { useProjectStore } from '@/stores/project-store'
 import type { ProjectColor } from '@/types/project'
 import { AccountGroupFooter } from './AccountGroupFooter'
@@ -99,10 +99,8 @@ export function CodexProviderSettings(): React.JSX.Element {
         : []
     setRemoveBusy(true)
     try {
-      const moved = await codexAccountsApi.remove(account.id)
-      for (const projectId of new Set([...moved, ...followers])) {
-        void applyProjectCodexAccount(projectId)
-      }
+      const removed = await codexAccountsApi.remove(account.id)
+      void applyRemovedCodexAccount(removed, followers)
       setRemoving(null)
       await reload()
       toast.success(`${account.name} was removed`)
