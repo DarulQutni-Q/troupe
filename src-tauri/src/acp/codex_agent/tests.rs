@@ -3,11 +3,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::{
-    effective_home, CodexAgentService, HomeSource, CODEX_ACP_CONFIG_ID, CODEX_HOME_ENV,
-    STRIP_CODEX_API_CREDENTIALS,
+    effective_home, CodexAgentService, CodexLaunchAuth, HomeSource, CODEX_ACP_CONFIG_ID,
+    CODEX_HOME_ENV, STRIP_CODEX_API_CREDENTIALS,
 };
+use crate::acp::claude_agent::LaunchChat;
 use crate::acp::codex_accounts::{strip_signed_out_tag, CodexAccountStore};
 use crate::acp::config::AgentConfig;
+use crate::acp::config::SessionId;
 
 /// Records each probed home. A home equal to `signed_out` reports signed out.
 struct RecordingProbe {
@@ -133,6 +135,51 @@ async fn a_project_account_exports_its_home_strips_keys_and_probes_that_login() 
     );
     assert_eq!(h.runtime.probed.lock().as_slice(), &[Some(dir.clone())]);
     assert!(dir.join("sessions").is_dir());
+}
+
+#[tokio::test]
+async fn a_chat_exports_its_own_home_and_a_sibling_keeps_the_project_home() {
+    let h = host(|_| None);
+    let work = h.accounts.add("Work").unwrap();
+    let spare = h.accounts.add("Spare").unwrap();
+    h.accounts
+        .set_project_account("office", Some(&work.id), None)
+        .unwrap();
+    h.accounts
+        .set_chat_account("office", "chat-1", Some(&spare.id), None)
+        .unwrap();
+    let spare_dir = h.accounts.config_dir(&spare.id).unwrap();
+    let work_dir = h.accounts.config_dir(&work.id).unwrap();
+
+    let mut own = managed();
+    let auth = h
+        .service
+        .prepare_managed_launch(
+            &mut own,
+            Some("office"),
+            &LaunchChat::Existing(SessionId("chat-1".to_string())),
+        )
+        .await
+        .unwrap();
+    assert_eq!(auth, CodexLaunchAuth::Account(spare.id.clone()));
+    assert_eq!(
+        own.env.get(CODEX_HOME_ENV).map(String::as_str),
+        spare_dir.to_str()
+    );
+
+    let mut follow = managed();
+    h.service
+        .prepare_managed_launch(
+            &mut follow,
+            Some("office"),
+            &LaunchChat::Existing(SessionId("chat-2".to_string())),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        follow.env.get(CODEX_HOME_ENV).map(String::as_str),
+        work_dir.to_str()
+    );
 }
 
 #[tokio::test]

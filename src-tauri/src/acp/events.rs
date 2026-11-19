@@ -204,6 +204,7 @@ pub const EVENT_USAGE_UPDATE: &str = "acp:usage_update";
 /// (`claude_limit`). Durable, so a reopened chat still shows a scheduled
 /// resume.
 pub const EVENT_CLAUDE_LIMIT_ACTION: &str = "acp:claude_limit_action";
+pub const EVENT_CODEX_LIMIT_ACTION: &str = "acp:codex_limit_action";
 /// The agent started or stopped working in a session outside a prompt turn
 /// (live only, never persisted: see `session::unprompted`).
 pub const EVENT_AGENT_WORKING: &str = "acp:agent_working";

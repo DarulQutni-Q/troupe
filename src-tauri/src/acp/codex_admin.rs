@@ -90,8 +90,9 @@ pub(crate) fn run_account(
         ["remove", id] => match tokio::runtime::Runtime::new() {
             Ok(runtime) => runtime.block_on(service.remove_account(id)).map(|moved| {
                 println!(
-                    "Removed. {} projects moved to the default account.",
-                    moved.len()
+                    "Removed. {} projects moved to the default account. {} chats follow their project.",
+                    moved.moved_project_ids.len(),
+                    moved.moved_chat_ids.len()
                 );
             }),
             Err(error) => Err(format!("could not start runtime: {error}")),

@@ -407,8 +407,10 @@ fn main() -> ExitCode {
         );
         let (claude_limit, claude_limit_inbox) =
             termul_manager_lib::claude_limit::ClaudeLimitHandle::channel();
+        let (codex_limit, codex_limit_inbox) =
+            termul_manager_lib::codex_limit::CodexLimitHandle::channel();
         let acp = Arc::new(AcpManager::with_persistence_and_host_agents(
-            vec![ws_relay.clone(), claude_limit.sink()],
+            vec![ws_relay.clone(), claude_limit.sink(), codex_limit.sink()],
             persistence,
             claude_agent,
             codex_agent,
@@ -418,6 +420,13 @@ fn main() -> ExitCode {
             &ws_relay,
             claude_limit,
             claude_limit_inbox,
+            &tokio::runtime::Handle::current(),
+        );
+        termul_manager_lib::codex_limit::start(
+            &acp,
+            &ws_relay,
+            codex_limit,
+            codex_limit_inbox,
             &tokio::runtime::Handle::current(),
         );
         termul_manager_lib::worker_chats::install(

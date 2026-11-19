@@ -119,7 +119,8 @@ async fn remove_signs_out_that_home_then_moves_projects() {
         .await
         .unwrap();
     let moved = service.remove_account(&work.id).await.unwrap();
-    assert_eq!(moved, vec!["office".to_string()]);
+    assert_eq!(moved.moved_project_ids, vec!["office".to_string()]);
+    assert!(moved.moved_chat_ids.is_empty());
     let logouts = probe.logouts.lock().unwrap().clone();
     assert_eq!(
         logouts[0].as_deref(),

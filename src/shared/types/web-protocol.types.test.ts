@@ -93,8 +93,8 @@ describe('web-protocol.types — event/request type registries (AC2)', () => {
     expect(WS_REQUEST_TYPES).toContain('get_session_payload')
   })
 
-  it('exports exactly 88 request types including chat MCP install approval', () => {
-    expect(WS_REQUEST_TYPES).toHaveLength(88)
+  it('exports exactly 90 request types including chat MCP install approval and per-chat Codex account and resume', () => {
+    expect(WS_REQUEST_TYPES).toHaveLength(90)
     const expected = [
       'send_prompt',
       'cancel_prompt',
@@ -104,6 +104,8 @@ describe('web-protocol.types — event/request type registries (AC2)', () => {
       'set_model',
       'respond_permission',
       'answer_question',
+      // Chat approval of an MCP install.
+      'answer_mcp_install',
       // Stop agent browsing for a session (desktop parity with browser_stop).
       'browser_stop',
       'create_session',
@@ -191,7 +193,9 @@ describe('web-protocol.types — event/request type registries (AC2)', () => {
       'list_codex_usage',
       'set_default_codex_account',
       'set_project_codex_account',
+      'set_chat_codex_account',
       'set_codex_auto_switch',
+      'set_codex_resume',
       'add_codex_account',
       'rename_codex_account',
       'remove_codex_account',

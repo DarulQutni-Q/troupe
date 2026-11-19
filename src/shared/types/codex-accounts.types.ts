@@ -35,8 +35,18 @@ export interface CodexAccountsSnapshot {
   defaultAccountId: string
   /** Project id → Account id, only for Projects with an explicit choice. */
   projectAccounts: Record<string, string>
+  /** Session id → Account id, only for chats with their own choice. */
+  chatAccounts: Record<string, string>
   /** A chat at its Account's limit continues on the signed-in Account with the most room. */
   autoSwitch: boolean
+}
+
+/** What removing a Codex Account moved. */
+export interface RemovedCodexAccount {
+  /** Projects that used the Account and now follow the Default Account. */
+  movedProjectIds: string[]
+  /** Chats that had the Account as their own and now follow their Project. */
+  movedChatIds: string[]
 }
 
 /** One usage window of an Account (about 5 hours, or weekly). */

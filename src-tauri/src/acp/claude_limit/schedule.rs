@@ -27,18 +27,25 @@ const VERSION: u32 = 1;
 
 pub struct Schedule {
     path: Option<PathBuf>,
+    label: &'static str,
     entries: BTreeMap<String, ScheduledResume>,
 }
 
 impl Schedule {
+    /// Load Claude resumes. The log lines keep the `claude-limit` label.
     pub fn load(path: Option<PathBuf>) -> Self {
+        Self::open(path, "claude-limit")
+    }
+
+    /// Load resumes and log with `label` (`claude-limit` or `codex-limit`).
+    pub fn open(path: Option<PathBuf>, label: &'static str) -> Self {
         let entries = path
             .as_deref()
             .and_then(|path| match std::fs::read(path) {
                 Ok(bytes) => Some(bytes),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
                 Err(error) => {
-                    log::warn!("[claude-limit] could not read scheduled resumes: {error}");
+                    log::warn!("[{label}] could not read scheduled resumes: {error}");
                     None
                 }
             })
@@ -47,13 +54,13 @@ impl Schedule {
                     Ok(file) if file.version == VERSION => Some(file.resumes),
                     Ok(file) => {
                         log::warn!(
-                            "[claude-limit] ignored scheduled resumes of version {}",
+                            "[{label}] ignored scheduled resumes of version {}",
                             file.version
                         );
                         None
                     }
                     Err(error) => {
-                        log::warn!("[claude-limit] scheduled resumes are damaged: {error}");
+                        log::warn!("[{label}] scheduled resumes are damaged: {error}");
                         None
                     }
                 },
@@ -63,9 +70,13 @@ impl Schedule {
             .map(|entry| (entry.session_id.clone(), entry))
             .collect::<BTreeMap<_, _>>();
         if !entries.is_empty() {
-            log::info!("[claude-limit] loaded {} scheduled resumes", entries.len());
+            log::info!("[{label}] loaded {} scheduled resumes", entries.len());
         }
-        Self { path, entries }
+        Self {
+            path,
+            label,
+            entries,
+        }
     }
 
     pub fn insert(&mut self, entry: ScheduledResume) {
@@ -81,12 +92,14 @@ impl Schedule {
         removed
     }
 
-    pub fn get(&self, session_id: &str) -> Option<&ScheduledResume> {
-        self.entries.get(session_id)
-    }
-
     pub fn next_at(&self) -> Option<i64> {
         self.entries.values().map(|entry| entry.at).min()
+    }
+
+    /// Session ids loaded from disk or inserted since. The supervisor holds
+    /// each one's launch recipe until the resume ends.
+    pub fn session_ids(&self) -> Vec<String> {
+        self.entries.keys().cloned().collect()
     }
 
     /// Remove and return the earliest resume due at `now`. One at a time, so
@@ -114,7 +127,7 @@ impl Schedule {
             .map_err(std::io::Error::other)
             .and_then(|bytes| crate::acp::atomic_file::replace(path, &bytes));
         if let Err(error) = result {
-            log::warn!("[claude-limit] could not save scheduled resumes: {error}");
+            log::warn!("[{}] could not save scheduled resumes: {error}", self.label);
         }
     }
 }

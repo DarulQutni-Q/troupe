@@ -71,6 +71,42 @@ async fn an_expected_account_makes_the_project_choice_a_compare_and_set() {
 }
 
 #[tokio::test]
+async fn a_chat_choice_is_a_compare_and_set_and_remove_clears_it() {
+    let (root, acp) = manager_with_account(&[]);
+    let lost = handle_set_chat_codex_account(
+        "1".into(),
+        &json!({
+            "projectId": "office",
+            "sessionId": "chat-1",
+            "accountId": "ab12",
+            "expectedAccountId": "ab12"
+        }),
+        &acp,
+    )
+    .await;
+    assert_eq!(lost.payload.unwrap(), json!({ "applied": false }));
+    let applied = handle_set_chat_codex_account(
+        "2".into(),
+        &json!({
+            "projectId": "office",
+            "sessionId": "chat-1",
+            "accountId": "ab12",
+            "expectedAccountId": "default"
+        }),
+        &acp,
+    )
+    .await;
+    assert_eq!(applied.payload.unwrap(), json!({ "applied": true }));
+    assert_eq!(stored(&root)["chatAccounts"]["chat-1"], "ab12");
+    let removed =
+        handle_remove_codex_account("3".into(), &json!({ "accountId": "ab12" }), &acp).await;
+    assert_eq!(removed.payload.unwrap()["movedChatIds"], json!(["chat-1"]));
+    assert!(stored(&root)
+        .get("chatAccounts")
+        .is_none_or(|chats| chats.get("chat-1").is_none()));
+}
+
+#[tokio::test]
 async fn automatic_switching_is_on_by_default_and_toggles_on_the_host() {
     let (root, acp) = manager_with_account(&[]);
     let listed = handle_list_codex_accounts("1".into(), &acp).await;

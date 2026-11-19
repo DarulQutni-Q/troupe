@@ -165,7 +165,9 @@ pub const WS_COMMAND_CLASSES: &[(&str, CommandClass)] = &[
     ("list_codex_usage", CommandClass::read()),
     ("set_default_codex_account", CommandClass::idempotent()),
     ("set_project_codex_account", CommandClass::idempotent()),
+    ("set_chat_codex_account", CommandClass::idempotent()),
     ("set_codex_auto_switch", CommandClass::idempotent()),
+    ("set_codex_resume", CommandClass::idempotent()),
     // A resend answers with the Account the first run added.
     ("add_codex_account", CommandClass::command(Replay::Payload)),
     ("rename_codex_account", CommandClass::idempotent()),

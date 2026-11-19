@@ -20,6 +20,7 @@ const snapshot: CodexAccountsSnapshot = {
   ],
   defaultAccountId: 'default',
   projectAccounts: {},
+  chatAccounts: {},
   autoSwitch: false
 }
 

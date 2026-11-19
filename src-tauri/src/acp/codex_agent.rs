@@ -31,6 +31,25 @@ const CODEX_ACCESS_TOKEN_ENV: &str = "CODEX_ACCESS_TOKEN";
 /// environment, including values inherited from the host process.
 pub(crate) const STRIP_CODEX_API_CREDENTIALS: &str = "TERMUL_STRIP_CODEX_API_CREDENTIALS";
 
+/// The Codex Account a managed spawn runs on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CodexLaunchAuth {
+    /// Not the host Codex agent.
+    Unmanaged,
+    /// A `CODEX_HOME` in the project env: switching the account would not
+    /// change it.
+    Fixed,
+    Account(String),
+}
+
+impl CodexLaunchAuth {
+    /// `true` when this service applied a Codex home.
+    #[must_use]
+    pub fn applied(&self) -> bool {
+        !matches!(self, Self::Unmanaged)
+    }
+}
+
 /// Which setting chose the Codex home of a managed agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HomeSource {
@@ -196,10 +215,22 @@ impl CodexAgentService {
         Self::assemble(true, Some(store), login_probe)
     }
 
-    fn resolve_account(&self, project_id: Option<&str>) -> AccountResolution {
-        match &self.profile_store {
-            Some(store) => store.resolve(project_id),
-            None => AccountResolution {
+    fn resolve_account(
+        &self,
+        project_id: Option<&str>,
+        chat: &crate::acp::claude_agent::LaunchChat,
+    ) -> AccountResolution {
+        match (&self.profile_store, chat) {
+            (Some(store), crate::acp::claude_agent::LaunchChat::None) => {
+                store.resolve(project_id, None)
+            }
+            (Some(store), crate::acp::claude_agent::LaunchChat::Existing(chat_id)) => {
+                store.resolve(project_id, Some(&chat_id.0))
+            }
+            (Some(store), crate::acp::claude_agent::LaunchChat::New { account_id }) => {
+                store.resolve_id(account_id)
+            }
+            (None, _) => AccountResolution {
                 account_id: BUILTIN_ACCOUNT_ID.to_string(),
                 account_name: "Default".to_string(),
                 config_dir: None,
@@ -207,18 +238,36 @@ impl CodexAgentService {
         }
     }
 
-    /// Prepare `acp-registry:codex-acp` for `project_id`. Returns `true` when
-    /// this service applied a Codex home, and `false` for every other config.
-    /// A home that is not signed in fails before the agent process starts.
+    /// Prepare `acp-registry:codex-acp` for the Project's Account. Returns
+    /// `true` when this service applied a Codex home. A chat that follows
+    /// its Project uses this. A home that is not signed in fails before the
+    /// agent process starts.
     pub async fn prepare_managed_config_for_project(
         &self,
         config: &mut AgentConfig,
         project_id: Option<&str>,
     ) -> Result<bool, String> {
+        self.prepare_managed_launch(
+            config,
+            project_id,
+            &crate::acp::claude_agent::LaunchChat::None,
+        )
+        .await
+        .map(|auth| auth.applied())
+    }
+
+    /// [`prepare_managed_config_for_project`](Self::prepare_managed_config_for_project)
+    /// for a spawn that opens `chat` in `project_id`.
+    pub async fn prepare_managed_launch(
+        &self,
+        config: &mut AgentConfig,
+        project_id: Option<&str>,
+        chat: &crate::acp::claude_agent::LaunchChat,
+    ) -> Result<CodexLaunchAuth, String> {
         if !self.active || config.config_id.as_deref() != Some(CODEX_ACP_CONFIG_ID) {
-            return Ok(false);
+            return Ok(CodexLaunchAuth::Unmanaged);
         }
-        let account = self.resolve_account(project_id);
+        let account = self.resolve_account(project_id, chat);
         let (home, source) = effective_home(
             &config.env,
             account.config_dir.as_deref(),
@@ -311,7 +360,10 @@ impl CodexAgentService {
             "[acp-codex] managed config uses the {} Codex profile",
             source.label()
         );
-        Ok(true)
+        Ok(match source {
+            HomeSource::ProjectEnv => CodexLaunchAuth::Fixed,
+            HomeSource::Host | HomeSource::Linked => CodexLaunchAuth::Account(account.account_id),
+        })
     }
 }
 
@@ -332,6 +384,8 @@ fn project_path_override(env: &HashMap<String, String>) -> Option<&str> {
 mod accounts;
 mod usage;
 pub use accounts::CodexSignInCheck;
+#[cfg(test)]
+pub(crate) use usage::CodexUsageProbe;
 
 #[cfg(test)]
 #[path = "codex_agent/tests.rs"]

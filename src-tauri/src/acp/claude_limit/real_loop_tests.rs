@@ -67,6 +67,25 @@ pub(crate) struct Host {
 
 impl Host {
     pub(crate) async fn start(usage: &[(&'static str, f64)], project_account: &str) -> Option<Self> {
+        Self::start_ready(usage, project_account, None).await
+    }
+
+    /// Load a resume that was already on disk, the way a host restart does.
+    /// `in_secs` is measured when the supervisor reads the file.
+    pub(crate) async fn start_with_saved_resume(
+        usage: &[(&'static str, f64)],
+        project_account: &str,
+        session_id: &str,
+        in_secs: i64,
+    ) -> Option<Self> {
+        Self::start_ready(usage, project_account, Some((session_id, in_secs))).await
+    }
+
+    async fn start_ready(
+        usage: &[(&'static str, f64)],
+        project_account: &str,
+        saved: Option<(&str, i64)>,
+    ) -> Option<Self> {
         let Some(python) = find_python() else {
             if std::env::var(SKIP_ENV).as_deref() == Ok("1") {
                 return None;
@@ -111,6 +130,17 @@ impl Host {
             Arc::new(claude),
         ));
         acp.set_claude_limit(handle);
+        if let Some((session_id, in_secs)) = saved {
+            let at = now_secs() + in_secs;
+            let body = serde_json::json!({"version": 1, "resumes": [{
+                "sessionId": session_id,
+                "projectId": PROJECT,
+                "at": at,
+                "accountId": accounts[project_account],
+                "window": "five_hour"
+            }]});
+            std::fs::write(state.join(super::SCHEDULE_FILE), body.to_string()).unwrap();
+        }
         let schedule = Schedule::load(Some(state.join(super::SCHEDULE_FILE)));
         tokio::spawn(
             Supervisor::new(
@@ -613,6 +643,39 @@ async fn a_resume_due_after_a_restart_marks_the_chat_for_its_client() {
     );
     assert_eq!(Schedule::load(Some(path)).next_at(), None);
     drop(handle);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resume_loaded_from_disk_survives_reopen_and_a_reap() {
+    let Some(host) = Host::start_with_saved_resume(
+        &[("default", 100.0), ("Work", 100.0)],
+        "Work",
+        "mock-1",
+        6,
+    )
+    .await
+    else {
+        return;
+    };
+    let OpenChat {
+        agent_id,
+        session_id,
+    } = host.open_chat().await;
+    assert_eq!(session_id.0, "mock-1");
+    host.acp.reap_agent(&agent_id).await.unwrap();
+    assert!(
+        host.acp.launch_recipe(&session_id).is_some(),
+        "a resume loaded at startup keeps its recipe after the reopened agent is reaped"
+    );
+    let records = host.log_until(&session_id, has_config_dir_chunk).await;
+    assert!(
+        actions(&records)
+            .iter()
+            .any(|action| action["action"] == "resumed"),
+        "the loaded resume did not continue the chat: {:?}",
+        actions(&records)
+    );
+    let _ = host.acp.kill(&host.acp.list_agents()[0]).await;
 }
 
 /// Poll `found` until it returns a value.
