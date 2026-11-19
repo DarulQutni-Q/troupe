@@ -2323,18 +2323,21 @@ impl AcpManager {
         };
         // Orchestrated runs whose parent agent is this one stop with it in
         // the driver teardown (`settle_orphaned_runs`), which every exit runs.
-        let mut entry = entry?;
-        log::info!("[acp] stopping agent {agent_id} ({intent:?})");
-        // The driver teardown announces the stop to every sink (and so to the
-        // roster watch) as `session_closed` + `agent_disconnected`. The agent's
-        // approvals can never be answered, so release them and their queue
-        // slots now instead of waiting for that announcement (a wedged driver
-        // may take the whole join bound to tear down).
+        //
+        // The agent's prompts can never be answered, so release them and
+        // their queue slots now instead of waiting for the teardown's
+        // `agent_disconnected` (a wedged driver may take the whole join bound
+        // to tear down). This runs even when the agent already reaped itself:
+        // an orchestrated child's own disconnect reaches only its private
+        // sinks, so the kill its run's settle sends is the only release of
+        // the prompts it raised on its chat.
         for sink in &self.sinks {
             if let Some(relay) = sink.as_ws_relay() {
                 relay.release_agent_tickets(agent_id);
             }
         }
+        let mut entry = entry?;
+        log::info!("[acp] stopping agent {agent_id} ({intent:?})");
 
         // Ask the driver loop to wind down, then drop the sender so the loop
         // ends even if the Shutdown was not observed.
