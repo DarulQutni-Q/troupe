@@ -250,6 +250,17 @@ function Steps({
   )
 }
 
+/**
+ * True when the result is the end of what the subagent wrote, so the steps
+ * above already show it: its last message, or (an orchestrated run's settle
+ * card) every message it wrote, joined as streamed.
+ */
+function endsTheSteps(toolCall: ToolCall, result: string): boolean {
+  const answer = result.trim()
+  const written = (toolCall.subagentMessages ?? []).map((message) => message.text).join('')
+  return answer.length > 0 && written.trim().endsWith(answer)
+}
+
 function Outcome({
   toolCall,
   status,
@@ -279,8 +290,7 @@ function Outcome({
   }
 
   const result = subagentResultText(toolCall)
-  // The steps above already end with the result when it is the last message.
-  const shown = result?.trim() === lastSubagentMessage(toolCall)?.trim() ? undefined : result
+  const shown = result && !endsTheSteps(toolCall, result) ? result : undefined
   const error = record?.activity === 'idle' ? record.end.error?.trim() : undefined
   // A settled worktree run keeps its diff summary next to the result; the
   // worktree survives, so the changes are where the user can find them.

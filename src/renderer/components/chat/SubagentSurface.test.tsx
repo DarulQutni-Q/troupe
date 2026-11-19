@@ -713,6 +713,34 @@ describe('orchestrated subagents in the transcript', () => {
     expect(within(panel()).getAllByText('troupe/sub/retry-fix')).toHaveLength(2)
   })
 
+  it('reads an orchestrated run as a chat and keeps its settle-card result out of a repeat', () => {
+    const before = 'Reading the retry loop. '
+    const after = 'Fixed: the backoff resets on success.'
+    renderChat({
+      toolCalls: [
+        orchestrated(
+          'sub-1',
+          { state: endedState() },
+          {
+            status: 'completed',
+            subagentMessages: [
+              { seq: 15, timestamp: 1_250, text: before, messageId: 'm1' },
+              { seq: 25, timestamp: 1_350, text: after, messageId: 'm2' }
+            ],
+            rawOutput: { text: `${before}${after}` }
+          }
+        ),
+        child('sub-1', 'c1', { seq: 20 })
+      ]
+    })
+    fireEvent.click(row(/^Implement the retry fix/))
+    expect(steps()).toHaveTextContent(
+      /Reading the retry loop\..*Read 1 file.*Fixed: the backoff resets on success\./
+    )
+    expect(within(panel()).getAllByText(after)).toHaveLength(1)
+    expect(within(panel()).queryByTestId('agent-prose')).toBeNull()
+  })
+
   it('says a stopped run returned no result, not that it reported to the agent', () => {
     renderChat({
       toolCalls: [orchestrated('sub-1', { state: endedState('cancelled') }, { status: 'failed' })]
