@@ -41,9 +41,13 @@ import { loadPersistedCatalog, useKnownCatalogs, useOtherAgentCatalog } from './
 const NO_IDS: readonly string[] = []
 const NO_FAVORITES: readonly FavoriteModel[] = []
 
-/** True when both ids name one agent, including a legacy alias. Null never matches. */
+/**
+ * True when both ids name one agent, including a legacy alias. Two missing
+ * ids match, so a chat with no agent still shows its own model options.
+ */
 function sameConfig(left: string | null, right: string | null): boolean {
-  return Boolean(left && right && sameAgentId(left, right))
+  if (left == null || right == null) return left === right
+  return sameAgentId(left, right)
 }
 
 export interface ModelHit {
