@@ -11,7 +11,7 @@ use super::{
     Input, LimitedAccounts, TurnClock, CODEX_CONFIG_ID,
 };
 use crate::acp::claude_limit::schedule::{Schedule, ScheduledResume};
-use crate::acp::codex_accounts::usage::CodexAccountUsage;
+use crate::acp::codex_accounts::usage::{CodexAccountUsage, CodexUsageStatus};
 use crate::acp::codex_accounts::CodexAccountsSnapshot;
 use crate::acp::codex_agent::CodexLaunchAuth;
 use crate::acp::config::{AgentId, SessionId};
@@ -292,18 +292,22 @@ impl Supervisor {
         let chat = redact_session_id(&session_id.0);
         match at {
             Some(at) => {
-                let recipe = self
+                let (recipe, added) = self
                     .acp
                     .keep_present_launch_recipe(session_id)
                     .ok_or_else(|| "This chat is not open on the host.".to_string())?;
                 let CodexLaunchAuth::Account(account_id) = &recipe.launch.codex else {
-                    self.acp.keep_launch_recipe(&session_id.0, false);
+                    if added {
+                        self.acp.keep_launch_recipe(&session_id.0, false);
+                    }
                     return Err(
                         "This chat does not run on a Codex account Troupe manages.".to_string()
                     );
                 };
                 if recipe.launch.config.config_id.as_deref() != Some(CODEX_CONFIG_ID) {
-                    self.acp.keep_launch_recipe(&session_id.0, false);
+                    if added {
+                        self.acp.keep_launch_recipe(&session_id.0, false);
+                    }
                     return Err(
                         "This chat does not run on a Codex account Troupe manages.".to_string()
                     );
@@ -514,10 +518,17 @@ fn account_ref(snapshot: &CodexAccountsSnapshot, id: &str) -> AccountRef {
 }
 
 fn blocking_reset(usage: Option<&CodexAccountUsage>) -> Option<i64> {
-    let (_, reset) = decide::most_used(usage)?;
-    chrono::DateTime::parse_from_rfc3339(reset?)
-        .ok()
+    let usage = usage.filter(|read| read.status == CodexUsageStatus::Ok)?;
+    // A weekly window can still be exhausted after the 5-hour window resets.
+    // The wait lasts until the latest exhausted window clears.
+    usage
+        .windows
+        .iter()
+        .filter(|window| window.percent >= 100.0)
+        .filter_map(|window| window.resets_at.as_deref())
+        .filter_map(|reset| chrono::DateTime::parse_from_rfc3339(reset).ok())
         .map(|at| at.timestamp())
+        .max()
 }
 
 fn epoch(secs: i64) -> SystemTime {
