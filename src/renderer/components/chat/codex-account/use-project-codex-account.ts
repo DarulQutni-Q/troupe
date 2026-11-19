@@ -38,6 +38,27 @@ const choice = (
 export const projectCodexAccountId = (snapshot: CodexAccountsSnapshot, projectId: string): string =>
   snapshot.projectAccounts[projectId] ?? snapshot.defaultAccountId
 
+/** The chat's own Account, when its entry names an Account the host still has. */
+export function ownChatAccountId(
+  snapshot: CodexAccountsSnapshot,
+  sessionId: string
+): string | null {
+  const id = snapshot.chatAccounts?.[sessionId]
+  return id !== undefined && snapshot.accounts.some((account) => account.id === id) ? id : null
+}
+
+/**
+ * The Account a chat or Project uses, resolved like the host: the chat's own
+ * choice, else its Project's, else the Default Account.
+ */
+export const codexAccountFor = (
+  snapshot: CodexAccountsSnapshot,
+  projectId: string,
+  sessionId?: string
+): string =>
+  (sessionId ? ownChatAccountId(snapshot, sessionId) : null) ??
+  projectCodexAccountId(snapshot, projectId)
+
 /** Signed-in Accounts other than `currentId` with room left, least used first. */
 export function rankCodexAlternatives(
   snapshot: CodexAccountsSnapshot,

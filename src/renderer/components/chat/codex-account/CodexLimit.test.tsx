@@ -12,7 +12,7 @@ const { api, switcher, openApp, admits } = vi.hoisted(() => ({
   admits: { value: true },
   openApp: vi.fn(),
   api: { list: vi.fn(), usage: vi.fn() },
-  switcher: { switchProjectCodexAccount: vi.fn() }
+  switcher: { switchProjectCodexAccount: vi.fn(), switchChatCodexAccount: vi.fn() }
 }))
 
 vi.mock('@/lib/codex-accounts-api', () => ({ codexAccountsApi: api }))
@@ -29,7 +29,11 @@ vi.mock('@/stores/codex-account-switch', async () => {
   const actual = await vi.importActual<typeof import('@/stores/codex-account-switch')>(
     '@/stores/codex-account-switch'
   )
-  return { ...actual, switchProjectCodexAccount: switcher.switchProjectCodexAccount }
+  return {
+    ...actual,
+    switchProjectCodexAccount: switcher.switchProjectCodexAccount,
+    switchChatCodexAccount: switcher.switchChatCodexAccount
+  }
 })
 
 const read = (
@@ -85,7 +89,8 @@ beforeEach(() => {
     chatAccounts: {},
     autoSwitch: true
   })
-  switcher.switchProjectCodexAccount.mockResolvedValue(['s1'])
+  switcher.switchProjectCodexAccount.mockResolvedValue(true)
+  switcher.switchChatCodexAccount.mockResolvedValue('restarted')
 })
 
 describe('CodexLimitWarning', () => {
@@ -97,10 +102,11 @@ describe('CodexLimitWarning', () => {
     expect(warning).toHaveAttribute('data-composer-dock', 'warning')
     fireEvent.click(screen.getByRole('button', { name: 'Switch to Work' }))
     await vi.waitFor(() =>
-      expect(switcher.switchProjectCodexAccount).toHaveBeenCalledWith('office', 'ab12', {
-        continueSessionIds: undefined,
-        expectedAccountId: 'default'
-      })
+      expect(switcher.switchChatCodexAccount).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: 's1', runsOn: 'default' }),
+        'ab12',
+        {}
+      )
     )
   })
 
@@ -126,20 +132,24 @@ describe('CodexLimitNotice', () => {
     fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' })
     fireEvent.click(switchButton)
     await vi.waitFor(() =>
-      expect(switcher.switchProjectCodexAccount).toHaveBeenCalledWith('office', 'ab12', {
-        continueSessionIds: ['s1'],
-        expectedAccountId: 'default'
-      })
+      expect(switcher.switchChatCodexAccount).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: 's1', runsOn: 'default' }),
+        'ab12',
+        expect.objectContaining({ notice: expect.stringContaining('Codex account Personal') })
+      )
     )
   })
 
   it('reports a lost compare-and-set instead of a successful switch', async () => {
-    switcher.switchProjectCodexAccount.mockResolvedValue(null)
+    switcher.switchChatCodexAccount.mockResolvedValue('lost')
     api.usage.mockResolvedValue([read('default', 100), read('ab12', 4), read('cd34', 40)])
     render(<CodexLimitNotice sessionId="s1" />)
     fireEvent.click(await screen.findByRole('button', { name: 'Switch to Work and continue' }))
     await vi.waitFor(() =>
-      expect(toast.info).toHaveBeenCalledWith('That account was changed on another client')
+      expect(toast.info).toHaveBeenCalledWith(
+        'The account of this chat already changed',
+        expect.objectContaining({ description: expect.any(String) })
+      )
     )
     expect(toast.success).not.toHaveBeenCalled()
   })

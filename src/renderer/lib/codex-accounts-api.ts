@@ -71,6 +71,26 @@ export const codexAccountsApi = {
       return applied
     }),
 
+  setChatAccount: (
+    projectId: string,
+    sessionId: string,
+    accountId: string | null,
+    options: { expectedAccountId?: string } = {}
+  ): Promise<boolean> =>
+    logged('setChatAccount', async () => {
+      const applied = await getAcpTransport().setChatCodexAccount(
+        projectId,
+        sessionId,
+        accountId,
+        options.expectedAccountId
+      )
+      if (applied) notifyCodexAccountListChanged()
+      return applied
+    }),
+
+  setResume: (sessionId: string, at: number | null): Promise<void> =>
+    logged('setResume', () => getAcpTransport().setCodexResume(sessionId, at)),
+
   /** A chat at its limit continues on the signed-in Account with the most room. */
   setAutoSwitch: (enabled: boolean): Promise<void> =>
     logged('setAutoSwitch', async () => {

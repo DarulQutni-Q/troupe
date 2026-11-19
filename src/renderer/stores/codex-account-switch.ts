@@ -9,6 +9,7 @@
 
 import { toast } from 'sonner'
 import { runningBackgroundCommands } from '@/components/chat/background-commands'
+import { ownChatAccountId } from '@/components/chat/codex-account/use-project-codex-account'
 import { runningBackgroundSubagents } from '@/components/chat/subagent-strip'
 import { resumeMissesSession } from '@/lib/acp-resume-policy'
 import { codexAccountsApi } from '@/lib/codex-accounts-api'
@@ -143,7 +144,10 @@ async function continueInNewSession(sessionId: string, resend: boolean): Promise
 
 /** Chats with a restart already running or waiting, so a second switch does not stack. */
 /** One restart to run after the in-flight one, if the chat is still on the old account. */
-const restartFollowUp = new Map<string, { resend?: boolean; cancelTurn?: boolean }>()
+const restartFollowUp = new Map<
+  string,
+  { resend?: boolean; cancelTurn?: boolean; notice?: string }
+>()
 
 async function waitForSharedAgent(agentId: string, sessionId: string): Promise<void> {
   for (;;) {
@@ -159,13 +163,14 @@ async function waitForSharedAgent(agentId: string, sessionId: string): Promise<v
 }
 
 /**
- * Restart one Codex chat on its Project's current Account and resume the same
- * session. `resend` sends the last user prompt again; `cancelTurn` stops a
- * turn that is still held (a usage limit can keep a turn open until reset).
+ * Restart one Codex chat on the Account it resolves to now and resume the
+ * same session. `notice` is a new prompt once the chat runs again. `resend`
+ * sends the last user prompt again. A limit switch uses `notice`, never
+ * `resend`. `cancelTurn` stops a turn that is still held.
  */
 export async function restartCodexSession(
   sessionId: string,
-  options: { resend?: boolean; cancelTurn?: boolean } = {}
+  options: { resend?: boolean; cancelTurn?: boolean; notice?: string } = {}
 ): Promise<boolean> {
   if (isCodexAccountRestarting(sessionId)) {
     restartFollowUp.set(sessionId, options)
@@ -220,7 +225,7 @@ export async function restartCodexSession(
         .killAgent(oldAgentId)
         .catch(() => undefined)
     }
-    const resend = options.resend ?? false
+    const resend = options.notice ? false : (options.resend ?? false)
     try {
       await useAcpStore.getState().retryCrashedSession(sessionId, { resend })
     } catch (error) {
@@ -234,7 +239,20 @@ export async function restartCodexSession(
       const { rateLimit: _cleared, ...rest } = usage
       return { sessionUsage: { ...s.sessionUsage, [sessionId]: rest } }
     })
-    return useAcpStore.getState().sessions[sessionId]?.status === 'active'
+    const active = useAcpStore.getState().sessions[sessionId]?.status === 'active'
+    if (active && options.notice) {
+      await useAcpStore
+        .getState()
+        .sendPrompt(sessionId, options.notice)
+        .catch((error: unknown) => {
+          void logFrontendError({
+            level: 'warn',
+            source: 'codexAccountSwitch.restart',
+            message: `Chat ${sessionId} restarted, but its continuation notice failed: ${error instanceof Error ? error.message : String(error)}`
+          })
+        })
+    }
+    return active
   } catch (error) {
     void logFrontendError({
       level: 'warn',
@@ -273,29 +291,46 @@ async function restartAfterReopen(sessionId: string, projectId: string): Promise
 }
 
 /**
- * Restart every open Codex chat of a Project after its Account changed: a
- * chat with a tab, or one kept for its Project while that Project is off
- * screen. `continueSessionIds` are the chats that hit a limit: their held
- * turns are cancelled and their last prompts are sent again. Other busy chats restart in the
- * background when their turn ends. An unopened chat (a warm-pool seed, or a
- * chat whose tab was closed) is not reopened; its agent stops, after the
- * running turn if there is one, unless an open chat shares it. The Project's
- * Codex warm sessions are prepared again on the new Account. Resolves when
- * the idle chats restarted, with the `continueSessionIds` that did continue.
+ * Restart every open Codex chat of a Project that follows the project after
+ * its Account changed. A chat with its own Account stays. Busy chats restart
+ * in the background when their turn ends. An unopened chat is not reopened.
+ * The last prompt is not sent again.
  */
+async function chatsWithOwnAccount(): Promise<Set<string>> {
+  try {
+    const snapshot = await codexAccountsApi.list()
+    return new Set(
+      Object.keys(snapshot.chatAccounts ?? {}).filter(
+        (id) => ownChatAccountId(snapshot, id) !== null
+      )
+    )
+  } catch (error) {
+    void logFrontendError({
+      level: 'warn',
+      source: 'codexAccountSwitch.apply',
+      message: `Listing Codex accounts failed; restarting every chat of the project: ${error instanceof Error ? error.message : String(error)}`
+    })
+    return new Set()
+  }
+}
+
 export async function applyProjectCodexAccount(
   projectId: string,
-  options: { continueSessionIds?: readonly string[]; credentialsRenewed?: boolean } = {}
-): Promise<string[]> {
+  options: { credentialsRenewed?: boolean } = {}
+): Promise<void> {
   if (!options.credentialsRenewed) renewAgentCredentials(CODEX_AGENT_CONFIG_ID, projectId)
+  const ownAccount = await chatsWithOwnAccount()
   const state = useAcpStore.getState()
   const openIds = openChatIds()
-  const chats = Object.values(state.sessions).filter(
+  const projectChats = Object.values(state.sessions).filter(
     (s) => s.projectId === projectId && isOpen(state, s.id) && isCodexSession(state, s.id)
   )
+  const chats = projectChats.filter((s) => !ownAccount.has(s.id))
   const open = chats.filter((s) => openIds.has(s.id))
-  const openAgents = new Set(open.map((s) => s.agentId))
-  const unopened = chats.filter((s) => !openIds.has(s.id) && !openAgents.has(s.agentId))
+  const keptAgents = new Set(
+    [...open, ...projectChats.filter((s) => ownAccount.has(s.id))].map((s) => s.agentId)
+  )
+  const unopened = chats.filter((s) => !openIds.has(s.id) && !keptAgents.has(s.agentId))
   const busy = unopened.filter((s) => switchBlockedReason(state, s.id) !== null)
   const busyAgents = new Set(busy.map((s) => s.agentId))
   const idleAgents = new Set(unopened.map((s) => s.agentId).filter((a) => !busyAgents.has(a)))
@@ -312,7 +347,6 @@ export async function applyProjectCodexAccount(
     message: `Project ${projectId} account changed; restarting ${open.length} open Codex chats, stopping ${idleAgents.size} agents of unopened chats now (${unopened.filter((s) => warm.has(s.id)).length} warm-pool) and ${busy.length} after their turn, preparing ${rewarmCwds.size} warm sessions again`
   })
   const now: Promise<unknown>[] = []
-  const continued: string[] = []
   for (const agentId of idleAgents) now.push(stopOldAgent(agentId, 'chat not open'))
   for (const { id, agentId } of busy) {
     void logFrontendError({
@@ -329,43 +363,106 @@ export async function applyProjectCodexAccount(
       .prepareChat(CODEX_AGENT_CONFIG_ID, cwd, undefined, projectId, { silent: true })
   }
   for (const { id } of open) {
-    if (options.continueSessionIds?.includes(id)) {
-      now.push(
-        restartCodexSession(id, { resend: true, cancelTurn: true }).then((ok) => {
-          if (ok) continued.push(id)
-        })
-      )
-    } else if (switchBlockedReason(state, id) === null) {
-      now.push(restartCodexSession(id))
-    } else {
-      void restartCodexSession(id)
-    }
+    if (switchBlockedReason(state, id) === null) now.push(restartCodexSession(id))
+    else void restartCodexSession(id)
   }
   await Promise.all(now)
-  return continued
 }
 
 /**
- * Choose a Project's Account on the host, then restart its Codex chats on it.
- * Agents already spawned for the Project stop taking new chats before the
- * host write, so a chat started during the switch never lands on the old
- * Account. With `expectedAccountId` the host applies the choice only while
- * the Project still uses that Account; when another client switched first,
- * nothing restarts and this resolves `null`. Otherwise it resolves with the
- * `continueSessionIds` that did continue.
+ * Choose a Project's Account on the host, then restart the Codex chats that
+ * follow the project. With `expectedAccountId` the host applies the choice
+ * only while the Project still uses that Account. Resolves whether it applied.
  */
 export async function switchProjectCodexAccount(
   projectId: string,
   accountId: string | null,
-  options: { continueSessionIds?: readonly string[]; expectedAccountId?: string } = {}
-): Promise<string[] | null> {
+  options: { expectedAccountId?: string } = {}
+): Promise<boolean> {
   renewAgentCredentials(CODEX_AGENT_CONFIG_ID, projectId)
   const applied = await codexAccountsApi.setProjectAccount(projectId, accountId, {
     expectedAccountId: options.expectedAccountId
   })
-  if (!applied) return null
-  return applyProjectCodexAccount(projectId, {
-    continueSessionIds: options.continueSessionIds,
-    credentialsRenewed: true
+  if (!applied) return false
+  await applyProjectCodexAccount(projectId, { credentialsRenewed: true })
+  return true
+}
+
+export function chatSwitchNotice(from: string, to: string, window: string): string {
+  return `You moved this chat from Codex account ${from} to ${to} because ${from} reached its ${window} limit. Continue the task you were working on. Subagents and background commands that were running before the switch were stopped; restart the ones that are still needed.`
+}
+
+export type ChatAccountSwitch = 'unchanged' | 'kept' | 'lost' | 'restarted' | 'failed' | 'pending'
+
+export interface ChatSwitchToast {
+  kind: 'success' | 'info' | 'error'
+  title: string
+  description?: string
+}
+
+export function chatSwitchToast(
+  outcome: ChatAccountSwitch,
+  target: string | null
+): ChatSwitchToast | null {
+  const now =
+    target === null ? 'This chat follows the project again' : `This chat now uses ${target}`
+  const to = target ?? 'the project account'
+  switch (outcome) {
+    case 'unchanged':
+      return null
+    case 'kept':
+    case 'restarted':
+      return { kind: 'success', title: now }
+    case 'lost':
+      return {
+        kind: 'info',
+        title: 'The account of this chat already changed',
+        description: 'Troupe or another device switched it first.'
+      }
+    case 'pending':
+      return { kind: 'info', title: `This chat moves to ${to} when its reply ends` }
+    case 'failed':
+      return {
+        kind: 'error',
+        title: `Could not restart this chat on ${to}`,
+        description: 'Send a message to continue.'
+      }
+  }
+}
+
+export function showChatSwitchToast(t: ChatSwitchToast | null): void {
+  if (!t) return
+  const show = t.kind === 'success' ? toast.success : t.kind === 'info' ? toast.info : toast.error
+  if (t.description) show(t.title, { description: t.description })
+  else show(t.title)
+}
+
+export async function switchChatCodexAccount(
+  chat: {
+    sessionId: string
+    projectId: string
+    runsOn: string
+    ownAccountId: string | null
+    projectAccountId: string
+  },
+  accountId: string | null,
+  options: { notice?: string } = {}
+): Promise<ChatAccountSwitch> {
+  const { sessionId, projectId, runsOn } = chat
+  if (accountId === chat.ownAccountId) return 'unchanged'
+  const applied = await codexAccountsApi.setChatAccount(projectId, sessionId, accountId, {
+    expectedAccountId: runsOn
   })
+  if (!applied) return 'lost'
+  if ((accountId ?? chat.projectAccountId) === runsOn) return 'kept'
+  const idle = switchBlockedReason(useAcpStore.getState(), sessionId) === null
+  const restart = restartCodexSession(
+    sessionId,
+    options.notice ? { notice: options.notice, cancelTurn: true } : {}
+  )
+  if (!options.notice && !idle) {
+    void restart
+    return 'pending'
+  }
+  return (await restart) ? 'restarted' : 'failed'
 }

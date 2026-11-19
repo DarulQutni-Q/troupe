@@ -7,7 +7,7 @@ import { CodexAccountChip } from './CodexAccountChip'
 const { api, switcher, openApp } = vi.hoisted(() => ({
   openApp: vi.fn(),
   api: { list: vi.fn(), usage: vi.fn() },
-  switcher: { switchProjectCodexAccount: vi.fn() }
+  switcher: { switchProjectCodexAccount: vi.fn(), switchChatCodexAccount: vi.fn() }
 }))
 
 vi.mock('@/lib/codex-accounts-api', () => ({ codexAccountsApi: api }))
@@ -21,7 +21,11 @@ vi.mock('@/stores/codex-account-switch', async () => {
   const actual = await vi.importActual<typeof import('@/stores/codex-account-switch')>(
     '@/stores/codex-account-switch'
   )
-  return { ...actual, switchProjectCodexAccount: switcher.switchProjectCodexAccount }
+  return {
+    ...actual,
+    switchProjectCodexAccount: switcher.switchProjectCodexAccount,
+    switchChatCodexAccount: switcher.switchChatCodexAccount
+  }
 })
 
 beforeEach(() => {
@@ -38,7 +42,8 @@ beforeEach(() => {
     chatAccounts: {},
     autoSwitch: false
   })
-  switcher.switchProjectCodexAccount.mockResolvedValue([])
+  switcher.switchProjectCodexAccount.mockResolvedValue(true)
+  switcher.switchChatCodexAccount.mockResolvedValue('restarted')
   useAcpStore.setState({
     ...FRESH,
     sessions: {
@@ -63,15 +68,30 @@ beforeEach(() => {
 })
 
 describe('CodexAccountChip', () => {
-  it('shows the project account and switches it', async () => {
+  it('shows the account for this chat and does not switch the project', async () => {
     render(<CodexAccountChip sessionId="s1" />)
     const chip = await screen.findByTestId('codex-account-chip')
     expect(chip).toHaveTextContent('Work')
     fireEvent.pointerDown(chip, { button: 0, ctrlKey: false })
+    expect(await screen.findByRole('menuitem', { name: /Follow project/ })).toBeInTheDocument()
     fireEvent.click(await screen.findByRole('menuitem', { name: /^Personal/ }))
     await waitFor(() =>
-      expect(switcher.switchProjectCodexAccount).toHaveBeenCalledWith('office', 'default')
+      expect(switcher.switchChatCodexAccount).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: 's1', projectId: 'office', runsOn: 'ab12' }),
+        'default'
+      )
     )
+    expect(switcher.switchProjectCodexAccount).not.toHaveBeenCalled()
+  })
+
+  it('does nothing when the chat already follows the project', async () => {
+    render(<CodexAccountChip sessionId="s1" />)
+    fireEvent.pointerDown(await screen.findByTestId('codex-account-chip'), {
+      button: 0,
+      ctrlKey: false
+    })
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Follow project/ }))
+    expect(switcher.switchChatCodexAccount).not.toHaveBeenCalled()
   })
 
   it('does not offer a signed-out account', async () => {

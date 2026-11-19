@@ -25,7 +25,7 @@ import {
   switchProjectCodexAccount
 } from './codex-account-switch'
 
-const { api } = vi.hoisted(() => ({ api: { setProjectAccount: vi.fn() } }))
+const { api } = vi.hoisted(() => ({ api: { setProjectAccount: vi.fn(), list: vi.fn() } }))
 vi.mock('@/lib/codex-accounts-api', () => ({ codexAccountsApi: api }))
 vi.mock('@/lib/log-api', () => ({ logFrontendError: vi.fn() }))
 vi.mock('@/lib/acp-api', async (importActual) => ({
@@ -101,6 +101,7 @@ beforeEach(() => {
     }))
   })
   api.setProjectAccount.mockResolvedValue(true)
+  api.list.mockResolvedValue({ accounts: [], chatAccounts: {}, projectAccounts: {} })
   useAcpStore.setState({
     ...FRESH,
     killAgent,
@@ -281,18 +282,17 @@ describe('claude account switch', () => {
     expect(retryCrashedSession).toHaveBeenCalledWith('c2', { resend: true })
   })
 
-  it('restarts only the Claude chats of the project, continuing the one that hit the limit', async () => {
-    await expect(
-      applyProjectCodexAccount('office', { continueSessionIds: ['c2'] })
-    ).resolves.toEqual(['c2'])
+  it('restarts the chats that follow the project and does not resend the last prompt', async () => {
+    api.list.mockResolvedValue({
+      accounts: [{ id: 'spare', name: 'Spare', builtin: false, signedIn: true }],
+      defaultAccountId: 'default',
+      projectAccounts: {},
+      chatAccounts: { c2: 'spare' },
+      autoSwitch: true
+    })
+    await applyProjectCodexAccount('office')
     const restarted = retryCrashedSession.mock.calls.map(([id, o]) => [id, o.resend])
-    expect(restarted).toEqual(
-      expect.arrayContaining([
-        ['c1', false],
-        ['c2', true]
-      ])
-    )
-    expect(restarted).toHaveLength(2)
+    expect(restarted).toEqual([['c1', false]])
   })
 
   it('does not reopen a busy chat whose tab closed while it waited', async () => {
@@ -306,7 +306,7 @@ describe('claude account switch', () => {
   })
 
   it('saves the project account on the host before restarting', async () => {
-    await expect(switchProjectCodexAccount('office', 'ab12')).resolves.toEqual([])
+    await expect(switchProjectCodexAccount('office', 'ab12')).resolves.toBe(true)
     expect(api.setProjectAccount).toHaveBeenCalledWith('office', 'ab12', {
       expectedAccountId: undefined
     })
@@ -514,11 +514,8 @@ describe('a switch the host refuses', () => {
     const before = useAcpStore.getState().sessions
     api.setProjectAccount.mockResolvedValue(false)
     await expect(
-      switchProjectCodexAccount('office', 'ab12', {
-        continueSessionIds: ['c1'],
-        expectedAccountId: 'default'
-      })
-    ).resolves.toBeNull()
+      switchProjectCodexAccount('office', 'ab12', { expectedAccountId: 'default' })
+    ).resolves.toBe(false)
     expect(api.setProjectAccount).toHaveBeenCalledWith('office', 'ab12', {
       expectedAccountId: 'default'
     })

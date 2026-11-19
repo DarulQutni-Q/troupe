@@ -1178,7 +1178,10 @@ export class WsAcpTransport implements AcpTransport {
 
   async listCodexAccounts(): Promise<CodexAccountsSnapshot> {
     await this.connect()
-    return this.request<CodexAccountsSnapshot>('list_codex_accounts', {})
+    const reply = await this.request<
+      Omit<CodexAccountsSnapshot, 'chatAccounts'> & { chatAccounts?: unknown }
+    >('list_codex_accounts', {})
+    return { ...reply, chatAccounts: stringRecord(reply.chatAccounts) }
   }
 
   async listCodexUsage(force = false): Promise<CodexAccountUsage[]> {
@@ -1206,9 +1209,30 @@ export class WsAcpTransport implements AcpTransport {
     return reply?.applied !== false
   }
 
+  async setChatCodexAccount(
+    projectId: string,
+    sessionId: string,
+    accountId: string | null,
+    expectedAccountId?: string
+  ): Promise<boolean> {
+    await this.connect()
+    const reply = await this.request<{ applied?: boolean }>('set_chat_codex_account', {
+      projectId,
+      sessionId,
+      accountId,
+      ...(expectedAccountId ? { expectedAccountId } : {})
+    })
+    return reply?.applied !== false
+  }
+
   async setCodexAutoSwitch(enabled: boolean): Promise<void> {
     await this.connect()
     await this.request('set_codex_auto_switch', { enabled })
+  }
+
+  async setCodexResume(sessionId: string, at: number | null): Promise<void> {
+    await this.connect()
+    await this.request('set_codex_resume', { sessionId, at })
   }
 
   async addCodexAccount(name: string, options?: CommandCallOptions): Promise<CodexAccount> {

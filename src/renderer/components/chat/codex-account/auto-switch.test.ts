@@ -1,5 +1,4 @@
 import type { CodexAccountUsage } from '@shared/types/codex-accounts.types'
-import { toast } from 'sonner'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { logFrontendError } from '@/lib/log-api'
 import { useAcpStore } from '@/stores/acp-store'
@@ -158,112 +157,18 @@ describe('startCodexAutoSwitch', () => {
     useCodexResumeStore.getState().cancel('s1')
   })
 
-  it('switches with compare-and-set, resends the prompt, and cancels the held turn', async () => {
-    setLimit(1_900_000_000)
-    await vi.waitFor(() => expect(toast.success).toHaveBeenCalled())
-    expect(switcher.switchProjectCodexAccount).toHaveBeenCalledWith('office', 'ab12', {
-      continueSessionIds: ['s1'],
-      expectedAccountId: 'default'
-    })
-    expect(toast.success).toHaveBeenCalledWith(
-      'Personal reached its 5-hour limit. Continued on Work.'
-    )
-  })
-
-  it('leaves the chat alone when automatic switching is off', async () => {
-    api.list.mockResolvedValue(snapshot(false))
+  it('does not move the project or resend the last prompt; the host continues the chat', async () => {
     setLimit(1_900_000_000)
     await vi.waitFor(() =>
       expect(
         vi
           .mocked(logFrontendError)
           .mock.calls.map(([entry]) => (entry as { message: string }).message)
-      ).toContain('Skipped chats s1: automatic switching is off')
+          .some((message) => message.includes('the host continues them'))
+      ).toBe(true)
     )
     expect(switcher.switchProjectCodexAccount).not.toHaveBeenCalled()
-  })
-
-  it('waits for the probe reset when no other account has room', async () => {
-    const resetsAt = new Date(Date.now() + 3_600_000).toISOString()
-    api.usage.mockResolvedValue([
-      read('default', 40, resetsAt),
-      read('ab12', 100, resetsAt),
-      read('cd34', 100, resetsAt)
-    ])
-    setLimit(null)
-    const resetMs = Math.floor(Date.parse(resetsAt) / 1000) * 1000
-    await vi.waitFor(() => expect(useCodexResumeStore.getState().at.s1).toBe(resetMs))
-    expect(switcher.switchProjectCodexAccount).not.toHaveBeenCalled()
-    expect(toast.info).toHaveBeenCalledWith(
-      'Personal reached its 5-hour limit. No other account has room.',
-      expect.objectContaining({ description: expect.stringMatching(/^The chat continues at /) })
-    )
-  })
-
-  it('treats a mid-turn rate_limited error as at-limit and switches', async () => {
-    useAcpStore.getState()._onAgentError({
-      agentId: 'a1',
-      sessionId: 's1',
-      message: 'usage limit',
-      code: -32603,
-      data: { errorKind: 'rate_limited' }
-    })
-    await vi.waitFor(() => expect(switcher.switchProjectCodexAccount).toHaveBeenCalled())
-    expect(switcher.switchProjectCodexAccount).toHaveBeenCalledWith('office', 'ab12', {
-      continueSessionIds: ['s1'],
-      expectedAccountId: 'default'
-    })
-  })
-
-  it('restarts limited chats when another client switched the project first', async () => {
-    switcher.switchProjectCodexAccount.mockResolvedValue(null)
-    setLimit(1_900_000_000)
-    await vi.waitFor(() => expect(switcher.applyProjectCodexAccount).toHaveBeenCalled())
-    expect(switcher.applyProjectCodexAccount).toHaveBeenCalledWith('office', {
-      continueSessionIds: ['s1']
-    })
-    expect(toast.success).not.toHaveBeenCalled()
-  })
-
-  it('does not resend a completed chat when the probe is at 100%', async () => {
-    api.usage.mockResolvedValue([read('default', 100), read('ab12', 4), read('cd34', 40)])
-    stop()
-    stop = startCodexAutoSwitch()
-    await vi.waitFor(() => expect(api.usage).toHaveBeenCalled())
-    expect(switcher.switchProjectCodexAccount).not.toHaveBeenCalled()
-  })
-
-  it('switches a held turn when the probe is at 100% and the window is still open', async () => {
-    const resetsAt = new Date(Date.now() + 3_600_000).toISOString()
-    api.usage.mockResolvedValue([
-      read('default', 100, resetsAt),
-      read('ab12', 4, resetsAt),
-      read('cd34', 40, resetsAt)
-    ])
-    useAcpStore.setState((state) => ({
-      sessions: {
-        ...state.sessions,
-        s1: { ...state.sessions.s1, activeTurn: true }
-      }
-    }))
-    stop()
-    stop = startCodexAutoSwitch()
-    await vi.waitFor(() => expect(switcher.switchProjectCodexAccount).toHaveBeenCalled())
-  })
-
-  it('treats a mid-turn quota_exhausted error as at-limit and switches', async () => {
-    useAcpStore.getState()._onAgentError({
-      agentId: 'a1',
-      sessionId: 's1',
-      message: 'quota',
-      code: -32603,
-      data: { errorKind: 'quota_exhausted' }
-    })
-    await vi.waitFor(() =>
-      expect(switcher.switchProjectCodexAccount).toHaveBeenCalledWith('office', 'ab12', {
-        continueSessionIds: ['s1'],
-        expectedAccountId: 'default'
-      })
-    )
+    expect(switcher.restartCodexSession).not.toHaveBeenCalled()
+    expect(useCodexResumeStore.getState().at.s1).toBeUndefined()
   })
 })

@@ -283,8 +283,18 @@ export function createInvokeAcpTransport(): AcpTransport {
         accountId,
         expectedAccountId: expectedAccountId ?? null
       }),
+    setChatCodexAccount: (projectId, sessionId, accountId, expectedAccountId) =>
+      invoke<boolean>('codex_accounts_set_chat', {
+        projectId,
+        sessionId,
+        accountId,
+        expectedAccountId: expectedAccountId ?? null
+      }),
     setCodexAutoSwitch: async (enabled) => {
       await invoke('codex_accounts_set_auto_switch', { enabled })
+    },
+    setCodexResume: async (sessionId, at) => {
+      await invoke('codex_accounts_set_resume', { sessionId, at })
     },
     addCodexAccount: (name, options) =>
       invokeCommand<CodexAccount>('codex_accounts_add', { name }, options),

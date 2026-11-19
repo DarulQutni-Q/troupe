@@ -345,7 +345,19 @@ export interface AcpTransport {
     accountId: string | null,
     expectedAccountId?: string
   ): Promise<boolean>
+  /**
+   * `null` makes the chat follow its Project again. With `expectedAccountId`
+   * the host applies the choice only while the chat still runs on that Account.
+   */
+  setChatCodexAccount(
+    projectId: string,
+    sessionId: string,
+    accountId: string | null,
+    expectedAccountId?: string
+  ): Promise<boolean>
   setCodexAutoSwitch(enabled: boolean): Promise<void>
+  /** Continue the chat at `at` (epoch ms), or cancel with `null`. */
+  setCodexResume(sessionId: string, at: number | null): Promise<void>
   /** Add a signed-out Account; a same-id resend answers with the first one. */
   addCodexAccount(name: string, options?: CommandCallOptions): Promise<CodexAccount>
   renameCodexAccount(accountId: string, name: string): Promise<void>
