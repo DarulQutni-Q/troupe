@@ -736,3 +736,89 @@ async fn a_timed_out_waiter_is_not_kept() {
         "each wait drops the registrations of callers that left"
     );
 }
+
+/// An engine whose known-agents registry holds `registry` and whose
+/// install manifest lists the catalog agents `installed` (bare registry
+/// ids, as the install service keys them).
+async fn engine_with_installed(
+    registry: &[AgentConfig],
+    installed: &[&str],
+) -> (Arc<OrchestratorEngine>, tempfile::TempDir) {
+    let data = tempfile::tempdir().expect("data dir");
+    let known: serde_json::Map<String, serde_json::Value> = registry
+        .iter()
+        .map(|config| {
+            (
+                crate::automation::agents::agent_key(config),
+                serde_json::to_value(config).expect("config"),
+            )
+        })
+        .collect();
+    std::fs::write(
+        data.path().join(crate::automation::agents::FILE_NAME),
+        json!({"schema_version": 1, "agents": known}).to_string(),
+    )
+    .expect("registry");
+    let installs = data.path().join("installs");
+    std::fs::create_dir_all(&installs).expect("install root");
+    let manifest: serde_json::Map<String, serde_json::Value> = installed
+        .iter()
+        .map(|id| {
+            (
+                id.to_string(),
+                json!({
+                    "agentId": id,
+                    "version": "1.0.0",
+                    "platformTarget": "linux-x86_64",
+                    "sha256": "",
+                    "command": format!("/opt/{id}/bin/{id}"),
+                    "args": ["acp"],
+                    "installedAt": 1,
+                }),
+            )
+        })
+        .collect();
+    std::fs::write(
+        installs.join("installed.json"),
+        json!({"schemaVersion": 1, "agents": manifest}).to_string(),
+    )
+    .expect("manifest");
+    let catalog = crate::acp::AcpCatalogService::open(data.path().join("catalog"))
+        .await
+        .expect("catalog");
+    let install = crate::acp::install::AcpInstallService::open(installs, catalog)
+        .await
+        .expect("install service");
+    let engine = Arc::new(OrchestratorEngine::new(
+        Arc::new(crate::acp::manager::AcpManager::new(Vec::new())),
+        data.path().to_path_buf(),
+        Some(install),
+        Handle::current(),
+    ));
+    (engine, data)
+}
+
+fn registry_agent(id: &str, name: &str) -> AgentConfig {
+    AgentConfig {
+        config_id: Some(format!("acp-registry:{id}")),
+        name: name.to_string(),
+        command: format!("/opt/{id}/bin/{id}"),
+        args: vec!["acp".to_string()],
+        env: std::collections::HashMap::new(),
+        allow_terminal: false,
+    }
+}
+
+#[tokio::test]
+async fn an_installed_agent_the_registry_knows_is_listed_once() {
+    let (engine, _data) =
+        engine_with_installed(&[registry_agent("cursor", "Cursor")], &["cursor"]).await;
+    assert_eq!(
+        engine.list_agents(),
+        vec![crate::acp::orchestrator::AgentListing {
+            agent_id: "acp-registry:cursor".to_string(),
+            name: "Cursor".to_string(),
+            allowed: true,
+        }]
+    );
+}
