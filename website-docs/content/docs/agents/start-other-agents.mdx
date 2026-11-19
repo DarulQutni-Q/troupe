@@ -18,7 +18,9 @@ The agent can start several subagents and let them work at the same time, up to 
 
 ## Where a subagent works
 
-By default, each subagent works in its own Git worktree, a separate copy of the project. The copy starts from the chat's current state, uncommitted changes included, so the subagent sees what the chat sees. Its edits never touch the chat's files. Creating the copy changes neither your files nor what you staged.
+By default, each subagent works in its own Git worktree, a separate copy of the project. The copy starts from the chat's current state, uncommitted changes and new files included. Files that Git ignores, such as `.env`, are not copied, so the subagent may miss settings the chat has. The subagent works in the copy, so its edits go there and not to the chat's files. Troupe does not block writes outside the copy, though, so an agent that writes to a full path elsewhere can still change other files. Creating the copy doesn't change your files or what you staged. The one exception: if the project's `.gitignore` does not list `.termul/` yet, Troupe adds it.
+
+A worktree needs a Git repository. In a folder that is not one, the subagent can't start in a worktree, and the agent can start it in the chat's folder instead.
 
 - The worktree is in the project's `.termul/worktrees` folder, on a branch named `troupe/sub/` followed by the subagent's ID.
 - The subagent's row shows a chip such as "worktree · troupe/sub/sub-9f2c1a3b4d5e".
@@ -27,7 +29,7 @@ By default, each subagent works in its own Git worktree, a separate copy of the 
 
 The worktree stays after the subagent ends, so you can review its changes, merge its branch, or copy what you want. At startup, Troupe removes subagent worktrees, and their branches, in which nothing changed for 7 days.
 
-The agent can also start a subagent in the chat's own folder instead. Its chip then reads "shared", and the **Workspace** section says "Runs in the chat's own folder." Such a subagent edits the same files as the chat.
+The agent can also start a subagent in the chat's own folder, for example when the subagent needs ignored files. Its chip then reads "shared", and the **Workspace** section says "Runs in the chat's own folder." Such a subagent edits the same files as the chat.
 
 ## Stop a subagent
 
