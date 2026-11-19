@@ -6,6 +6,7 @@
 //! `src/renderer`.
 
 pub mod account_choice;
+pub mod agent_aliases;
 pub mod agent_process;
 pub mod agent_session_import;
 pub mod archive;
