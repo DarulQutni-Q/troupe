@@ -4,7 +4,7 @@ import {
   rememberLastSelectedAgent
 } from '@/lib/agents/last-selected-agent'
 import {
-  entryServesConfigId,
+  findEntryForSavedId,
   pickDefaultConfiguredAgent,
   pickDefaultSupportedAgent,
   resolveSupportedAcpAgents,
@@ -75,7 +75,7 @@ export async function resolveNewChatAgent(): Promise<NewChatAgent> {
   const configs = useAcpStore.getState().agentConfigs
   const persisted = new Set(configs.map((config) => config.id))
   const [entries, lastId] = await Promise.all([resolveEntries(configs), readLastSelectedAgentId()])
-  const last = lastId ? entries.find((entry) => entryServesConfigId(entry, lastId)) : undefined
+  const last = lastId ? findEntryForSavedId(entries, lastId) : undefined
 
   if (isTauriContext()) {
     if (last) {

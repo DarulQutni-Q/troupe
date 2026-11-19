@@ -100,6 +100,18 @@ describe('stableAgentTabs OpenCode alias', () => {
     expect(agentTabViewId(tab, 'acp-registry:opencode-v2')).toBe('acp-registry:opencode-v2')
     expect(agentTabViewId(tab, 'acp-registry:gemini')).toBe('acp-registry:opencode')
   })
+
+  it('does not treat a custom opencode id as the registry OpenCode tab', () => {
+    const custom = config('custom-opencode', 'My OpenCode')
+    custom.configId = 'opencode'
+    const tab: AgentTab = {
+      configId: 'opencode',
+      name: 'My OpenCode',
+      config: custom,
+      entry: entry(custom, 'custom-opencode')
+    }
+    expect(agentTabViewId(tab, 'acp-registry:opencode')).toBe('opencode')
+  })
 })
 
 describe('buildAgentTabs', () => {

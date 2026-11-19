@@ -224,6 +224,20 @@ describe('findEntryForSavedId', () => {
     }
     expect(findEntryForSavedId([opencode], 'acp-registry:opencode-v2')).toBe(opencode)
   })
+
+  it('runs a custom agent whose configId is opencode instead of registry OpenCode', () => {
+    const registry = {
+      id: 'opencode',
+      configId: 'acp-registry:opencode',
+      config: { id: 'acp-registry:opencode' }
+    }
+    const custom = {
+      id: 'custom-opencode',
+      configId: 'opencode',
+      config: { id: 'custom-opencode' }
+    }
+    expect(findEntryForSavedId([registry, custom], 'opencode')).toBe(custom)
+  })
 })
 
 describe('isSupportedAcpConfigId', () => {

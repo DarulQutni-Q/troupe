@@ -48,9 +48,17 @@ export function legacyAgentIds(canonicalId: string): string[] {
     .map(([alias]) => alias)
 }
 
-/** True when both ids name the same agent, including a legacy alias. */
+/**
+ * True when both ids are the same string, or one is a legacy registry alias of
+ * the other (`opencode-v2` and `acp-registry:opencode`). A bare custom id such
+ * as `opencode` is not the registry agent `acp-registry:opencode`.
+ */
 export function sameAgentId(a: string, b: string): boolean {
-  return canonicalAgentId(a) === canonicalAgentId(b)
+  if (a === b) return true
+  if (!isLegacyAgentId(a) && !isLegacyAgentId(b)) return false
+  const left = a.startsWith(REGISTRY_PREFIX) || isLegacyAgentId(a) ? canonicalAgentId(a) : null
+  const right = b.startsWith(REGISTRY_PREFIX) || isLegacyAgentId(b) ? canonicalAgentId(b) : null
+  return left != null && left === right
 }
 
 /**

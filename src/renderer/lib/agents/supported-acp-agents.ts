@@ -248,11 +248,12 @@ export function entryServesConfigId(
   entry: Pick<SupportedAcpAgentEntry, 'id' | 'configId' | 'config'>,
   configId: string
 ): boolean {
-  return (
-    sameAgentId(entry.configId, configId) ||
-    sameAgentId(entry.id, configId) ||
-    (entry.config != null && sameAgentId(entry.config.id, configId))
-  )
+  if (entry.configId === configId || entry.config?.id === configId) return true
+  if (sameAgentId(entry.configId, configId)) return true
+  if (entry.config != null && sameAgentId(entry.config.id, configId)) return true
+  // The catalog row id is the bare registry id (`opencode`). It serves a
+  // legacy config id only, not a custom agent that reused that bare string.
+  return isLegacyAgentId(configId) && entry.id === canonicalAgentId(configId)
 }
 
 /**

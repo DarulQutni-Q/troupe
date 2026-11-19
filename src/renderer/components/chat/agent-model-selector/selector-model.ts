@@ -2,7 +2,7 @@ import type { PersistedModelCatalog } from '@shared/types/persistence.types'
 import type { StoredAgentConfig } from '@/lib/acp-agents-persistence'
 import type { AgentCapabilities, SessionConfigOption, SessionModelState } from '@/lib/acp-api'
 import { canonicalAgentDisplayName } from '@/lib/agents/acp-registry'
-import { sameAgentId } from '@/lib/agents/agent-aliases'
+import { canonicalAgentId, isLegacyAgentId, sameAgentId } from '@/lib/agents/agent-aliases'
 import type { SupportedAcpAgentEntry } from '@/lib/agents/supported-acp-agents'
 import {
   flattenConfigOptionValues,
@@ -264,10 +264,12 @@ export function agentTabViewId(tab: AgentTab, currentConfigId: string | null): s
 /** True when this tab is the agent named by `configId`, including a legacy alias. */
 export function agentTabSelected(tab: AgentTab, configId: string | null): boolean {
   if (!configId) return false
+  if (tab.configId === configId || tab.config?.id === configId) return true
+  if (sameAgentId(tab.configId, configId)) return true
+  if (tab.config != null && sameAgentId(tab.config.id, configId)) return true
+  // A registry row id (`opencode`) selects the tab for a legacy chat id only.
   return (
-    sameAgentId(tab.configId, configId) ||
-    (tab.config != null && sameAgentId(tab.config.id, configId)) ||
-    (tab.entry != null && sameAgentId(tab.entry.id, configId))
+    tab.entry != null && isLegacyAgentId(configId) && tab.entry.id === canonicalAgentId(configId)
   )
 }
 

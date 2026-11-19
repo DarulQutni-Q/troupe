@@ -362,9 +362,7 @@ export function AgentLauncher({ paneId, className }: AgentLauncherProps): React.
   const targetRegistry = usingRemoteRegistry ? activeRegistry : remoteRegistry
   const selectedEntry = useMemo(
     () =>
-      supportedAgents.find((entry) =>
-        selectedConfigId ? entryServesConfigId(entry, selectedConfigId) : false
-      ) ??
+      (selectedConfigId ? findEntryForSavedId(supportedAgents, selectedConfigId) : undefined) ??
       pickDefaultSupportedAgent(supportedAgents) ??
       supportedAgents[0] ??
       null,
