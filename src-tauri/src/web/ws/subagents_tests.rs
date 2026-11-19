@@ -151,3 +151,26 @@ async fn a_padded_agent_key_updates_and_clears_the_saved_default_model() {
     set(json!({ "models": [{ "agentId": " acp-registry:codex-acp ", "model": null }] })).unwrap();
     assert_eq!(settings_view(&engine)["agents"][0]["model"], Value::Null);
 }
+
+#[tokio::test]
+async fn a_bare_installed_id_saves_under_the_listed_key() {
+    let (engine, _data) =
+        crate::acp::orchestrator::engine_with_installed(&[], &["opencode"]).await;
+    apply_settings_patch(
+        &engine,
+        settings_patch(json!({
+            "agents": [{ "agentId": "opencode", "allowed": false }],
+            "models": [{ "agentId": " opencode ", "model": "big" }],
+        })),
+    )
+    .unwrap();
+    assert_eq!(
+        settings_view(&engine)["agents"],
+        json!([{
+            "agentId": "acp-registry:opencode",
+            "name": "opencode",
+            "allowed": false,
+            "model": "big",
+        }])
+    );
+}

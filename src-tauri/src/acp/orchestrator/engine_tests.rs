@@ -751,11 +751,37 @@ async fn a_timed_out_waiter_is_not_kept() {
 /// An engine whose known-agents registry holds `registry` and whose
 /// install manifest lists the catalog agents `installed` (bare registry
 /// ids, as the install service keys them).
-async fn engine_with_installed(
+pub(crate) async fn engine_with_installed(
     registry: &[AgentConfig],
     installed: &[&str],
 ) -> (Arc<OrchestratorEngine>, tempfile::TempDir) {
+    engine_with_saved_switches(registry, installed, &[]).await
+}
+
+/// [`engine_with_installed`] over a settings file that already holds the
+/// allow `switches`, as an earlier host saved them.
+async fn engine_with_saved_switches(
+    registry: &[AgentConfig],
+    installed: &[&str],
+    switches: &[(&str, bool)],
+) -> (Arc<OrchestratorEngine>, tempfile::TempDir) {
     let data = tempfile::tempdir().expect("data dir");
+    let agents: serde_json::Map<String, serde_json::Value> = switches
+        .iter()
+        .map(|(key, allowed)| (key.to_string(), json!(allowed)))
+        .collect();
+    std::fs::write(
+        data.path().join(crate::acp::orchestrator::settings::FILE_NAME),
+        json!({
+            "schema_version": 1,
+            "enabled": true,
+            "maxRunning": 4,
+            "maxDepth": 2,
+            "agents": agents,
+        })
+        .to_string(),
+    )
+    .expect("settings");
     let known: serde_json::Map<String, serde_json::Value> = registry
         .iter()
         .map(|config| {
@@ -856,20 +882,28 @@ async fn an_installed_agent_the_registry_lacks_is_listed_under_its_config_id() {
 
 /// Before the listing keyed installed agents by config id, an agent the
 /// registry lacked had one row under its bare id, so its switch saved the
-/// bare key. That block still holds.
+/// bare key. That block holds, also after a chat records the agent.
 #[tokio::test]
 async fn a_block_saved_under_an_installed_agents_bare_id_still_holds() {
-    let (engine, _data) = engine_with_installed(&[], &["opencode"]).await;
-    let mut blocked = OrchestratorSettings::default();
-    blocked.agents.insert("opencode".to_string(), false);
-    engine.set_settings(blocked).expect("settings");
+    let (engine, data) =
+        engine_with_saved_switches(&[], &["opencode"], &[("opencode", false)]).await;
+    let blocked = vec![crate::acp::orchestrator::AgentListing {
+        agent_id: "acp-registry:opencode".to_string(),
+        name: "opencode".to_string(),
+        allowed: false,
+        default_model: None,
+    }];
+    assert_eq!(engine.list_agents(), blocked);
+
+    crate::automation::agents::AgentRegistry::open(
+        data.path().join(crate::automation::agents::FILE_NAME),
+    )
+    .record(&registry_agent("opencode", "OpenCode"));
     assert_eq!(
         engine.list_agents(),
         vec![crate::acp::orchestrator::AgentListing {
-            agent_id: "acp-registry:opencode".to_string(),
-            name: "opencode".to_string(),
-            allowed: false,
-            default_model: None,
+            name: "OpenCode".to_string(),
+            ..blocked[0].clone()
         }]
     );
     let caller = crate::acp::orchestrator::CallerRef {
@@ -877,7 +911,7 @@ async fn a_block_saved_under_an_installed_agents_bare_id_still_holds() {
         session: SessionId(CHAT.to_string()),
     };
     let start = StartRequest {
-        agent: "acp-registry:opencode".to_string(),
+        agent: "opencode".to_string(),
         ..request("finish")
     };
     assert_eq!(
@@ -889,14 +923,15 @@ async fn a_block_saved_under_an_installed_agents_bare_id_still_holds() {
 }
 
 /// An agent the registry knows had its own row next to the bare duplicate,
-/// so a block saved on the duplicate never applied to it.
+/// so a block saved on the duplicate never applied to it and is dropped.
 #[tokio::test]
 async fn a_bare_block_does_not_apply_to_an_agent_the_registry_knows() {
-    let (engine, _data) =
-        engine_with_installed(&[registry_agent("cursor", "Cursor")], &["cursor"]).await;
-    let mut blocked = OrchestratorSettings::default();
-    blocked.agents.insert("cursor".to_string(), false);
-    engine.set_settings(blocked).expect("settings");
+    let (engine, _data) = engine_with_saved_switches(
+        &[registry_agent("cursor", "Cursor")],
+        &["cursor"],
+        &[("cursor", false)],
+    )
+    .await;
     assert_eq!(
         engine.list_agents(),
         vec![crate::acp::orchestrator::AgentListing {
@@ -906,6 +941,7 @@ async fn a_bare_block_does_not_apply_to_an_agent_the_registry_knows() {
             default_model: None,
         }]
     );
+    assert_eq!(engine.settings_view().agents, Default::default());
 }
 
 #[tokio::test]

@@ -149,6 +149,21 @@ fn merge_settings(
     }
 }
 
+/// Merge `patch` into the settings, each agent under the key the listing
+/// and `subagent_start` use, so a bare installed id is not saved unread.
+fn apply_settings_patch(
+    engine: &crate::acp::orchestrator::OrchestratorEngine,
+    mut patch: SubagentSettingsPayload,
+) -> Result<crate::acp::orchestrator::OrchestratorSettings, String> {
+    for agent in patch.agents.iter_mut().flatten() {
+        agent.agent_id = engine.canonical_agent(agent.agent_id.trim());
+    }
+    for agent in patch.models.iter_mut().flatten() {
+        agent.agent_id = engine.canonical_agent(agent.agent_id.trim());
+    }
+    engine.update_settings(|settings| merge_settings(settings, patch))
+}
+
 /// `subagent_settings_set` → merge into the current settings, persist, and
 /// answer the new view. Out-of-bounds values are `VALIDATION_ERROR`.
 pub(super) fn handle_subagent_settings_set(id: String, payload: &Value) -> WsReply {
@@ -165,7 +180,7 @@ pub(super) fn handle_subagent_settings_set(id: String, payload: &Value) -> WsRep
     let Some(engine) = crate::acp::orchestrator::installed() else {
         return no_engine(id);
     };
-    match engine.update_settings(|settings| merge_settings(settings, parsed)) {
+    match apply_settings_patch(&engine, parsed) {
         Ok(_) => WsReply::ok(id, Some(settings_view(&engine))),
         Err(error) => WsReply::err_with_code(id, "VALIDATION_ERROR", error),
     }

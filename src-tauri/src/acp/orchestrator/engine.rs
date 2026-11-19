@@ -49,13 +49,50 @@ impl OrchestratorEngine {
         installed: Option<Arc<AcpInstallService>>,
         handle: Handle,
     ) -> Self {
-        Self {
+        let engine = Self {
             registry: AgentRegistry::open(data_dir.join(agents::FILE_NAME)),
             installed,
             settings: SettingsStore::open(&data_dir),
             ledger: Mutex::new(RunLedger::new()),
             manager,
             handle,
+        };
+        engine.migrate_bare_switches();
+        engine
+    }
+
+    /// Switches were once saved under an installed agent's bare id. An agent
+    /// the registry lacked had only that row, so its switch moves to the
+    /// config id. An agent the registry knew also had its own row, which the
+    /// bare switch never applied to, so that switch is dropped. Done once and
+    /// saved, so a later registry record of the agent cannot lift a block.
+    fn migrate_bare_switches(&self) {
+        let Some(installed) = &self.installed else {
+            return;
+        };
+        let saved = self.settings.get();
+        let bare: Vec<String> = installed
+            .installed_agents()
+            .into_iter()
+            .map(|agent| agent.agent_id)
+            .filter(|id| saved.agents.contains_key(id) && !self.registry.contains(id))
+            .collect();
+        if bare.is_empty() {
+            return;
+        }
+        let moved = self.settings.update(|settings| {
+            for id in &bare {
+                let Some(allowed) = settings.agents.remove(id) else {
+                    continue;
+                };
+                let key = format!("{REGISTRY_PREFIX}{id}");
+                if !self.registry.contains(&key) {
+                    settings.agents.entry(key).or_insert(allowed);
+                }
+            }
+        });
+        if let Err(error) = moved {
+            log::warn!("[orchestrator] could not move bare sub-agent switches: {error}");
         }
     }
 
@@ -67,7 +104,7 @@ impl OrchestratorEngine {
         let settings = self.settings.get();
         self.registry.reload();
         let listing = |agent_id: String, name: String| AgentListing {
-            allowed: self.allowed(&settings, &agent_id),
+            allowed: settings.agents.get(&agent_id).copied().unwrap_or(true),
             default_model: settings.models.get(&agent_id).cloned(),
             agent_id,
             name,
@@ -90,25 +127,9 @@ impl OrchestratorEngine {
         agents
     }
 
-    /// Whether the settings allow the listing key `key`. An installed agent
-    /// the registry lacks was once listed under its bare id, so a switch
-    /// saved there still counts until one is saved under `key`.
-    fn allowed(&self, settings: &OrchestratorSettings, key: &str) -> bool {
-        settings
-            .agents
-            .get(key)
-            .or_else(|| {
-                key.strip_prefix(REGISTRY_PREFIX)
-                    .filter(|_| !self.registry.contains(key))
-                    .and_then(|bare| settings.agents.get(bare))
-            })
-            .copied()
-            .unwrap_or(true)
-    }
-
     /// The listing key `agent` names: a bare catalog id the registry does
     /// not know is the installed agent's `acp-registry:` config id.
-    fn canonical_agent(&self, agent: &str) -> String {
+    pub(crate) fn canonical_agent(&self, agent: &str) -> String {
         self.registry.reload();
         let installed = self.installed.as_ref().is_some_and(|installed| {
             installed
@@ -231,7 +252,7 @@ impl OrchestratorEngine {
         {
             return Err(StartError::InvalidInput("model"));
         }
-        if !self.allowed(&settings, &agent) {
+        if !settings.agents.get(&agent).copied().unwrap_or(true) {
             return Err(StartError::AgentNotAllowed(agent));
         }
         let (root, parent_run, parent_agent, depth) = self.caller_context(caller);
@@ -754,3 +775,5 @@ struct StartChecks {
 #[cfg(test)]
 #[path = "engine_tests.rs"]
 mod engine_tests;
+#[cfg(test)]
+pub(crate) use engine_tests::engine_with_installed;
