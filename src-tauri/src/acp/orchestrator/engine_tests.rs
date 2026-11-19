@@ -796,6 +796,15 @@ async fn engine_with_saved_switches(
         json!({"schema_version": 1, "agents": known}).to_string(),
     )
     .expect("registry");
+    engine_in(data, installed).await
+}
+
+/// An engine over the files already in `data`, whose install manifest lists
+/// the catalog agents `installed`.
+async fn engine_in(
+    data: tempfile::TempDir,
+    installed: &[&str],
+) -> (Arc<OrchestratorEngine>, tempfile::TempDir) {
     let installs = data.path().join("installs");
     std::fs::create_dir_all(&installs).expect("install root");
     let manifest: serde_json::Map<String, serde_json::Value> = installed
@@ -952,6 +961,44 @@ async fn bare_switches_stay_when_the_registry_cannot_be_read() {
         Handle::current(),
     );
     assert_eq!(engine.settings_view().agents, saved.agents);
+}
+
+/// While an unreadable registry holds the move back, a bare block still
+/// refuses its installed agent, in the listing and at start.
+#[tokio::test]
+async fn a_bare_block_holds_while_the_registry_cannot_be_read() {
+    let data = tempfile::tempdir().expect("data dir");
+    std::fs::write(data.path().join(crate::automation::agents::FILE_NAME), b"{not json")
+        .expect("registry");
+    let mut saved = OrchestratorSettings::default();
+    saved.agents.insert("cursor".to_string(), false);
+    crate::acp::orchestrator::settings::SettingsStore::open(data.path())
+        .set(saved)
+        .expect("settings");
+    let (engine, _data) = engine_in(data, &["cursor"]).await;
+    assert_eq!(
+        engine.list_agents(),
+        vec![crate::acp::orchestrator::AgentListing {
+            agent_id: "acp-registry:cursor".to_string(),
+            name: "cursor".to_string(),
+            allowed: false,
+            default_model: None,
+        }]
+    );
+    let caller = crate::acp::orchestrator::CallerRef {
+        agent: AgentId("agent-parent".to_string()),
+        session: SessionId(CHAT.to_string()),
+    };
+    let start = StartRequest {
+        agent: "cursor".to_string(),
+        ..request("finish")
+    };
+    assert_eq!(
+        engine.start(caller, start).await,
+        Err(crate::acp::orchestrator::StartError::AgentNotAllowed(
+            "acp-registry:cursor".to_string()
+        ))
+    );
 }
 
 /// An agent the registry knows had its own row next to the bare duplicate,

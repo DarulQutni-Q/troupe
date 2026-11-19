@@ -105,7 +105,7 @@ impl OrchestratorEngine {
         let settings = self.settings.get();
         self.registry.reload();
         let listing = |agent_id: String, name: String| AgentListing {
-            allowed: settings.agents.get(&agent_id).copied().unwrap_or(true),
+            allowed: self.allowed(&settings, &agent_id),
             default_model: settings.models.get(&agent_id).cloned(),
             agent_id,
             name,
@@ -126,6 +126,20 @@ impl OrchestratorEngine {
         }
         agents.sort_by(|a, b| a.agent_id.cmp(&b.agent_id));
         agents
+    }
+
+    /// Whether the settings allow the listing key `key`. While an unreadable
+    /// registry holds back the move of bare switches, a bare block still
+    /// refuses its config id; the next start that reads the registry moves it.
+    fn allowed(&self, settings: &OrchestratorSettings, key: &str) -> bool {
+        settings.agents.get(key).copied().unwrap_or_else(|| {
+            self.registry.loaded()
+                || key
+                    .strip_prefix(REGISTRY_PREFIX)
+                    .and_then(|bare| settings.agents.get(bare))
+                    .copied()
+                    .unwrap_or(true)
+        })
     }
 
     /// The listing key `agent` names: a bare catalog id the registry does
@@ -253,7 +267,7 @@ impl OrchestratorEngine {
         {
             return Err(StartError::InvalidInput("model"));
         }
-        if !settings.agents.get(&agent).copied().unwrap_or(true) {
+        if !self.allowed(&settings, &agent) {
             return Err(StartError::AgentNotAllowed(agent));
         }
         let (root, parent_run, parent_agent, depth) = self.caller_context(caller);
