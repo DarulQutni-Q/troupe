@@ -84,7 +84,10 @@ async fn a_force_added_ignored_file_carries_into_the_worktree() {
     let root = dir.path().to_string_lossy().into_owned();
     let prepared = prepare(&root, &RunId::mint()).await.expect("the worktree prepares");
     let path = prepared.workspace.path.expect("the worktree path");
-    let kept = std::fs::read_to_string(Path::new(&path).join("kept.log"));
+    // Windows checkouts may turn LF into CRLF (core.autocrlf), so compare
+    // the text, not the line endings.
+    let kept = std::fs::read_to_string(Path::new(&path).join("kept.log"))
+        .map(|text| text.replace("\r\n", "\n"));
     assert_eq!(kept.ok().as_deref(), Some("staged on purpose\n"));
 }
 
