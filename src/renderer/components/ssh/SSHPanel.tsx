@@ -290,13 +290,18 @@ export function SSHPanel({
                       </span>
                       <div className="flex min-w-0 flex-1 flex-col">
                         {/* A long name fades out at the end of its box, as the
-                            Rail's project and chat names do (no "…"). */}
-                        <span className="fade-end min-w-0 text-xs text-foreground">
-                          {profile.name}
+                            Rail's project and chat names do (no "…"). The
+                            favorite pin sits after that box, so the fade
+                            cannot clip it. */}
+                        <span className="flex min-w-0 items-center">
+                          <span className="fade-end min-w-0 text-xs text-foreground">
+                            {profile.name}
+                          </span>
                           {profile.favorite && (
                             <Pin
                               size={10}
-                              className="ml-1.5 inline-block shrink-0 align-[-1px] text-muted-foreground"
+                              data-testid="ssh-host-favorite"
+                              className="ml-1.5 shrink-0 text-muted-foreground"
                               aria-hidden="true"
                             />
                           )}

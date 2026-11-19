@@ -165,6 +165,22 @@ describe('SSHPanel rows', () => {
     expect(useSSHStore.getState().activeTab).toBe(SSH_HOSTS_TAB)
   })
 
+  it('keeps a favorite pin outside the fading host name', () => {
+    const favorite = {
+      ...profile,
+      name: 'bastion-with-a-very-long-name',
+      favorite: true
+    }
+    sshApi.listProfiles.mockResolvedValue({ success: true, data: [favorite] })
+    useSSHStore.setState({ profiles: [favorite] })
+    render(<SSHPanel />)
+    const row = screen.getByTestId('ssh-host-row-p1')
+    const pin = screen.getByTestId('ssh-host-favorite')
+    expect(pin.closest('.fade-end')).toBeNull()
+    expect(pin).toHaveClass('shrink-0')
+    expect(row.querySelector('.fade-end')).toHaveTextContent(favorite.name)
+  })
+
   it('draws hosts as 30px Rail rows with the lamp on the icon column', () => {
     render(<SSHPanel />)
     const row = screen.getByTestId('ssh-host-row-p1')
