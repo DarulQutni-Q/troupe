@@ -58,6 +58,10 @@ struct SessionAuth {
     /// Bound by a history reopen whose outcome is not known yet. Such a token
     /// can still be evicted, so `bound_credentials` does not hand it out.
     reopen_pending: bool,
+    /// The chat an orchestrated child's question and install cards show on.
+    /// The child runs on a private session no client subscribes to. `None`:
+    /// the session itself.
+    card_session_id: Option<String>,
 }
 
 /// The shared host plan server. Owns the listener thread + the per-session
@@ -249,6 +253,7 @@ impl HostPlanServer {
                     agent_id: agent_id.to_string(),
                     real_session_id: None,
                     reopen_pending: false,
+                    card_session_id: None,
                 },
             );
         }
@@ -280,6 +285,15 @@ impl HostPlanServer {
                     crate::logging::redact_session_id(real_session_id)
                 );
             }
+        }
+    }
+
+    /// Show the question and install cards of `token`'s session on
+    /// `chat_session_id`, the chat an orchestrated child is routed under.
+    /// The cards keep the child's agent id, so their answers reach the child.
+    pub fn route_cards_to_chat(&self, token: &str, chat_session_id: &str) {
+        if let Some(auth) = self.sessions.lock().get_mut(token) {
+            auth.card_session_id = Some(chat_session_id.to_string());
         }
     }
 
@@ -604,6 +618,10 @@ impl HostPlanServer {
             }
         };
 
+        let card_session_id = auth
+            .card_session_id
+            .clone()
+            .unwrap_or_else(|| real_session_id.clone());
         match req.kind {
             FrameKind::Browser => {
                 let deadline = crate::browser_automation::budgets::Deadline::after(
@@ -691,15 +709,27 @@ impl HostPlanServer {
                 let Some(input) = req.ask else {
                     return FrameReply::err("ask_user frame needs a question");
                 };
-                self.ask_user(&auth.agent_id, &real_session_id, input, hung_up)
-                    .await
+                self.ask_user(
+                    &auth.agent_id,
+                    &real_session_id,
+                    &card_session_id,
+                    input,
+                    hung_up,
+                )
+                .await
             }
             FrameKind::McpInstall => {
                 let Some(request) = req.mcp_install else {
                     return FrameReply::err("mcp_install frame needs a source");
                 };
-                self.mcp_install(&auth.agent_id, &real_session_id, request, hung_up)
-                    .await
+                self.mcp_install(
+                    &auth.agent_id,
+                    &real_session_id,
+                    &card_session_id,
+                    request,
+                    hung_up,
+                )
+                .await
             }
             FrameKind::Plan => {
                 if req.title.is_some() {

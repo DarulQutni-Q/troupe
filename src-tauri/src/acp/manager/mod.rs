@@ -1337,6 +1337,12 @@ impl AcpManager {
             if inject_host_tools {
                 let (port, token, provisional_sid) =
                     self.host_plan_server.register_session(&agent_id.0);
+                // No client subscribes to a child's private session: its
+                // `ask_user` and `mcp_install` cards show on its chat.
+                if let Some(origin) = &context.child_origin {
+                    self.host_plan_server
+                        .route_cards_to_chat(&token, &origin.root_session_id);
+                }
                 let internal =
                     build_internal_plan_stdio(&agent_id.0, port, &token, &provisional_sid);
                 // Prepend so the internal server is first in the agent's tool list.
