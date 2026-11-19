@@ -109,6 +109,22 @@ describe('attentionOutsideRows', () => {
       attentionOutsideRows('p1', needsYou, [{ entry: { id: 'here', chainIds: ['here', 'old'] } }])
     ).toEqual({ count: 2, sessionId: 'old' })
   })
+
+  it('keeps a needs-you chat that sits behind Show more, and keeps the open chat covered', () => {
+    const cards = Array.from({ length: 6 }, (_, index) => ({ entry: { id: `c${index}` } }))
+    const needsYou = new Map([
+      ['c5', 'p1'],
+      ['c0', 'p1']
+    ])
+    expect(attentionOutsideRows('p1', needsYou, cards, null)).toEqual({
+      count: 1,
+      sessionId: 'c5'
+    })
+    expect(attentionOutsideRows('p1', needsYou, cards, 'c5')).toEqual({
+      count: 0,
+      sessionId: undefined
+    })
+  })
 })
 
 describe('RailProjectItem needs-you outside the picked worktree', () => {

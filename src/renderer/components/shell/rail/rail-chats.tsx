@@ -25,7 +25,19 @@ import {
 const RailNestedRowContext = createContext(false)
 
 /** Chats a Rail project shows before "Show N more". */
-const RAIL_CHAT_LIMIT = 5
+export const RAIL_CHAT_LIMIT = 5
+
+/**
+ * A row is on screen when the group is expanded, it is one of the first
+ * {@link RAIL_CHAT_LIMIT} chats, or it is the pinned open chat.
+ */
+export function isRailChatRowShown(
+  index: number,
+  pinnedIndex: number | undefined,
+  listExpanded: boolean
+): boolean {
+  return listExpanded || index < RAIL_CHAT_LIMIT || index === pinnedIndex
+}
 
 /**
  * A project's chat row starts its fill 22px in, so the fill runs x 30–240
@@ -102,7 +114,7 @@ export const RailChatItem = forwardRef<HTMLLIElement, RailChatItemProps>(functio
   ref
 ) {
   const { expanded, pinnedIndex } = useRailChatGroup('RailChatItem')
-  if (!expanded && index >= RAIL_CHAT_LIMIT && index !== pinnedIndex) return null
+  if (!isRailChatRowShown(index, pinnedIndex, expanded)) return null
   return <li ref={ref} {...props} />
 })
 

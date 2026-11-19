@@ -5,6 +5,7 @@ import { useAgentChatLifetimeStore } from '@/stores/agent-chat-lifetime-store'
 import { useProjectChatsHidden, useShellLayoutStore } from '@/stores/shell-layout-store'
 import { useWorkspaceStore } from '@/stores/workspace-store'
 import { useProjectDiffStat } from '../shell/ProjectDiffStat'
+import { isRailChatRowShown, RAIL_CHAT_LIMIT } from '../shell/rail/rail-chats'
 import { useRailCollapsed } from '../shell/rail/rail-density'
 import {
   RailWorktreeBranch,
@@ -56,16 +57,26 @@ export const RailProjectItem = memo(function RailProjectItem(
 /**
  * Needs-you chats the open list does not draw. A row reads live state for
  * its own session only (`useChatLiveState`), so a folded chain member stays
- * in this count. A picked worktree lists only that copy, so a request in
- * another copy stays on the project row.
+ * in this count. Only the first {@link RAIL_CHAT_LIMIT} rows and the open
+ * chat are on screen until Show more. A picked worktree lists only that
+ * copy, so a request in another copy stays on the project row.
  */
 export function attentionOutsideRows(
   projectId: string,
   needsYouChats: ReadonlyMap<string, string>,
-  cards: readonly { entry: { id: string } }[]
+  cards: readonly { entry: { id: string; chainIds?: readonly string[] } }[],
+  openChatId: string | null = null
 ): { count: number; sessionId: string | undefined } {
+  const pinnedIndex = cards.findIndex(
+    (card) =>
+      openChatId !== null &&
+      (card.entry.id === openChatId || (card.entry.chainIds?.includes(openChatId) ?? false))
+  )
   const covered = new Set<string>()
-  for (const card of cards) covered.add(card.entry.id)
+  cards.forEach((card, index) => {
+    if (!isRailChatRowShown(index, pinnedIndex === -1 ? undefined : pinnedIndex, false)) return
+    covered.add(card.entry.id)
+  })
   let count = 0
   let sessionId: string | undefined
   for (const [id, owner] of needsYouChats) {
@@ -110,14 +121,14 @@ function ChatsToggleRailProjectItem(props: ProjectItemProps): React.JSX.Element 
   const { project, onClick, isActive, status, onOpenNeedsYou } = props
   const hasChats = useProjectHasChats(project)
   const hidden = useProjectChatsHidden(project.id)
-  const { cards } = useProjectChats(project)
+  const { cards, openChatId } = useProjectChats(project)
   const needsYouChats = useAgentChatProjectSignals().needsYouChats
   if (!hasChats) return <ProjectItem {...props} />
   const toggle = (): void => {
     logRailEvent(`${hidden ? 'expand' : 'collapse'} chats ${project.id}`)
     useShellLayoutStore.getState().setProjectChatsHidden(project.id, !hidden)
   }
-  const outside = hidden ? null : attentionOutsideRows(project.id, needsYouChats, cards)
+  const outside = hidden ? null : attentionOutsideRows(project.id, needsYouChats, cards, openChatId)
   const outsideSessionId = outside?.sessionId
   return (
     <ProjectItem
