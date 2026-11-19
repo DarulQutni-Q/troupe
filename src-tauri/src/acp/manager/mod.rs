@@ -896,12 +896,17 @@ impl AcpManager {
 
     /// Hold the chat's recipe only while that recipe is still stored. The
     /// check and the hold use the same locks as [`Self::forget_recipes_without_agent`].
-    pub fn keep_present_launch_recipe(&self, session_id: &SessionId) -> Option<LaunchRecipe> {
+    /// The bool is whether this call added the hold. A refusal must release
+    /// only a hold it added, so another supervisor's resume stays protected.
+    pub fn keep_present_launch_recipe(
+        &self,
+        session_id: &SessionId,
+    ) -> Option<(LaunchRecipe, bool)> {
         let _agents = self.agents.lock();
         let mut held = self.kept_recipes.lock();
         let recipe = self.recipes.lock().get(session_id).cloned()?;
-        held.insert(session_id.0.clone());
-        Some(recipe)
+        let added = held.insert(session_id.0.clone());
+        Some((recipe, added))
     }
 
     /// Serve the `start_chat` and `send_to_chat` host tools with `chats`.

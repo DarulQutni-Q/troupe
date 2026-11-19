@@ -278,18 +278,22 @@ impl Supervisor {
         let chat = redact_session_id(&session_id.0);
         match at {
             Some(at) => {
-                let recipe = self
+                let (recipe, added) = self
                     .acp
                     .keep_present_launch_recipe(session_id)
                     .ok_or_else(|| "This chat is not open on the host.".to_string())?;
                 let ClaudeLaunchAuth::Account(account_id) = &recipe.launch.claude else {
-                    self.acp.keep_launch_recipe(&session_id.0, false);
+                    if added {
+                        self.acp.keep_launch_recipe(&session_id.0, false);
+                    }
                     return Err(
                         "This chat does not run on a Claude account Troupe manages.".to_string()
                     );
                 };
                 if recipe.launch.config.config_id.as_deref() != Some(CLAUDE_CONFIG_ID) {
-                    self.acp.keep_launch_recipe(&session_id.0, false);
+                    if added {
+                        self.acp.keep_launch_recipe(&session_id.0, false);
+                    }
                     return Err(
                         "This chat does not run on a Claude account Troupe manages.".to_string()
                     );
