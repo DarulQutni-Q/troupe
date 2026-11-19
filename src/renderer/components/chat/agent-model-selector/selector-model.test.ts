@@ -112,6 +112,17 @@ describe('stableAgentTabs OpenCode alias', () => {
     }
     expect(agentTabViewId(tab, 'acp-registry:opencode')).toBe('opencode')
   })
+
+  it('does not keep a legacy chat id when the custom tab id is opencode', () => {
+    const custom = config('opencode', 'My OpenCode')
+    const tab: AgentTab = {
+      configId: 'opencode',
+      name: 'My OpenCode',
+      config: custom,
+      entry: entry(custom, 'opencode')
+    }
+    expect(agentTabViewId(tab, 'acp-registry:opencode-v2')).toBe('opencode')
+  })
 })
 
 describe('buildAgentTabs', () => {

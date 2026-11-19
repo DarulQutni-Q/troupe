@@ -40,6 +40,19 @@ export function isLegacyAgentId(id: string): boolean {
   return Object.hasOwn(AGENT_ALIASES, bareAgentId(id))
 }
 
+/**
+ * The registry agent id behind a saved config id. A bare custom id such as
+ * `opencode` has no registry row, so it returns null.
+ */
+export function registryAgentIdFromConfigs(
+  ...ids: Array<string | null | undefined>
+): string | null {
+  for (const id of ids) {
+    if (typeof id === 'string' && id.startsWith(REGISTRY_PREFIX)) return canonicalAgentId(id)
+  }
+  return null
+}
+
 /** Legacy ids that resolve to `canonicalId`. */
 export function legacyAgentIds(canonicalId: string): string[] {
   const bare = bareAgentId(canonicalId)

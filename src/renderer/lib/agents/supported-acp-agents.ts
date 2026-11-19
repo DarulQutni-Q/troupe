@@ -14,6 +14,7 @@ import {
   canonicalAgentId,
   isLegacyAgentId,
   legacyAgentIds,
+  registryAgentIdFromConfigs,
   sameAgentId
 } from '@/lib/agents/agent-aliases'
 import { registryConfigId } from '@/lib/agents/registry-config-id'
@@ -251,9 +252,14 @@ export function entryServesConfigId(
   if (entry.configId === configId || entry.config?.id === configId) return true
   if (sameAgentId(entry.configId, configId)) return true
   if (entry.config != null && sameAgentId(entry.config.id, configId)) return true
-  // The catalog row id is the bare registry id (`opencode`). It serves a
-  // legacy config id only, not a custom agent that reused that bare string.
-  return isLegacyAgentId(configId) && entry.id === canonicalAgentId(configId)
+  // A registry row's bare id (`opencode`) serves a legacy config id. A custom
+  // entry that reused that bare string does not, because it has no registry id.
+  const registryId = registryAgentIdFromConfigs(entry.config?.id, entry.configId)
+  return (
+    isLegacyAgentId(configId) &&
+    registryId === canonicalAgentId(configId) &&
+    entry.id === canonicalAgentId(configId)
+  )
 }
 
 /**

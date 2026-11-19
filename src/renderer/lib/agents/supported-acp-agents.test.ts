@@ -238,6 +238,16 @@ describe('findEntryForSavedId', () => {
     }
     expect(findEntryForSavedId([registry, custom], 'opencode')).toBe(custom)
   })
+
+  it('does not open a custom opencode id for a legacy registry chat', () => {
+    const custom = { id: 'opencode', configId: 'opencode', config: { id: 'opencode' } }
+    const registry = {
+      id: 'opencode',
+      configId: 'acp-registry:opencode',
+      config: { id: 'acp-registry:opencode' }
+    }
+    expect(findEntryForSavedId([custom, registry], 'acp-registry:opencode-v2')).toBe(registry)
+  })
 })
 
 describe('isSupportedAcpConfigId', () => {

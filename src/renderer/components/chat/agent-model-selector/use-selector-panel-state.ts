@@ -273,6 +273,10 @@ export function useSelectorPanelState(
     }
     return ids.size > 0 ? [...ids] : NO_IDS
   }, [searching, showFavorites, allTabs, effectiveId, favoriteIdsKey])
+  const lookupIdsKey = lookupIds.join('\n')
+  useEffect(() => {
+    for (const configId of lookupIdsKey.split('\n')) if (configId) loadPersistedCatalog(configId)
+  }, [lookupIdsKey])
   const known = useKnownCatalogs(sw.workspace.cwd, lookupIds)
   const knownById = new Map(lookupIds.map((id, i) => [id, known[i] ?? null]))
 
