@@ -933,6 +933,27 @@ async fn a_bare_block_moves_when_its_agent_is_not_installed_yet() {
     );
 }
 
+/// A corrupt known-agents file reads as empty, which would make every saved
+/// key look like a bare row; the switches stay as saved.
+#[tokio::test]
+async fn bare_switches_stay_when_the_registry_cannot_be_read() {
+    let data = tempfile::tempdir().expect("data dir");
+    std::fs::write(data.path().join(crate::automation::agents::FILE_NAME), b"{not json")
+        .expect("registry");
+    let mut saved = OrchestratorSettings::default();
+    saved.agents.insert("my-agent".to_string(), false);
+    crate::acp::orchestrator::settings::SettingsStore::open(data.path())
+        .set(saved.clone())
+        .expect("settings");
+    let engine = OrchestratorEngine::new(
+        Arc::new(crate::acp::manager::AcpManager::new(Vec::new())),
+        data.path().to_path_buf(),
+        None,
+        Handle::current(),
+    );
+    assert_eq!(engine.settings_view().agents, saved.agents);
+}
+
 /// An agent the registry knows had its own row next to the bare duplicate,
 /// so a block saved on the duplicate never applied to it and is dropped.
 #[tokio::test]

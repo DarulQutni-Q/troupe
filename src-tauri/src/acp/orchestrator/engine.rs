@@ -68,7 +68,13 @@ impl OrchestratorEngine {
     /// also had its own row, which the bare switch never applied to, so that
     /// switch is dropped. The move applies in memory even when it cannot be
     /// saved, and a later registry record or install cannot lift a block.
+    /// An unreadable registry cannot tell the two apart, so the move waits
+    /// for a start that reads it.
     fn migrate_bare_switches(&self) {
+        if !self.registry.loaded() {
+            log::warn!("[orchestrator] known agents unreadable; bare sub-agent switches kept");
+            return;
+        }
         let moved = self.settings.apply_and_save(|settings| {
             let bare: Vec<String> = settings
                 .agents
