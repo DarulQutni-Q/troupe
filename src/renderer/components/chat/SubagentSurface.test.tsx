@@ -349,7 +349,11 @@ describe('subagents in the transcript', () => {
     const running = dispatch(
       'a',
       { title: 'Audit auth flow' },
-      { subagentText: 'So far the race is in session.ts:143.' }
+      {
+        subagentMessages: [
+          { seq: 12, timestamp: 1_250, text: 'So far the race is in session.ts:143.' }
+        ]
+      }
     )
     const { update } = renderChat({ toolCalls: [running] })
     fireEvent.click(row(/^Audit auth flow/))
@@ -362,7 +366,7 @@ describe('subagents in the transcript', () => {
         {
           ...running,
           status: 'completed',
-          subagentText: finalText,
+          subagentMessages: [{ seq: 12, timestamp: 1_250, text: finalText }],
           content: [{ type: 'content', content: { type: 'text', text: finalText } }],
           subagent: { ...running.subagent!, ...endedState() }
         }

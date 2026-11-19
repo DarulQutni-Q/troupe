@@ -13,6 +13,7 @@ import { SubagentGroup } from './SubagentGroup'
 import { isSubagentWaiting, SubagentAvatar, SubagentStatusLabel } from './SubagentRow'
 import {
   formatTokens,
+  lastSubagentMessage,
   type SubagentStatus,
   subagentResultText,
   subagentTitle,
@@ -266,7 +267,7 @@ function Outcome({
   )
 
   if (status === 'running') {
-    const latest = toolCall.subagentText?.trim() ? toolCall.subagentText : undefined
+    const latest = lastSubagentMessage(toolCall)
     return (
       <>
         {latest ? (
