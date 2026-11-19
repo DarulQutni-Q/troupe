@@ -121,6 +121,7 @@ import {
 } from '@/lib/agents/last-selected-agent'
 import {
   entryServesConfigId,
+  findEntryForSavedId,
   installedBinaryConfig,
   manualBinaryConfig,
   pickDefaultConfiguredAgent,
@@ -951,9 +952,7 @@ export function AgentLauncher({ paneId, className }: AgentLauncherProps): React.
       try {
         const savedId = await readLastSelectedAgentId()
         if (cancelled) return
-        const restored = savedId
-          ? supportedAgents.find((entry) => entry.configId === savedId)
-          : null
+        const restored = savedId ? findEntryForSavedId(supportedAgents, savedId) : null
         // Issue #840 core: a persisted-but-unconfigured agent must not
         // auto-persist an `npx` config nobody chose on web. Issue #907
         // narrows that: a `ready` entry WITH a derivable `config` (same
@@ -1017,12 +1016,19 @@ export function AgentLauncher({ paneId, className }: AgentLauncherProps): React.
   // save that keeps failing retries in a tight loop until the renderer dies.
   const failedPersistRef = useRef(new Set<string>())
 
+  // A legacy saved id resolves to the canonical entry. An empty selection
+  // stays false, so the placeholder default is not warmed.
+  const warmSavedSelection =
+    selectedEntry != null &&
+    selectedConfigId !== '' &&
+    entryServesConfigId(selectedEntry, selectedConfigId)
+
   useEffect(() => {
     if (!activeConfigId || !projectRoot || selectedEntry?.status !== 'ready' || !selectedConfig)
       return
     // Until the saved selection is read, `selectedEntry` shows the default as
     // a placeholder. Warming it would spawn an agent the user may never use.
-    if (selectedEntry.configId !== selectedConfigId) return
+    if (!warmSavedSelection) return
     // Issue #840: on web the launcher is the FIRST prewarm path, and it may
     // only ever prewarm a CONFIGURED agent. A merely preselected default
     // (e.g. the catalog-derived Codex `npx` entry shown in the picker before
@@ -1080,8 +1086,7 @@ export function AgentLauncher({ paneId, className }: AgentLauncherProps): React.
     projectRoot,
     saveAgentConfig,
     selectedConfig,
-    selectedConfigId,
-    selectedEntry?.configId,
+    warmSavedSelection,
     selectedEntry?.status,
     activeProjectId,
     userPickedConfigId

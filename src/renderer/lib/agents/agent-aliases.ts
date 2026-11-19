@@ -30,7 +30,9 @@ function bareAgentId(id: string): string {
 /** The canonical registry id for `id`. A config id loses its prefix. */
 export function canonicalAgentId(id: string): string {
   const bare = bareAgentId(id)
-  return AGENT_ALIASES[bare] ?? bare
+  if (!Object.hasOwn(AGENT_ALIASES, bare)) return bare
+  const canonical = AGENT_ALIASES[bare]
+  return typeof canonical === 'string' && canonical.length > 0 ? canonical : bare
 }
 
 /** True when `id` is a legacy alias, with or without the `acp-registry:` prefix. */

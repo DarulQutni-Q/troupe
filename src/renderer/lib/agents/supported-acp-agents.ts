@@ -255,6 +255,20 @@ export function entryServesConfigId(
   )
 }
 
+/**
+ * The entry a saved id should open. An exact config id wins, so a custom
+ * agent whose id equals a registry id stays that custom agent. Alias matching
+ * runs only when nothing matches exactly.
+ */
+export function findEntryForSavedId<
+  T extends Pick<SupportedAcpAgentEntry, 'id' | 'configId' | 'config'>
+>(entries: readonly T[], savedId: string): T | undefined {
+  return (
+    entries.find((entry) => entry.configId === savedId || entry.config?.id === savedId) ??
+    entries.find((entry) => entryServesConfigId(entry, savedId))
+  )
+}
+
 export function buildSupportedAcpAgents(
   persistedConfigs: readonly StoredAgentConfig[],
   platformArch: string,
@@ -553,6 +567,14 @@ export async function resolveSupportedAcpAgents(
       persisted && isLegacyAgentId(persisted.id) ? persisted.id : registryConfigId(id)
     seenConfigIds.add(configId)
     seenConfigIds.add(registryConfigId(id))
+    // A custom config can point at the legacy id through `configId` while its
+    // own id stays custom. Record that lookup key so it is not appended again.
+    if (persisted) {
+      seenConfigIds.add(persisted.id)
+      if (typeof persisted.configId === 'string' && persisted.configId.length > 0) {
+        seenConfigIds.add(persisted.configId)
+      }
+    }
     // S2-TS: managed-install behavior comes from the registry policy, not an
     // id comparison. Agents without a managed-npm policy never migrate.
     const installPolicy = agentPolicy(id).install

@@ -4,6 +4,7 @@ import type { RegistryAgent } from '@/lib/agents/acp-registry'
 import { registryConfigId } from '@/lib/agents/registry-config-id'
 import {
   buildSupportedAcpAgents,
+  findEntryForSavedId,
   installedBinaryConfig,
   isCustomAgentEntry,
   isSupportedAcpConfigId,
@@ -201,6 +202,27 @@ describe('buildSupportedAcpAgents', () => {
         env: {}
       }
     })
+  })
+})
+
+describe('findEntryForSavedId', () => {
+  it('keeps an exact custom id ahead of a registry agent with the same bare id', () => {
+    const registry = {
+      id: 'gemini',
+      configId: 'acp-registry:gemini',
+      config: { id: 'acp-registry:gemini' }
+    }
+    const custom = { id: 'gemini', configId: 'gemini', config: { id: 'gemini' } }
+    expect(findEntryForSavedId([registry, custom], 'gemini')).toBe(custom)
+  })
+
+  it('resolves a legacy OpenCode id when the entry uses the canonical config', () => {
+    const opencode = {
+      id: 'opencode',
+      configId: 'acp-registry:opencode',
+      config: { id: 'acp-registry:opencode' }
+    }
+    expect(findEntryForSavedId([opencode], 'acp-registry:opencode-v2')).toBe(opencode)
   })
 })
 
@@ -446,6 +468,54 @@ describe('resolveSupportedAcpAgents OpenCode alias', () => {
     })
     expect(entries.some((entry) => entry.id === 'gemini')).toBe(true)
     expect(saved.name).toBe('OpenCode (legacy ID)')
+    listCatalogMock.mockClear()
+  })
+
+  it('does not list a custom config twice when its configId is opencode-v2', async () => {
+    listCatalogMock.mockResolvedValueOnce({
+      success: true,
+      data: {
+        host: {
+          os: 'linux',
+          arch: 'x86_64',
+          runtimes: { npx: true, uvx: false, node: true, bun: false, python3: true }
+        },
+        agents: [
+          {
+            id: 'opencode',
+            name: 'OpenCode',
+            version: '2.3.2',
+            description: 'The open source coding agent',
+            source: 'bundled',
+            distribution: {
+              binary: {
+                'linux-x86_64': {
+                  cmd: './opencode',
+                  archive:
+                    'https://github.com/anomalyco/opencode/releases/download/v2.3.2/opencode-linux-x64.tar.gz',
+                  args: ['acp']
+                }
+              }
+            },
+            runtimeRequirements: [],
+            status: 'install-required',
+            platformTargets: [{ os: 'linux', arch: 'x86_64' }]
+          }
+        ]
+      }
+    })
+    const custom = {
+      id: 'custom-opencode',
+      configId: 'acp-registry:opencode-v2',
+      name: 'My OpenCode',
+      command: '/legacy/opencode',
+      args: ['acp'],
+      env: {},
+      allowTerminal: false
+    }
+    const entries = await resolveSupportedAcpAgents([custom])
+    expect(entries.filter((entry) => entry.config?.command === '/legacy/opencode')).toHaveLength(1)
+    expect(entries.filter((entry) => entry.id === 'custom-opencode')).toHaveLength(0)
     listCatalogMock.mockClear()
   })
 })

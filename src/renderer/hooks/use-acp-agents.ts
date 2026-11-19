@@ -2,10 +2,11 @@ import type { LastSelectedAgent } from '@shared/types/persistence.types'
 import { PersistenceKeys } from '@shared/types/persistence.types'
 import { useEffect, useRef } from 'react'
 import {
-  entryServesConfigId,
+  findEntryForSavedId,
   pickDefaultConfiguredAgent,
   pickDefaultSupportedAgent,
-  resolveSupportedAcpAgents
+  resolveSupportedAcpAgents,
+  type SupportedAcpAgentEntry
 } from '@/lib/agents/supported-acp-agents'
 import { persistenceApi } from '@/lib/api'
 import { isTauriContext } from '@/lib/tauri-runtime'
@@ -68,15 +69,13 @@ export function useAcpAgents(): void {
       // invariant holds (the spawn harm #840 guarded against).
       const savedAgentId =
         saved?.mode === 'acp' && typeof saved.agentId === 'string' ? saved.agentId : null
+      const restorable = (entry: SupportedAcpAgentEntry): boolean =>
+        entry.status === 'ready' &&
+        (desktop ||
+          Boolean(entry.config) ||
+          agentConfigs.some((config) => config.id === entry.config?.id))
       const selected = savedAgentId
-        ? supportedAgents.find(
-            (entry) =>
-              entryServesConfigId(entry, savedAgentId) &&
-              entry.status === 'ready' &&
-              (desktop ||
-                Boolean(entry.config) ||
-                agentConfigs.some((config) => config.id === entry.config?.id))
-          )
+        ? (findEntryForSavedId(supportedAgents.filter(restorable), savedAgentId) ?? null)
         : null
       // Issue #840: on web the default is restricted to CONFIGURED agents —
       // the catalog-derived preferred default (Codex via `npx`) must not be

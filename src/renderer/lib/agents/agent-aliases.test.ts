@@ -19,6 +19,7 @@ describe('agent aliases', () => {
     expect(legacyAgentIds('opencode')).toEqual(['opencode-v2'])
     expect(sameAgentId('acp-registry:opencode-v2', 'opencode')).toBe(true)
     expect(sameAgentId('gemini', 'opencode')).toBe(false)
+    expect(canonicalAgentId('toString')).toBe('toString')
   })
 
   it('keeps an exact saved config and falls back to the canonical config', () => {
