@@ -41,7 +41,6 @@ import { getAllLeafPanes } from '@/stores/workspace-store/tree'
 import type { Project } from '@/types/project'
 import { logRailEvent } from '../shell-log'
 import { useCreateWorktree } from '../use-create-worktree'
-import { RAIL_BLOCK_FADE_CLASS, RAIL_COLLAPSED_ROW_CLASS } from './rail-motion'
 
 const ROW_CLASS =
   'flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 text-left text-xs text-foreground transition-colors duration-150 ease-out'
@@ -130,64 +129,66 @@ export function RailWorktreeSwitcher({
   )
 }
 
-/** Height of the worktree chip line under a Rail project row (`h-4.5`). */
-export const RAIL_WORKTREE_CHIP_HEIGHT = 18
-
 /** The picked worktree the chip shows, or `undefined` for the project folder. */
 export function usePickedWorktree(project: Project): ReturnType<typeof activeWorktreeOf> {
   return activeWorktreeOf(project, useWorktreePick(project.id))
 }
 
 /**
- * Muted chip under a Rail project name with the picked worktree (Sidebar V2
- * P4). Nothing when the pick is the project folder. The collapsed Rail keeps
- * the line's height with a branch glyph, so every icon stays at its y.
+ * The picked worktree, inline after the project name on the Rail row: a 10px
+ * branch glyph and the branch in `muted-foreground`, fading at its end. It
+ * takes only the room the name leaves (the name never truncates first) and
+ * adds no line, so the chats stay right under their project. A click opens
+ * the worktree switcher. Nothing when the pick is the project folder.
+ *
+ * `interactive={false}` draws the same label without the button (the
+ * collapsed Rail's chat peek repeats the project row). The collapsed Rail
+ * itself marks a pick on the project icon instead (see `ProjectIconItem`).
  */
-export function RailWorktreeChip({
+export function RailWorktreeBranch({
   project,
-  collapsed
+  interactive = true
 }: {
   project: Project
-  collapsed: boolean
+  interactive?: boolean
 }): React.JSX.Element | null {
   const picked = usePickedWorktree(project)
+  const openSwitcher = useOpenRailWorktreeSwitcher()
   if (!picked) return null
   const label = worktreeLabel(picked)
-  if (collapsed) {
+  const content = (
+    <span className="flex min-w-0 items-center gap-1" title={picked.path}>
+      <GitBranch size={10} className="shrink-0" aria-hidden="true" />
+      <span className="sr-only">Worktree: </span>
+      <span className="min-w-0 whitespace-nowrap">{label}</span>
+    </span>
+  )
+  const className = 'fade-end flex min-w-0 flex-1 items-center text-xs text-muted-foreground'
+  if (!interactive) {
     return (
-      <div
-        key="collapsed"
-        className={cn(
-          'flex h-4.5 items-center text-muted-foreground',
-          RAIL_COLLAPSED_ROW_CLASS,
-          RAIL_BLOCK_FADE_CLASS
-        )}
-        title={`Worktree: ${label}`}
-        data-testid={`rail-worktree-chip-${project.id}`}
-      >
-        <GitBranch size={10} aria-hidden="true" />
-        <span className="sr-only">Worktree: {label}</span>
-      </div>
+      <span className={className} data-testid={`rail-worktree-chip-${project.id}`}>
+        {content}
+      </span>
     )
   }
   return (
-    <div
-      key="expanded"
-      className={cn(
-        'flex h-4.5 min-w-0 items-start pr-3 pl-9 whitespace-nowrap',
-        RAIL_BLOCK_FADE_CLASS
-      )}
+    <button
+      type="button"
       data-testid={`rail-worktree-chip-${project.id}`}
+      aria-label={`Worktree: ${label}. Switch worktree`}
+      onClick={(event) => {
+        event.stopPropagation()
+        logRailEvent(`open worktree switcher from branch ${project.id}`)
+        openSwitcher(project.id)
+      }}
+      className={cn(
+        className,
+        'pointer-events-auto relative rounded text-left transition-colors duration-150 ease-out hover:text-foreground',
+        FOCUS_RING_CLASS
+      )}
     >
-      <span
-        className="inline-flex h-4 min-w-0 max-w-full items-center gap-1 rounded bg-foreground/[0.06] px-1.5 text-3xs text-muted-foreground"
-        title={picked.path}
-      >
-        <GitBranch size={10} className="shrink-0" aria-hidden="true" />
-        <span className="sr-only">Worktree: </span>
-        <span className="min-w-0 truncate">{label}</span>
-      </span>
-    </div>
+      {content}
+    </button>
   )
 }
 

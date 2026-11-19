@@ -3,7 +3,11 @@ import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { openNewQuickChat } from '@/components/chat/new-chat/open-new-chat'
 import { Chat, ChevronDown, ChevronRight, Plus } from '@/components/icons'
 import { RailTooltip } from '@/components/shell/rail-button'
-import { ChatRowTrail, type ProjectChatEntry } from '@/components/sidebar/project-chat-row'
+import {
+  CHAT_LIVE_STATE_WORD,
+  ChatRowTrail,
+  type ProjectChatEntry
+} from '@/components/sidebar/project-chat-row'
 import {
   RAIL_SECTION_BUTTON_CLASS,
   RailSectionHeader
@@ -14,10 +18,11 @@ import { olderChats, quickSessions, UNTITLED_HOST_TITLE } from '@/lib/acp-histor
 import { isContextMenuKey, openContextMenuFrom } from '@/lib/context-menu-key'
 import { leaveQuickChatView, openNoProjectHistoryChat } from '@/lib/no-project-chat'
 import { renameQuickChat } from '@/lib/quick-chat-rename'
+import { formatRailRelativeTime } from '@/lib/relative-time'
 import { cn } from '@/lib/utils'
 import { useAcpStore } from '@/stores/acp-store'
 import { useQuickChatStore } from '@/stores/quick-chat-store'
-import { RAIL_ICON_BOX_CLASS, RAIL_ROW_INSET_CLASS } from '../rail-layout'
+import { RAIL_ICON_BOX_CLASS } from '../rail-layout'
 import { logRailEvent } from '../shell-log'
 import { type ChatRowMenuActions, useChatRowMenuActions } from '../use-chat-row-menu-actions'
 import { useChatLiveState } from '../use-project-chats'
@@ -31,6 +36,7 @@ import {
   RailChatRowMore,
   RailChatStatusDot,
   RailChatTitle,
+  RailChatTooltip,
   RailChatTrailSlot,
   RailShowMore
 } from './rail-chats'
@@ -171,7 +177,9 @@ function UnassignedChatRow({
   onRenameStart: (entry: ProjectChatEntry) => void
   onRequestDelete: (entry: ProjectChatEntry) => void
 }): React.JSX.Element {
-  const { liveState, statusWord } = useChatLiveState(entry.id)
+  const { liveState } = useChatLiveState(entry.id)
+  const statusWord = CHAT_LIVE_STATE_WORD[liveState]
+  const time = formatRailRelativeTime(entry.lastActivityAt)
   return (
     <RailChatMenu
       entry={entry}
@@ -181,37 +189,41 @@ function UnassignedChatRow({
       noProject
     >
       <RailChatRowFrame>
-        <RailChatRow
-          open={open}
-          title={collapsed ? undefined : entry.title}
-          aria-label={statusWord ? `${entry.title}, ${statusWord}` : entry.title}
-          className={collapsed ? undefined : RAIL_ROW_INSET_CLASS}
-          onClick={() => onOpen(entry.id)}
-          onKeyDown={(event) => {
-            if (!isContextMenuKey(event)) return
-            event.preventDefault()
-            openContextMenuFrom(event.currentTarget)
-          }}
+        <RailChatTooltip
+          title={entry.title}
+          state={liveState}
+          detail={time === 'now' || !time ? time : `${time} ago`}
         >
-          <span
-            data-rail-icon-column
-            aria-hidden="true"
-            className={cn(RAIL_ICON_BOX_CLASS, 'relative text-muted-foreground')}
+          <RailChatRow
+            open={open}
+            aria-label={statusWord ? `${entry.title}, ${statusWord}` : entry.title}
+            onClick={() => onOpen(entry.id)}
+            onKeyDown={(event) => {
+              if (!isContextMenuKey(event)) return
+              event.preventDefault()
+              openContextMenuFrom(event.currentTarget)
+            }}
           >
-            <Chat size={14} />
-            {collapsed && <RailChatStatusDot state={liveState} />}
-          </span>
-          <RailChatTitle>{entry.title}</RailChatTitle>
-          {!collapsed && (
-            <RailChatTrailSlot>
-              <ChatRowTrail
-                liveState={liveState}
-                lastActivityAt={entry.lastActivityAt}
-                closed={entry.status === 'closed'}
-              />
-            </RailChatTrailSlot>
-          )}
-        </RailChatRow>
+            <span
+              data-rail-icon-column
+              aria-hidden="true"
+              className={cn(RAIL_ICON_BOX_CLASS, 'relative text-muted-foreground')}
+            >
+              <Chat size={14} />
+              {collapsed && <RailChatStatusDot state={liveState} />}
+            </span>
+            <RailChatTitle>{entry.title}</RailChatTitle>
+            {!collapsed && (
+              <RailChatTrailSlot>
+                <ChatRowTrail
+                  variant="rail"
+                  liveState={liveState}
+                  lastActivityAt={entry.lastActivityAt}
+                />
+              </RailChatTrailSlot>
+            )}
+          </RailChatRow>
+        </RailChatTooltip>
         <RailChatRowMore
           aria-label={`More actions for ${entry.title}`}
           onClick={(event) => openContextMenuFrom(event.currentTarget)}
@@ -328,7 +340,9 @@ function UnassignedSection({
           type="button"
           className={cn(
             'flex h-10 items-center gap-1 text-left whitespace-nowrap',
-            collapsed ? cn(RAIL_COLLAPSED_ROW_CLASS, 'pt-3') : 'w-full pt-3 pr-1.5 pl-2.5',
+            // 12px start, as the section headers: the chevron starts on x 20,
+            // in line with the row icons.
+            collapsed ? cn(RAIL_COLLAPSED_ROW_CLASS, 'pt-3') : 'w-full pt-3 pr-1.5 pl-3',
             RAIL_BLOCK_FADE_CLASS,
             FOCUS_RING_CLASS
           )}

@@ -17,7 +17,7 @@ import { useWorkspaceStore } from '@/stores/workspace-store'
 import { createLeaf } from '@/stores/workspace-store/tree'
 import type { Project, Worktree } from '@/types/project'
 import {
-  RailWorktreeChip,
+  RailWorktreeBranch,
   RailWorktreeSwitcher,
   RailWorktreeSwitcherProvider,
   useOpenRailWorktreeSwitcher
@@ -96,7 +96,7 @@ function Row({ project }: { project: Project }): React.JSX.Element {
       <button type="button" onClick={() => open(project.id)}>
         Project row
       </button>
-      <RailWorktreeChip project={project} collapsed={false} />
+      <RailWorktreeBranch project={project} />
     </RailWorktreeSwitcher>
   )
 }
@@ -174,12 +174,29 @@ describe('RailWorktreeSwitcher', () => {
       expect(within(chip).getByText('feat/a').parentElement).toHaveAttribute('title', WT_A.path)
     })
 
-    it('keeps the line on the collapsed Rail as a branch glyph with a hidden label', () => {
+    it('sits inline as a muted, fading button that opens the switcher', async () => {
       useShellLayoutStore.setState({ worktreePickByProject: { p1: 'e:/proj/.termul/worktrees/a' } })
-      render(<RailWorktreeChip project={makeProject()} collapsed />)
-      const chip = screen.getByTestId('rail-worktree-chip-p1')
-      expect(chip).toHaveClass('h-4.5')
-      expect(chip).toHaveAttribute('title', 'Worktree: feat/a')
+      renderSwitcher()
+      const branch = screen.getByRole('button', { name: 'Worktree: feat/a. Switch worktree' })
+      expect(branch).toHaveClass(
+        'fade-end',
+        'flex-1',
+        'text-muted-foreground',
+        'pointer-events-auto'
+      )
+      // No line of its own any more.
+      expect(branch).not.toHaveClass('h-4.5')
+      fireEvent.click(branch)
+      expect(await screen.findByRole('dialog', { name: 'Working copies' })).toBeInTheDocument()
+    })
+
+    it('draws a static label (no button) for the peek and the project card', () => {
+      useShellLayoutStore.setState({ worktreePickByProject: { p1: 'e:/proj/.termul/worktrees/a' } })
+      render(<RailWorktreeBranch project={makeProject()} interactive={false} />)
+      const label = screen.getByTestId('rail-worktree-chip-p1')
+      expect(label.tagName).toBe('SPAN')
+      expect(label).toHaveTextContent('Worktree: feat/a')
+      expect(screen.queryByRole('button')).not.toBeInTheDocument()
     })
   })
 

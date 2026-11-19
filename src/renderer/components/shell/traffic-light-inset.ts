@@ -1,6 +1,8 @@
 /**
  * Width the native macOS traffic lights need from the window edge: they sit
- * at x = 14 and end at x = 66, then the 10px gap of Paper's rail header.
+ * at x = 22 and end at x = 74, then a 4px gap to the Troupe mark's 28px box
+ * (Paper S2.0). x = 22 mirrors the Rail toggle on the right, whose glyph ends
+ * 23px from the Rail edge.
  *
  * Vertically the lights are centred on the 44px top row (y = 22), the line
  * of the Troupe mark and the Rail toggle. `trafficLightPosition.y` in
@@ -12,4 +14,4 @@
  * The lights hide while the Rail is collapsed (`ShellRail`), so the main
  * area never steps aside for them.
  */
-export const TRAFFIC_LIGHT_CLEARANCE_PX = 76
+export const TRAFFIC_LIGHT_CLEARANCE_PX = 78

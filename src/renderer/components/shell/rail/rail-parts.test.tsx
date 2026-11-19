@@ -121,9 +121,31 @@ describe('RailChatGroup parts', () => {
     render(<ChatGroup total={2} />)
     expect(screen.getAllByRole('listitem')).toHaveLength(2)
     const [first] = rows()
-    expect(first).toHaveClass('h-7.5', 'pl-8.75', 'pr-3', 'gap-2.25')
+    expect(first).toHaveClass('h-7.5', 'pl-3', 'pr-4', 'gap-2')
     expect(within(first).getByText('Chat 0')).toHaveClass('fade-end', 'text-secondary-foreground')
     expect(within(first).getByTestId('trail-0')).toBeInTheDocument()
+  })
+
+  it('insets a nested (project) chat row 22px, keeping its content on the title column', () => {
+    render(
+      <RailChatGroup total={6}>
+        <RailChatList aria-label="Chats in Beta">
+          <RailChatItem index={0}>
+            <RailChatRow nested>
+              <RailChatTitle>Nested chat</RailChatTitle>
+            </RailChatRow>
+          </RailChatItem>
+        </RailChatList>
+        <RailShowMore nested />
+      </RailChatGroup>
+    )
+    const row = screen.getByRole('button', { name: 'Nested chat' })
+    expect(row).toHaveClass('ml-[22px]', 'w-[calc(100%-22px)]', 'pl-3', 'pr-4')
+    expect(row).not.toHaveClass('w-full')
+    expect(screen.getByRole('button', { name: 'Show 1 more' })).toHaveClass(
+      'ml-[22px]',
+      'pl-[34px]'
+    )
   })
 
   it('shows five chats, then expands in place with Show N more and collapses with Show less', () => {

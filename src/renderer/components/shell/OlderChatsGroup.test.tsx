@@ -1,5 +1,6 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render as rtlRender, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import { mockSessionIndexEntry } from '@/lib/test-utils/acp'
 import { useAcpStore } from '@/stores/acp-store'
 import { useQuickChatStore } from '@/stores/quick-chat-store'
@@ -8,6 +9,9 @@ import { RailDensityProvider } from './rail/rail-density'
 
 const openHistory = vi.fn()
 const deleteHistory = vi.fn()
+
+/** Chat rows carry a Rail tooltip, which needs the app's tooltip provider. */
+const render = (ui: React.ReactElement) => rtlRender(ui, { wrapper: TooltipProvider })
 
 vi.mock('@/lib/log-api', () => ({ logFrontendError: vi.fn() }))
 
@@ -50,6 +54,8 @@ describe('OlderChatsGroup', () => {
     renderGroup()
     const toggle = screen.getByRole('button', { name: 'Older chats' })
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    // 12px start, as the section headers: the chevron starts on x 20.
+    expect(toggle).toHaveClass('pl-3')
     expect(screen.queryByRole('button', { name: 'Notes from /tmp' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'A quick chat' })).not.toBeInTheDocument()
     fireEvent.click(toggle)
@@ -57,8 +63,9 @@ describe('OlderChatsGroup', () => {
     const row = screen.getByRole('button', { name: 'Notes from /tmp' })
     expect(row).toBeInTheDocument()
     expect(screen.getByTestId('older-chats-group')).toHaveClass('px-2')
-    expect(row).toHaveClass('px-3')
-    expect(row).not.toHaveClass('pl-8.75')
+    // A top-level row: full width, 12px left, 16px right (the right lane).
+    expect(row).toHaveClass('w-full', 'pl-3', 'pr-4')
+    expect(row).not.toHaveClass('ml-[22px]')
     expect(row.querySelector('[data-rail-icon-column]')).toHaveAttribute('aria-hidden', 'true')
     expect(screen.queryByRole('button', { name: 'A quick chat' })).not.toBeInTheDocument()
   })

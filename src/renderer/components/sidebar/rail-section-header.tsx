@@ -26,8 +26,9 @@ interface RailSectionHeaderProps {
 
 /**
  * Small muted section label of the shell Rail project list ("Groups",
- * "Projects"): 40px with 12px on top, the label 18px from the Rail edge
- * (Sidebar V2), an icon button at the end on the row actions' right edge.
+ * "Projects", "Quick chats"): 40px with 12px on top, the label 20px from the
+ * Rail edge (Paper S2.0: in line with the row icons' left edge), an icon
+ * button at the end on the row actions' right edge.
  * The row is not focusable; only its button is.
  *
  * Collapsed Rail: the same 40px row holds a 20×1 `border` divider (see
@@ -52,7 +53,9 @@ export function RailSectionHeader({
       className={cn(
         // 12px end padding: the button ends where a row's actions and times
         // end (the row fill's 12px padding), right-aligned to that edge.
-        'flex h-10 w-full select-none items-center justify-between gap-2 pt-3 pr-3 pl-2.5 whitespace-nowrap',
+        // 12px start padding: the label starts on x 20, the left edge of the
+        // 16px icons on the icon column (x = 28) in the rows under it.
+        'flex h-10 w-full select-none items-center justify-between gap-2 pt-3 pr-3 pl-3 whitespace-nowrap',
         RAIL_BLOCK_FADE_CLASS,
         className
       )}

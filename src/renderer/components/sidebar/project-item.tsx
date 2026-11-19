@@ -7,6 +7,7 @@ import { RailTooltip } from '@/components/shell/rail-button'
 import { RAIL_ICON_BOX_CLASS, RAIL_ROW_INSET_CLASS } from '@/components/shell/rail-layout'
 import { ContextMenu, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { FIELD_FOCUS_CLASS, FOCUS_RING_CLASS } from '@/components/ui/panel-styles'
+import { useOverflowFade } from '@/hooks/use-overflow-fade'
 import { isContextMenuKey, openContextMenuFrom } from '@/lib/context-menu-key'
 import { cn } from '@/lib/utils'
 import type { Project } from '@/types/project'
@@ -44,6 +45,11 @@ export interface ProjectItemProps {
   onToggleChats?: () => void
   /** Id of the chat list, for the chevron's `aria-controls`. */
   chatsListId?: string
+  /**
+   * The picked worktree, drawn inline after the name (`RailWorktreeBranch`).
+   * Pass it only when a worktree is picked.
+   */
+  worktree?: React.ReactNode
 }
 
 export const ProjectItem = memo(function ProjectItem({
@@ -64,9 +70,14 @@ export const ProjectItem = memo(function ProjectItem({
   diffStat: watchedDiffStat = null,
   chatsExpanded = true,
   onToggleChats,
-  chatsListId
+  chatsListId,
+  worktree
 }: ProjectItemProps): React.JSX.Element {
   const inputRef = useRef<HTMLInputElement>(null)
+  const nameRef = useRef<HTMLSpanElement>(null)
+  useOverflowFade(nameRef, project.name)
+  // The active project keeps its "+" at rest; the others show it on hover.
+  const showNewChatAtRest = isActive || isEditing
   // At rest the stat holds the right slot; hover or focus swaps it for the
   // settings gear. It yields to the rename input.
   const diffStat = isEditing ? null : watchedDiffStat
@@ -102,6 +113,9 @@ export const ProjectItem = memo(function ProjectItem({
               // chat under it is raised), radius 8 like every Rail row.
               'rounded-lg',
               RAIL_ROW_INSET_CLASS,
+              // Without its "+" at rest, a row ends 16px in, so a status mark
+              // sits on the x 218 lane like the chat rows' marks.
+              !showNewChatAtRest && 'pr-4 group-hover:pr-3 group-focus-within:pr-3',
               'transition-colors duration-150 ease-out',
               'hover:bg-row-hover focus-within:bg-row-hover'
             )}
@@ -123,7 +137,7 @@ export const ProjectItem = memo(function ProjectItem({
                 FOCUS_RING_CLASS
               )}
               aria-current={isActive ? 'page' : undefined}
-              aria-label={`Project: ${project.name}${isActive ? ' (active)' : ''}`}
+              aria-label={`Project: ${project.name}${isActive ? ' (active)' : ''}${status.crashed ? ', terminal crashed' : ''}`}
             />
             <span
               data-rail-icon-column
@@ -191,17 +205,30 @@ export const ProjectItem = memo(function ProjectItem({
               >
                 {/* Fills the row and fades its last 24px instead of an ellipsis.
                     Without a diff stat, the actions cover its end on hover and
-                    focus, so it fades out before them. */}
+                    focus, so it fades out before them. With a worktree branch
+                    after it, the name hugs its text (fading only if it
+                    overflows) and the branch takes the room that is left. */}
                 <span
+                  ref={nameRef}
                   className={cn(
-                    'fade-end min-w-0 flex-1 font-medium text-secondary-foreground transition-colors duration-150 ease-out group-hover:text-foreground',
-                    !diffStat &&
-                      'group-hover:fade-before-row-actions group-focus-within:fade-before-row-actions'
+                    'min-w-0 font-medium text-secondary-foreground transition-colors duration-150 ease-out group-hover:text-foreground',
+                    worktree
+                      ? 'fade-end-overflow shrink'
+                      : cn(
+                          'fade-end flex-1',
+                          !diffStat &&
+                            'group-hover:fade-before-row-actions group-focus-within:fade-before-row-actions'
+                        )
                   )}
                   title={project.name}
                 >
                   {project.name}
                 </span>
+                {worktree && (
+                  <span className="flex min-w-0 flex-1 group-hover:fade-before-row-actions group-focus-within:fade-before-row-actions">
+                    {worktree}
+                  </span>
+                )}
                 {/* At least as wide as the actions (44px), so they take its
                     place on hover and never cover the name. */}
                 {diffStat && (
@@ -262,10 +289,18 @@ export const ProjectItem = memo(function ProjectItem({
                 onOpenNeedsYou={onOpenNeedsYou}
               />
             </span>
-            {/* Always shown, unlike the hover actions. `relative` keeps it
-                above the row's absolute button, or that button takes the click. */}
+            {/* Always shown on the active project; on the others it shows with
+                the hover actions (hover and keyboard focus), so the Rail does
+                not repeat "+" on every row. `relative` keeps it above the
+                row's absolute button, or that button takes the click. */}
             {!isEditing && (
-              <span className={cn('relative flex shrink-0', RAIL_LABEL_FADE_CLASS)}>
+              <span
+                className={cn(
+                  'relative shrink-0',
+                  showNewChatAtRest ? 'flex' : 'hidden group-hover:flex group-focus-within:flex',
+                  RAIL_LABEL_FADE_CLASS
+                )}
+              >
                 <RailTooltip label={`New chat in ${project.name}`}>
                   <button
                     type="button"

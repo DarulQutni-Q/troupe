@@ -1,6 +1,7 @@
 import type { SSHProfile } from '@shared/types/ssh.types'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render as rtlRender, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import { SSH_HOSTS_TAB, type SSHSession, useSSHStore } from '@/stores/ssh-store'
 import { SSHPanel } from './SSHPanel'
 
@@ -85,6 +86,14 @@ beforeEach(() => {
   })
 })
 
+const render = (ui: React.ReactElement) => rtlRender(ui, { wrapper: TooltipProvider })
+
+/** Opens the header's "…" menu (Radix opens it from the keyboard in jsdom). */
+async function openOptions(): Promise<void> {
+  fireEvent.keyDown(screen.getByRole('button', { name: 'SSH options' }), { key: 'Enter' })
+  await screen.findByRole('menuitem', { name: 'Open SSH hosts' })
+}
+
 describe('SSHPanel rows', () => {
   it('opens the workspace on click and connects on double-click', () => {
     const onSelectProfile = vi.fn()
@@ -132,15 +141,35 @@ describe('SSHPanel rows', () => {
     expect(screen.getByTestId('ssh-host-row-p1')).toHaveClass('keycap')
   })
 
-  it('reveals addresses only on request (privacy)', () => {
+  it('reveals addresses only on request (privacy), from the "…" menu', async () => {
     render(<SSHPanel />)
     expect(screen.queryByText('deploy@example.com')).toBeNull()
-    const toggle = screen.getByRole('button', { name: 'Show addresses' })
-    expect(toggle).toHaveAttribute('aria-pressed', 'false')
+    await openOptions()
+    const toggle = screen.getByRole('menuitemcheckbox', { name: 'Show addresses' })
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
     fireEvent.click(toggle)
     expect(screen.getByText('deploy@example.com')).toBeInTheDocument()
-    expect(toggle).toHaveAttribute('aria-pressed', 'true')
-    expect(toggle).toHaveAttribute('title', 'Hide addresses')
+    // The menu stays open, so the check can be seen to change.
+    expect(toggle).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('keeps the header to the Rail section shape: "…" and "+" only', async () => {
+    render(<SSHPanel />)
+    const header = screen.getByTestId('ssh-section-header')
+    expect(header).toHaveClass('h-10', 'pt-3', 'px-5')
+    expect(
+      Array.from(header.querySelectorAll('button')).map((b) => b.getAttribute('aria-label'))
+    ).toEqual(['SSH options', 'New host'])
+    await openOptions()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Open SSH hosts' }))
+    expect(useSSHStore.getState().activeTab).toBe(SSH_HOSTS_TAB)
+  })
+
+  it('draws hosts as 30px Rail rows with the lamp on the icon column', () => {
+    render(<SSHPanel />)
+    const row = screen.getByTestId('ssh-host-row-p1')
+    expect(row).toHaveClass('h-7.5', 'pl-3', 'pr-4', 'gap-2', 'rounded-lg')
+    expect(screen.getByTestId('ssh-host-lamp').parentElement).toHaveClass('size-4')
   })
 
   it('keeps row actions mounted with the opacity reveal (no layout shift)', () => {

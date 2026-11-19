@@ -3,6 +3,7 @@ import {
   formatChatCreatedTime,
   formatChatFullTime,
   formatChatShortTime,
+  formatRailRelativeTime,
   formatRelativeTime,
   formatRelativeTimeFromMs,
   startOfToday,
@@ -243,5 +244,32 @@ describe('formatChatShortTime', () => {
     expect(formatChatShortTime(undefined, now)).toBe('')
     expect(formatChatShortTime(0, now)).toBe('')
     expect(formatChatShortTime(Number.NaN, now)).toBe('')
+  })
+})
+
+describe('formatRailRelativeTime', () => {
+  const now = Date.UTC(2026, 10, 19, 12, 0, 0)
+  const DAY = 24 * 60 * MINUTE
+
+  it('counts up through minutes, hours and days, then months and years', () => {
+    expect(formatRailRelativeTime(now - 30 * SECOND, now)).toBe('now')
+    expect(formatRailRelativeTime(now - 5 * MINUTE, now)).toBe('5m')
+    expect(formatRailRelativeTime(now - 3 * 60 * MINUTE, now)).toBe('3h')
+    expect(formatRailRelativeTime(now - 29 * DAY, now)).toBe('29d')
+    expect(formatRailRelativeTime(now - 30 * DAY, now)).toBe('1mo')
+    expect(formatRailRelativeTime(now - 359 * DAY, now)).toBe('11mo')
+    expect(formatRailRelativeTime(now - 360 * DAY, now)).toBe('1y')
+    expect(formatRailRelativeTime(now - 387 * DAY, now)).toBe('1y')
+    expect(formatRailRelativeTime(now - 800 * DAY, now)).toBe('2y')
+  })
+
+  it('never falls back to a date, never says weeks, and clamps the future to now', () => {
+    for (const days of [7, 14, 56, 120, 500]) {
+      const text = formatRailRelativeTime(now - days * DAY, now)
+      expect(text).toMatch(/^\d+(d|mo|y)$/)
+      expect(text.length).toBeLessThanOrEqual(4)
+    }
+    expect(formatRailRelativeTime(now + 5 * MINUTE, now)).toBe('now')
+    expect(formatRailRelativeTime(Number.NaN, now)).toBe('')
   })
 })

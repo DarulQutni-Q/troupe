@@ -33,6 +33,30 @@ export function formatRelativeTimeFromMs(ms: number, now: number = Date.now()): 
 }
 
 /**
+ * Format an epoch-millisecond timestamp for a Rail chat row's trail: "now",
+ * "5m", "3h", "29d", then "1mo"–"11mo", then "1y", "2y". It never becomes a
+ * date, so the trail stays at most 4 characters and the title keeps its room.
+ * Months are "mo" so a month never reads as minutes. A non-finite timestamp
+ * yields an empty string. Rail only: chat history and the @-mention menu keep
+ * {@link formatRelativeTimeFromMs}.
+ */
+export function formatRailRelativeTime(ms: number, now: number = Date.now()): string {
+  if (!Number.isFinite(ms)) return ''
+  // Future timestamps (clock skew) clamp to "now" rather than negative values.
+  const seconds = Math.max(0, Math.floor((now - ms) / 1000))
+  if (seconds < 60) return 'now'
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h`
+  const days = Math.floor(hours / 24)
+  if (days < 30) return `${days}d`
+  const months = Math.floor(days / 30)
+  if (months < 12) return `${months}mo`
+  return `${Math.max(1, Math.floor(days / 365))}y`
+}
+
+/**
  * Format an ISO 8601 timestamp as a compact relative time for commit rows.
  * Delegates to `formatRelativeTimeFromMs` after parsing; invalid input yields
  * an empty string. `now` is injectable for deterministic tests.

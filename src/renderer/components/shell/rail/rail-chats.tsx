@@ -1,25 +1,37 @@
 import { createContext, forwardRef, useContext, useMemo, useState } from 'react'
 import { MoreHorizontal } from '@/components/icons'
-import type { ProjectChatLiveState } from '@/components/sidebar/project-chat-row'
+import {
+  CHAT_LIVE_STATE_WORD,
+  type ProjectChatLiveState,
+  RAIL_STATUS_DOT_CLASS
+} from '@/components/sidebar/project-chat-row'
 import { FOCUS_RING_CLASS } from '@/components/ui/panel-styles'
+import { Spinner } from '@/components/ui/spinner'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { useRailCollapsed } from './rail-density'
 import {
   RAIL_BLOCK_FADE_CLASS,
   RAIL_COLLAPSED_ROW_CLASS,
-  RAIL_LABEL_FADE_CLASS
+  RAIL_LABEL_FADE_CLASS,
+  RAIL_NESTED_ICON_TRAVEL_CLASS,
+  RAIL_NESTED_ROW_TRAVEL_CLASS
 } from './rail-motion'
+
+/**
+ * Set by a nested {@link RailChatRow} for its content: its
+ * {@link RailChatIcon} travels to the collapsed icon column with the row.
+ */
+const RailNestedRowContext = createContext(false)
 
 /** Chats a Rail project shows before "Show N more". */
 const RAIL_CHAT_LIMIT = 5
 
-/** Fill of the collapsed Rail status dot per live state (Sidebar V2); idle has none. */
-const RAIL_CHAT_STATUS_DOT_CLASS: Record<ProjectChatLiveState, string | null> = {
-  'needs-you': 'bg-warning',
-  running: 'bg-primary',
-  done: 'bg-foreground',
-  idle: null
-}
+/**
+ * A project's chat row starts its fill 22px in, so the fill runs x 30–240
+ * on the Rail and the row reads as the project's child.
+ */
+const RAIL_NESTED_ROW_CLASS = 'ml-[22px] w-[calc(100%-22px)]'
 
 interface RailChatGroupContextValue {
   /** Every chat of the group, shown or not. */
@@ -98,6 +110,13 @@ export interface RailChatRowProps extends React.ComponentPropsWithoutRef<'button
   /** The chat is open in the active pane: keycap surface and `aria-current`. */
   open?: boolean
   /**
+   * The row is a chat under a project: its fill starts 22px in (x 30 on the
+   * Rail), so a hovered or open chat reads as the project's child and its
+   * inner space matches a project row (12px left, 16px right). Quick chats
+   * are top-level rows and keep the full width.
+   */
+  nested?: boolean
+  /**
    * The row is the source of a drag in flight: 50% opacity and 98% scale, the
    * same feedback as a dragged workspace tab (no scale with reduced motion).
    */
@@ -105,8 +124,11 @@ export interface RailChatRowProps extends React.ComponentPropsWithoutRef<'button
 }
 
 /**
- * One chat row: 30px, 35px left (the agent icon sits under the project
- * name), 12px right, 9px gaps. Compose {@link RailChatIcon},
+ * One chat row: 30px, 12px left, 16px right, 8px gaps. The right padding
+ * puts a text trail's end on x 224 and an icon trail's centre on x 218, the
+ * lane of the project rows' `+`. A `nested` row (a project's chat) starts its
+ * fill 22px in; its 14px agent box sits at x 42 and the title at x 64.
+ * Compose {@link RailChatIcon},
  * {@link RailChatTitle} and a trail (for example `ChatRowTrail`) inside.
  *
  * Collapsed Rail: the same 30px row with only the agent icon, in a 30px square
@@ -120,10 +142,11 @@ export interface RailChatRowProps extends React.ComponentPropsWithoutRef<'button
  * set `dragging` while the drag is in flight.
  */
 export const RailChatRow = forwardRef<HTMLButtonElement, RailChatRowProps>(function RailChatRow(
-  { open = false, dragging = false, className, ...props },
+  { open = false, nested = false, dragging = false, className, children, ...props },
   ref
 ) {
   const collapsed = useRailCollapsed()
+  const travels = nested && !collapsed
   return (
     <button
       ref={ref}
@@ -135,7 +158,7 @@ export const RailChatRow = forwardRef<HTMLButtonElement, RailChatRowProps>(funct
         'flex h-7.5 min-w-0 items-center text-left text-xs whitespace-nowrap',
         collapsed
           ? cn(RAIL_COLLAPSED_ROW_CLASS, 'rounded-lg')
-          : 'w-full gap-2.25 rounded-lg pr-3 pl-8.75',
+          : cn('gap-2 rounded-lg pr-4 pl-3', nested ? RAIL_NESTED_ROW_CLASS : 'w-full'),
         'transition-[color,background-color,opacity,scale] duration-150 ease-out focus-visible:ring-inset motion-reduce:transition-none',
         FOCUS_RING_CLASS,
         open
@@ -144,10 +167,15 @@ export const RailChatRow = forwardRef<HTMLButtonElement, RailChatRowProps>(funct
             ? 'hover:bg-foreground/[0.06] group-data-[state=open]/rail-chat:bg-foreground/[0.06]'
             : 'hover:bg-row-hover group-hover/rail-chat:bg-row-hover group-data-[state=open]/rail-chat:bg-row-hover',
         dragging && 'scale-[0.98] opacity-50 motion-reduce:scale-100',
+        // Expand/collapse: the fill and icon travel between x 30 and the
+        // collapsed square at x 13, with the width (no jump at the switch).
+        travels && RAIL_NESTED_ROW_TRAVEL_CLASS,
         className
       )}
       {...props}
-    />
+    >
+      <RailNestedRowContext.Provider value={travels}>{children}</RailNestedRowContext.Provider>
+    </button>
   )
 })
 
@@ -185,8 +213,8 @@ export function RailChatTrailSlot({
 }
 
 /**
- * "…" at the end of a chat row (20px, 8px from the right, so its glyph ends
- * where the trail ends). Shown on hover, focus or while the menu is open;
+ * "…" at the end of a chat row (20px, 12px from the right, so its centre sits
+ * on x 218 with the project rows' `+`). Shown on hover, focus or while the menu is open;
  * hidden on the collapsed Rail. A click opens the row's context menu at the
  * button.
  */
@@ -202,7 +230,7 @@ export const RailChatRowMore = forwardRef<
       type="button"
       aria-haspopup="menu"
       className={cn(
-        'absolute top-1/2 right-2 inline-flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground',
+        'absolute top-1/2 right-3 inline-flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground',
         'opacity-0 group-hover/rail-chat:opacity-100 group-focus-within/rail-chat:opacity-100 group-data-[state=open]/rail-chat:opacity-100 focus-visible:opacity-100',
         'transition-[color,background-color,opacity] duration-150 ease-out hover:bg-foreground/[0.06] hover:text-foreground motion-reduce:transition-none',
         FOCUS_RING_CLASS,
@@ -215,25 +243,37 @@ export const RailChatRowMore = forwardRef<
   )
 })
 
-/** 12px agent icon box at the start of a chat row. Holds a {@link RailChatStatusDot}. */
+/**
+ * 14px agent icon box at the start of a chat row: one 12px glyph in the
+ * centre, or the stack of a multi-agent chat filling the box. Holds a
+ * {@link RailChatStatusDot}.
+ */
 export function RailChatIcon({
   className,
   ...props
 }: React.ComponentPropsWithoutRef<'span'>): React.JSX.Element {
+  const travels = useContext(RailNestedRowContext)
   return (
     <span
       aria-hidden="true"
-      className={cn('relative inline-flex size-3 shrink-0 items-center justify-center', className)}
+      // 14px tall and at least 14px wide: a chat with 6+ agents adds "+N".
+      className={cn(
+        'relative inline-flex h-3.5 min-w-3.5 shrink-0 items-center justify-center',
+        travels && RAIL_NESTED_ICON_TRAVEL_CLASS,
+        className
+      )}
       {...props}
     />
   )
 }
 
 /**
- * 6px status dot on the agent icon's bottom-right corner (collapsed Rail,
- * where the trail is hidden): needs-you warning, running primary, new
- * activity foreground, nothing when idle. Decorative: put the status in the
- * row's accessible name.
+ * Status on the agent icon's bottom-right corner (collapsed Rail, where the
+ * trail is hidden): a 6px dot — needs-you warning, finished-not-opened
+ * primary — or an 8px spinner while a turn runs (a blue dot would read as
+ * "finished"). Nothing when idle. A 1.5px ring in the Rail colour keeps it
+ * apart from the glyph. Decorative: put the status in the row's accessible
+ * name.
  */
 export function RailChatStatusDot({
   state,
@@ -242,15 +282,74 @@ export function RailChatStatusDot({
 }: Omit<React.ComponentPropsWithoutRef<'span'>, 'children'> & {
   state: ProjectChatLiveState
 }): React.JSX.Element | null {
-  const fill = RAIL_CHAT_STATUS_DOT_CLASS[state]
+  if (state === 'running') {
+    return (
+      <span
+        aria-hidden="true"
+        data-rail-chat-status={state}
+        className={cn(
+          'absolute -right-1 -bottom-1 flex size-2.5 items-center justify-center rounded-full bg-background text-primary',
+          className
+        )}
+        {...props}
+      >
+        <Spinner size={8} decorative />
+      </span>
+    )
+  }
+  const fill = RAIL_STATUS_DOT_CLASS[state]
   if (!fill) return null
   return (
     <span
       aria-hidden="true"
       data-rail-chat-status={state}
-      className={cn('absolute -right-0.5 -bottom-0.5 size-1.5 rounded-full', fill, className)}
+      className={cn(
+        'absolute -right-0.5 -bottom-0.5 size-1.5 rounded-full ring-[1.5px] ring-background',
+        fill,
+        className
+      )}
       {...props}
     />
+  )
+}
+
+/**
+ * Tooltip of a chat row on the expanded Rail (the collapsed Rail has the
+ * peek). Hover swaps the row's status for "…", so the status can't carry its
+ * own tooltip: this one names it — the title, then a dot and the status word,
+ * or, for an idle chat, `detail` (who started it and when).
+ */
+export function RailChatTooltip({
+  title,
+  state,
+  detail,
+  children
+}: {
+  title: string
+  state: ProjectChatLiveState
+  detail?: string
+  /** The row: one focusable element that accepts a ref. */
+  children: React.ReactElement
+}): React.JSX.Element {
+  const collapsed = useRailCollapsed()
+  if (collapsed) return children
+  const word = CHAT_LIVE_STATE_WORD[state]
+  const fill = state === 'running' ? 'bg-primary' : RAIL_STATUS_DOT_CLASS[state]
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent side="right" className="flex max-w-80 flex-col gap-0.5 px-2.5 py-1.5 text-xs">
+        <span className="font-medium text-popover-foreground">{title}</span>
+        {word ? (
+          <span className="flex items-center gap-1.5 text-muted-foreground">
+            {fill && <span aria-hidden="true" className={cn('size-1.5 rounded-full', fill)} />}
+            {word}
+          </span>
+        ) : (
+          detail && <span className="text-muted-foreground">{detail}</span>
+        )}
+      </TooltipContent>
+    </Tooltip>
   )
 }
 
@@ -277,15 +376,16 @@ export function RailChatTitle({
 }
 
 /**
- * "Show N more" / "Show less" under a chat group: 28px, 56px left (the
- * title column), `muted-foreground` 12px. Nothing when every chat fits.
- * Collapsed Rail: the same 28px row reads "···" (centred); its accessible
+ * "Show N more" / "Show less" under a chat group: 30px, its text on the title
+ * column, `muted-foreground` 12px. Nothing when every chat fits. `nested`
+ * (a project's chats) insets the fill like {@link RailChatRow}.
+ * Collapsed Rail: the same 30px row reads "···" (centred); its accessible
  * name keeps the words.
  */
 export const RailShowMore = forwardRef<
   HTMLButtonElement,
-  Omit<React.ComponentPropsWithoutRef<'button'>, 'children'>
->(function RailShowMore({ className, onClick, ...props }, ref) {
+  Omit<React.ComponentPropsWithoutRef<'button'>, 'children'> & { nested?: boolean }
+>(function RailShowMore({ nested = false, className, onClick, ...props }, ref) {
   const { total, pinnedIndex, expanded, setExpanded } = useRailChatGroup('RailShowMore')
   const collapsed = useRailCollapsed()
   const pinnedPastLimit = pinnedIndex !== undefined && pinnedIndex >= RAIL_CHAT_LIMIT ? 1 : 0
@@ -307,10 +407,12 @@ export const RailShowMore = forwardRef<
       className={cn(
         // 30px like every Rail row, so the collapsed fill is the same square.
         'flex h-7.5 items-center text-xs text-muted-foreground',
-        !collapsed && 'w-full',
         collapsed
           ? cn(RAIL_COLLAPSED_ROW_CLASS, 'rounded-lg hover:bg-foreground/[0.06]')
-          : 'rounded-lg pl-14 text-left whitespace-nowrap hover:bg-row-hover',
+          : cn(
+              'rounded-lg text-left whitespace-nowrap hover:bg-row-hover',
+              nested ? cn(RAIL_NESTED_ROW_CLASS, 'pl-[34px]') : 'w-full pl-14'
+            ),
         'transition-colors duration-150 ease-out hover:text-foreground focus-visible:ring-inset',
         FOCUS_RING_CLASS,
         className

@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useRef } from 'react'
-import { PANEL_HEADER_CLASS } from '@/components/ui/panel-styles'
 import { isTauriContext } from '@/lib/tauri-runtime'
-import { cn } from '@/lib/utils'
 import { useShellLayoutStore, useSshSectionHeight } from '@/stores/shell-layout-store'
 import { useSSHPanelVisible } from '@/stores/ssh-panel-store'
-import { SSHPanel } from '../ssh/SSHPanel'
+import { SSHPanel, SSHSectionHeader } from '../ssh/SSHPanel'
 import { SSHSectionChevron } from '../ssh/SSHSectionChevron'
 
 // ============================================================================
@@ -103,10 +101,7 @@ export function SSHResizableSection({
   if (!isVisible) {
     return (
       <div className="flex-shrink-0 border-t-[0.5px] border-border">
-        <div className={cn(PANEL_HEADER_CLASS, 'h-9 justify-start gap-1')}>
-          <SSHSectionChevron expanded={false} />
-          <span className="label-panel">SSH</span>
-        </div>
+        <SSHSectionHeader start={<SSHSectionChevron expanded={false} />} />
       </div>
     )
   }
@@ -127,7 +122,7 @@ export function SSHResizableSection({
           onConnect={onSSHConnect}
           onSelectProfile={onSelectProfile}
           activeProfileId={activeProfileId}
-          headerLead={<SSHSectionChevron expanded />}
+          collapsible
         />
       </div>
     </div>

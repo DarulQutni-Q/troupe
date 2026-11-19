@@ -1,6 +1,7 @@
 import type { PersistedSessionSummary } from '@shared/types/web-protocol.types'
 import { render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { TooltipProvider } from '@/components/ui/tooltip'
 
 const mocks = vi.hoisted(() => ({
   tauri: false,
@@ -104,7 +105,12 @@ function fakeTransport(listPersisted: () => Promise<PersistedSessionSummary[]>):
 
 function Harness(): React.JSX.Element {
   useAcpHistory()
-  return <RailProjectChats project={project} />
+  // Rail chat rows carry a styled tooltip, which needs the app's provider.
+  return (
+    <TooltipProvider>
+      <RailProjectChats project={project} />
+    </TooltipProvider>
+  )
 }
 
 beforeEach(() => {
@@ -135,10 +141,11 @@ describe('a host-started chat reaches the Rail without a reload', () => {
     })
     for (const handlers of chatHistory()) handlers.onDelta?.({ changed: ['worker'] })
 
+    // The parent is in the row's name (and its styled tooltip), not a native title.
     const row = await screen.findByRole('button', {
       name: 'Split the parser, Started by Plan the refactor'
     })
-    expect(row).toHaveAttribute('title', 'Split the parser\nStarted by Plan the refactor')
+    expect(row).not.toHaveAttribute('title')
   })
 
   it('web: the chat_history state installs the worker and names the parent', async () => {
@@ -168,6 +175,6 @@ describe('a host-started chat reaches the Rail without a reload', () => {
     render(<Harness />)
 
     const row = await screen.findByRole('button', { name: 'Split the parser' })
-    expect(row).toHaveAttribute('title', 'Split the parser')
+    expect(row.getAttribute('aria-label')).not.toContain('Started by')
   })
 })

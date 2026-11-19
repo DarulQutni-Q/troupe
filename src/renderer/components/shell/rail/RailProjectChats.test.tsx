@@ -1,5 +1,6 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render as rtlRender, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import { mockSessionIndexEntry } from '@/lib/test-utils/acp'
 import { resetChatActivity, seedChatActivity } from '@/lib/test-utils/chat-activity'
 import { useAcpStore } from '@/stores/acp-store'
@@ -20,6 +21,9 @@ const mocks = vi.hoisted(() => ({
     dragPayload: null as { type: 'chat'; sessionId: string } | null
   }
 }))
+
+/** Chat rows carry a Rail tooltip, which needs the app's tooltip provider. */
+const render = (ui: React.ReactElement) => rtlRender(ui, { wrapper: TooltipProvider })
 
 vi.mock('@/lib/log-api', () => ({ logFrontendError: mocks.logFrontendError }))
 vi.mock('@/hooks/use-pane-dnd', () => ({ usePaneDnd: () => mocks.paneDnd }))
@@ -89,7 +93,8 @@ describe('RailProjectChats', () => {
       )
     })
     render(<RailProjectChats project={project} isOpenProject />)
-    expect(rows().map((row) => row.getAttribute('title'))).toEqual([
+    // The row's styled tooltip replaced the native title; the name carries it.
+    expect(rows().map((row) => row.getAttribute('aria-label'))).toEqual([
       'Chat c6',
       'Chat c5',
       'Chat c4',
@@ -128,13 +133,27 @@ describe('RailProjectChats', () => {
     expect(screen.queryByRole('list', { name: 'Chats in Alpha' })).not.toBeInTheDocument()
   })
 
-  it('names each row with its status and shows the trail', () => {
+  it('names each row with its status and shows it as a dot on the trail', () => {
     useAcpStore.setState({ sessionIndex: [entry('a', 2), entry('b', 1)] })
     seedChatActivity({ a: { needsYou: true } })
     render(<RailProjectChats project={project} isOpenProject />)
     const needsYou = screen.getByRole('button', { name: 'Chat a, Needs you' })
-    expect(needsYou).toHaveTextContent('Needs you')
-    expect(screen.getByRole('button', { name: 'Chat b' })).toBeInTheDocument()
+    // The word lives in the name and the tooltip; the row shows an amber dot.
+    expect(needsYou).not.toHaveTextContent('Needs you')
+    expect(needsYou.querySelector('[data-rail-status-dot="needs-you"] > span')).toHaveClass(
+      'bg-warning'
+    )
+    const idle = screen.getByRole('button', { name: 'Chat b' })
+    expect(idle).not.toHaveTextContent('Closed')
+  })
+
+  it('shows a blue dot for a finished chat the user has not opened yet', () => {
+    useAcpStore.setState({ sessionIndex: [entry('d', 1)] })
+    seedChatActivity({ d: { unread: true } })
+    render(<RailProjectChats project={project} isOpenProject />)
+    const row = screen.getByRole('button', { name: 'Chat d, Finished · not opened yet' })
+    expect(row).not.toHaveTextContent('New')
+    expect(row.querySelector('[data-rail-status-dot="done"] > span')).toHaveClass('bg-primary')
   })
 
   it('marks the open chat with the keycap and aria-current', () => {
@@ -335,18 +354,21 @@ describe('RailProjectChats on the collapsed Rail', () => {
     expect(screen.queryByRole('button', { name: /^More actions/ })).not.toBeInTheDocument()
   })
 
-  it('maps each live state to a status dot on the icon', () => {
+  it('maps each live state to a mark on the icon: dots, and a mini spinner while running', () => {
     useAcpStore.setState({
       sessionIndex: [entry('n', 4), entry('r', 3), entry('d', 2), entry('i', 1)]
     })
     seedChatActivity({ n: { needsYou: true }, r: { busy: true }, d: { unread: true } })
     renderCollapsed()
-    const dot = (name: string) =>
+    const mark = (name: string) =>
       screen.getByRole('button', { name }).querySelector('[data-rail-chat-status]')
-    expect(dot('Chat n, Needs you')).toHaveClass('bg-warning', 'size-1.5', 'rounded-full')
-    expect(dot('Chat r, Running')).toHaveClass('bg-primary')
-    expect(dot('Chat d, New activity')).toHaveClass('bg-foreground')
-    expect(dot('Chat i')).toBeNull()
+    expect(mark('Chat n, Needs you')).toHaveClass('bg-warning', 'size-1.5', 'rounded-full')
+    // A blue dot means "finished, not opened yet", so running is a spinner.
+    const running = mark('Chat r, Running')
+    expect(running).toHaveClass('size-2.5', 'text-primary')
+    expect(running?.querySelector('.tm-comet')).toBeInTheDocument()
+    expect(mark('Chat d, Finished · not opened yet')).toHaveClass('bg-primary', 'size-1.5')
+    expect(mark('Chat i')).toBeNull()
   })
 
   it('reads "···" for Show N more, with the words in its name', () => {
