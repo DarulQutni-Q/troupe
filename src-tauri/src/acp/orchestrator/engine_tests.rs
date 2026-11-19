@@ -22,6 +22,7 @@ def send(obj):
     sys.stdout.flush()
 
 hung = None
+model = None
 for line in sys.stdin:
     line = line.strip()
     if not line:
@@ -35,7 +36,13 @@ for line in sys.stdin:
         send({"jsonrpc": "2.0", "id": rid, "result": {"sessionId": "child-1"}})
     elif method == "session/prompt":
         task = msg["params"]["prompt"][0].get("text", "")
-        if task == "finish":
+        if task == "report-model":
+            send({"jsonrpc": "2.0", "method": "session/update", "params": {
+                "sessionId": "child-1",
+                "update": {"sessionUpdate": "agent_message_chunk",
+                           "content": {"type": "text", "text": "model=%s" % model}}}})
+            send({"jsonrpc": "2.0", "id": rid, "result": {"stopReason": "end_turn"}})
+        elif task == "finish":
             send({"jsonrpc": "2.0", "method": "session/update", "params": {
                 "sessionId": "child-1",
                 "update": {"sessionUpdate": "agent_message_chunk",
@@ -43,6 +50,9 @@ for line in sys.stdin:
             send({"jsonrpc": "2.0", "id": rid, "result": {"stopReason": "end_turn"}})
         else:
             hung = rid
+    elif method == "session/set_config_option":
+        model = msg["params"].get("value")
+        send({"jsonrpc": "2.0", "id": rid, "result": {"configOptions": []}})
     elif method == "session/cancel":
         if hung is not None:
             send({"jsonrpc": "2.0", "id": hung, "result": {"stopReason": "cancelled"}})
@@ -506,6 +516,7 @@ async fn the_listing_names_the_registry_agent_and_its_allowance() {
             agent_id: "mock-sub".to_string(),
             name: "Mock Sub".to_string(),
             allowed: true,
+            default_model: None,
         }]
     );
     let mut disallowed = OrchestratorSettings::default();
@@ -819,6 +830,7 @@ async fn an_installed_agent_the_registry_knows_is_listed_once() {
             agent_id: "acp-registry:cursor".to_string(),
             name: "Cursor".to_string(),
             allowed: true,
+            default_model: None,
         }]
     );
 }
@@ -832,6 +844,7 @@ async fn an_installed_agent_the_registry_lacks_is_listed_under_its_config_id() {
             agent_id: "acp-registry:opencode".to_string(),
             name: "opencode".to_string(),
             allowed: true,
+            default_model: None,
         }]
     );
     let config = engine
@@ -864,4 +877,47 @@ async fn a_bare_installed_id_starts_under_its_config_id() {
             "acp-registry:cursor".to_string()
         ))
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_start_without_a_model_asks_for_the_agents_default_model() {
+    let Some(test) = engine_test("report-model") else {
+        return;
+    };
+    let _serial = crate::acp::manager::real_loop_tests::TIMEOUT_TEST_LOCK
+        .lock()
+        .await;
+    let engine = test.engine.clone();
+    let caller = test.caller.clone();
+    let mut settings = OrchestratorSettings::default();
+    settings
+        .models
+        .insert("mock-sub".to_string(), "fast".to_string());
+    engine.set_settings(settings).expect("settings");
+    assert_eq!(
+        engine.list_agents()[0].default_model.as_deref(),
+        Some("fast")
+    );
+
+    let defaulted = engine
+        .start(caller.clone(), request("report-model"))
+        .await
+        .expect("run starts");
+    let settled = wait_settled(&engine, &caller, &defaulted.run).await;
+    assert_eq!(settled.result.as_deref(), Some("model=fast"));
+    assert_eq!(
+        engine.ledger.lock().runs[&defaulted.run].model.as_deref(),
+        Some("fast")
+    );
+
+    let explicit = StartRequest {
+        model: Some("deep".to_string()),
+        ..request("report-model")
+    };
+    let picked = engine
+        .start(caller.clone(), explicit)
+        .await
+        .expect("run starts");
+    let settled = wait_settled(&engine, &caller, &picked.run).await;
+    assert_eq!(settled.result.as_deref(), Some("model=deep"));
 }

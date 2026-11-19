@@ -60,13 +60,15 @@ impl OrchestratorEngine {
     }
 
     /// The launchable agents: the known-agents registry merged with the
-    /// installed overlay, one entry per config id, `allowed` from the
-    /// settings. Command, args and env never leave the host.
+    /// installed overlay, one entry per config id, `allowed` and
+    /// `default_model` from the settings. Command, args and env never leave
+    /// the host.
     pub fn list_agents(&self) -> Vec<AgentListing> {
         let settings = self.settings.get();
         self.registry.reload();
         let listing = |agent_id: String, name: String| AgentListing {
             allowed: settings.agents.get(&agent_id).copied().unwrap_or(true),
+            default_model: settings.models.get(&agent_id).cloned(),
             agent_id,
             name,
         };
@@ -223,12 +225,17 @@ impl OrchestratorEngine {
             });
         }
         let config = self.resolve_agent(&agent)?;
+        let model = req
+            .model
+            .clone()
+            .or_else(|| settings.models.get(&agent).cloned());
         Ok(StartChecks {
             root,
             parent_run,
             parent_agent,
             depth,
             config,
+            model,
             settings,
         })
     }
@@ -340,6 +347,7 @@ impl OrchestratorEngine {
             parent_agent,
             depth,
             config,
+            model,
             ..
         } = checks;
         let agent_name = config.name.clone();
@@ -438,7 +446,7 @@ impl OrchestratorEngine {
             },
             title: req.title.clone().unwrap_or_else(|| agent_name.clone()),
             task: req.task.clone(),
-            model: req.model.clone(),
+            model: model.clone(),
             created_ms: now_millis(),
             workspace,
             base_commit,
@@ -497,7 +505,7 @@ impl OrchestratorEngine {
         }
         // Best-effort model switch: a refused switch keeps the agent's own
         // model, and the record then names none.
-        let mut model = req.model.clone();
+        let mut model = model;
         if let Some(requested) = model.clone() {
             if let Err(error) = self
                 .manager
@@ -722,6 +730,8 @@ struct StartChecks {
     parent_agent: AgentId,
     depth: u8,
     config: AgentConfig,
+    /// The start's model, else the settings' default for the agent.
+    model: Option<String>,
     settings: OrchestratorSettings,
 }
 

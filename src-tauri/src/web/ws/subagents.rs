@@ -49,7 +49,7 @@ pub(super) async fn handle_stop_subagent(
 }
 
 /// The orchestrator's settings view: the gates plus every launchable agent
-/// with its allow switch.
+/// with its allow switch and default model.
 fn settings_view(engine: &crate::acp::orchestrator::OrchestratorEngine) -> Value {
     let settings = engine.settings_view();
     let agents: Vec<Value> = engine
@@ -60,6 +60,7 @@ fn settings_view(engine: &crate::acp::orchestrator::OrchestratorEngine) -> Value
                 "agentId": agent.agent_id,
                 "name": agent.name,
                 "allowed": agent.allowed,
+                "model": agent.default_model,
             })
         })
         .collect();
@@ -95,6 +96,14 @@ pub(super) struct AgentAllowPayload {
     allowed: bool,
 }
 
+/// One default model of a `subagent_settings_set` call; `null` clears it.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct AgentModelPayload {
+    agent_id: String,
+    model: Option<String>,
+}
+
 /// `subagent_settings_set`: a partial of the view; an omitted field keeps
 /// its value.
 #[derive(Debug, Deserialize)]
@@ -108,6 +117,8 @@ pub(super) struct SubagentSettingsPayload {
     max_depth: Option<u8>,
     #[serde(default)]
     agents: Option<Vec<AgentAllowPayload>>,
+    #[serde(default)]
+    models: Option<Vec<AgentModelPayload>>,
 }
 
 /// Apply the payload's fields over `settings`.
@@ -126,6 +137,12 @@ fn merge_settings(
     }
     for agent in patch.agents.unwrap_or_default() {
         settings.agents.insert(agent.agent_id, agent.allowed);
+    }
+    for agent in patch.models.unwrap_or_default() {
+        match agent.model {
+            Some(model) => settings.models.insert(agent.agent_id, model),
+            None => settings.models.remove(&agent.agent_id),
+        };
     }
 }
 
