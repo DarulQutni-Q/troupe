@@ -11,7 +11,7 @@ import { useCodexResumeStore } from './use-codex-limit'
 const { api, switcher, openApp, admits } = vi.hoisted(() => ({
   admits: { value: true },
   openApp: vi.fn(),
-  api: { list: vi.fn(), usage: vi.fn() },
+  api: { list: vi.fn(), usage: vi.fn(), setResume: vi.fn() },
   switcher: { switchProjectCodexAccount: vi.fn(), switchChatCodexAccount: vi.fn() }
 }))
 
@@ -91,6 +91,7 @@ beforeEach(() => {
   })
   switcher.switchProjectCodexAccount.mockResolvedValue(true)
   switcher.switchChatCodexAccount.mockResolvedValue('restarted')
+  api.setResume.mockResolvedValue(undefined)
 })
 
 describe('CodexLimitWarning', () => {
@@ -161,6 +162,34 @@ describe('CodexLimitNotice', () => {
     expect(await screen.findByRole('button', { name: 'Cancel' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Switch to Work and continue' })).toBeInTheDocument()
     useCodexResumeStore.getState().cancel('s1')
+  })
+
+  it('offers the project account when this chat is pinned to another one', async () => {
+    api.list.mockResolvedValue({
+      accounts: [
+        { id: 'default', name: 'Personal', builtin: true, signedIn: true },
+        { id: 'ab12', name: 'Work', builtin: false, signedIn: true },
+        { id: 'cd34', name: 'Side', builtin: false, signedIn: true }
+      ],
+      defaultAccountId: 'default',
+      projectAccounts: { office: 'ab12' },
+      chatAccounts: { s1: 'default' },
+      autoSwitch: true
+    })
+    api.usage.mockResolvedValue([read('default', 100), read('ab12', 4), read('cd34', 100)])
+    render(<CodexLimitNotice sessionId="s1" />)
+    expect(
+      await screen.findByRole('button', { name: 'Switch to Work and continue' })
+    ).toBeInTheDocument()
+  })
+
+  it('tells the host to drop a scheduled continue before switching', async () => {
+    api.usage.mockResolvedValue([read('default', 100), read('ab12', 4), read('cd34', 40)])
+    useCodexResumeStore.getState().schedule('s1', Date.now() + 60_000)
+    render(<CodexLimitNotice sessionId="s1" />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Switch to Work and continue' }))
+    await vi.waitFor(() => expect(api.setResume).toHaveBeenCalledWith('s1', null))
+    expect(switcher.switchChatCodexAccount).toHaveBeenCalled()
   })
 
   it('offers wait for reset and Add account when no other account has room', async () => {

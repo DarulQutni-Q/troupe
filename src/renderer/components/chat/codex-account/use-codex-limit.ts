@@ -190,6 +190,8 @@ export function useCodexLimit(sessionId: string): CodexLimit | null {
     if (useCodexSwitchingStore.getState()[sessionId]) return
     setSwitchingTo(sessionId, target.account.name)
     cancelResume(sessionId)
+    // The clock clears locally. The host still continues at the reset unless told.
+    void codexAccountsApi.setResume(sessionId, null).catch(() => undefined)
     try {
       const moved = await switchChatCodexAccount(
         {

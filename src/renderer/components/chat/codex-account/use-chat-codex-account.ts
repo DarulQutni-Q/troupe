@@ -6,6 +6,7 @@ import {
   codexAccountFor,
   ownChatAccountId,
   type ProjectCodexAccount,
+  rankCodexAlternatives,
   useProjectCodexAccount
 } from './use-project-codex-account'
 
@@ -35,6 +36,9 @@ export function useChatCodexAccount(sessionId: string): ChatCodexAccount | null 
     sessionId,
     current: { account: current, usage, window: primaryCodexWindow(usage) },
     ownAccount: ownChatAccountId(snapshot, sessionId) !== null,
-    projectAccount
+    projectAccount,
+    // The project list is ranked against the project's account. A chat on its
+    // own account must see that project's account when it still has room.
+    alternatives: rankCodexAlternatives(snapshot, project.accounts.usage, current.id)
   }
 }
