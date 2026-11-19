@@ -95,9 +95,10 @@ export function attentionOutsideRows(
 }
 
 /**
- * Opens a needs-you chat the list does not show. Same path as
- * `useProjectRail`: the active project gets a tab; another project focuses
- * the chat, then opens.
+ * Opens a needs-you chat the list does not show. The active project gets a
+ * tab. Another project retains the session, then focuses it, then opens:
+ * chat restore only shows a focused session that is in the retained set
+ * (`open-agent-chat.ts`).
  */
 function openOutsideNeedsYou(
   projectId: string,
@@ -111,7 +112,9 @@ function openOutsideNeedsYou(
     useWorkspaceStore.getState().addAgentChatTab(sessionId)
     return
   }
-  useAgentChatLifetimeStore.getState().requestFocus(projectId, sessionId)
+  const lifetime = useAgentChatLifetimeStore.getState()
+  lifetime.retainProjectChats(projectId, [sessionId])
+  lifetime.requestFocus(projectId, sessionId)
   openProject()
 }
 

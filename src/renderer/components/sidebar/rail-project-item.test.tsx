@@ -32,6 +32,7 @@ const project = {
 
 const mocks = vi.hoisted(() => ({
   addAgentChatTab: vi.fn(),
+  retainProjectChats: vi.fn(),
   requestFocus: vi.fn(),
   logFrontendError: vi.fn()
 }))
@@ -90,7 +91,10 @@ beforeEach(() => {
     addAgentChatTab: mocks.addAgentChatTab,
     root: { type: 'leaf', id: 'pane-1', tabs: [], activeTabId: null }
   } as never)
-  useAgentChatLifetimeStore.setState({ requestFocus: mocks.requestFocus })
+  useAgentChatLifetimeStore.setState({
+    retainProjectChats: mocks.retainProjectChats,
+    requestFocus: mocks.requestFocus
+  })
   seedChatActivity({
     here: { needsYou: true, projectId: 'p1' },
     there: { needsYou: true, projectId: 'p1' }
@@ -145,7 +149,11 @@ describe('RailProjectItem needs-you outside the picked worktree', () => {
     useShellLayoutStore.getState().setWorktreePick('p1', WT)
     const { onClick, onOpenNeedsYou } = renderRow({ isActive: false })
     fireEvent.click(screen.getByRole('button', { name: '1 needs you' }))
+    expect(mocks.retainProjectChats).toHaveBeenCalledWith('p1', ['there'])
     expect(mocks.requestFocus).toHaveBeenCalledWith('p1', 'there')
+    expect(mocks.retainProjectChats.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.requestFocus.mock.invocationCallOrder[0]
+    )
     expect(onClick).toHaveBeenCalledTimes(1)
     expect(mocks.addAgentChatTab).not.toHaveBeenCalled()
     expect(onOpenNeedsYou).not.toHaveBeenCalled()
