@@ -854,6 +854,60 @@ async fn an_installed_agent_the_registry_lacks_is_listed_under_its_config_id() {
     assert_eq!(config.command, "/opt/opencode/bin/opencode");
 }
 
+/// Before the listing keyed installed agents by config id, an agent the
+/// registry lacked had one row under its bare id, so its switch saved the
+/// bare key. That block still holds.
+#[tokio::test]
+async fn a_block_saved_under_an_installed_agents_bare_id_still_holds() {
+    let (engine, _data) = engine_with_installed(&[], &["opencode"]).await;
+    let mut blocked = OrchestratorSettings::default();
+    blocked.agents.insert("opencode".to_string(), false);
+    engine.set_settings(blocked).expect("settings");
+    assert_eq!(
+        engine.list_agents(),
+        vec![crate::acp::orchestrator::AgentListing {
+            agent_id: "acp-registry:opencode".to_string(),
+            name: "opencode".to_string(),
+            allowed: false,
+            default_model: None,
+        }]
+    );
+    let caller = crate::acp::orchestrator::CallerRef {
+        agent: AgentId("agent-parent".to_string()),
+        session: SessionId(CHAT.to_string()),
+    };
+    let start = StartRequest {
+        agent: "acp-registry:opencode".to_string(),
+        ..request("finish")
+    };
+    assert_eq!(
+        engine.start(caller, start).await,
+        Err(crate::acp::orchestrator::StartError::AgentNotAllowed(
+            "acp-registry:opencode".to_string()
+        ))
+    );
+}
+
+/// An agent the registry knows had its own row next to the bare duplicate,
+/// so a block saved on the duplicate never applied to it.
+#[tokio::test]
+async fn a_bare_block_does_not_apply_to_an_agent_the_registry_knows() {
+    let (engine, _data) =
+        engine_with_installed(&[registry_agent("cursor", "Cursor")], &["cursor"]).await;
+    let mut blocked = OrchestratorSettings::default();
+    blocked.agents.insert("cursor".to_string(), false);
+    engine.set_settings(blocked).expect("settings");
+    assert_eq!(
+        engine.list_agents(),
+        vec![crate::acp::orchestrator::AgentListing {
+            agent_id: "acp-registry:cursor".to_string(),
+            name: "Cursor".to_string(),
+            allowed: true,
+            default_model: None,
+        }]
+    );
+}
+
 #[tokio::test]
 async fn a_bare_installed_id_starts_under_its_config_id() {
     let (engine, _data) =

@@ -134,3 +134,20 @@ async fn a_default_model_set_over_the_wire_reads_back_in_the_view() {
         .unwrap_err();
     assert_eq!(error, "a default model must be 1 to 512 characters");
 }
+
+#[tokio::test]
+async fn a_padded_agent_key_updates_and_clears_the_saved_default_model() {
+    let data = tempfile::tempdir().unwrap();
+    let engine = codex_engine(data.path());
+    let set = |payload: Value| {
+        engine.update_settings(|settings| merge_settings(settings, settings_patch(payload)))
+    };
+
+    set(json!({ "models": [{ "agentId": "acp-registry:codex-acp", "model": "fast" }] })).unwrap();
+    set(json!({ "models": [{ "agentId": " acp-registry:codex-acp ", "model": "deep" }] }))
+        .unwrap();
+    assert_eq!(settings_view(&engine)["agents"][0]["model"], json!("deep"));
+
+    set(json!({ "models": [{ "agentId": " acp-registry:codex-acp ", "model": null }] })).unwrap();
+    assert_eq!(settings_view(&engine)["agents"][0]["model"], Value::Null);
+}
