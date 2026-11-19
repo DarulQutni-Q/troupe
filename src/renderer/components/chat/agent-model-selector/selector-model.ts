@@ -252,6 +252,15 @@ export interface AgentTab {
   entry: SupportedAcpAgentEntry | null
 }
 
+/**
+ * The id a tab click should show. When the tab is the chat's agent, keep the
+ * chat's saved id so the panel does not treat the canonical id as a switch.
+ */
+export function agentTabViewId(tab: AgentTab, currentConfigId: string | null): string {
+  if (currentConfigId && agentTabSelected(tab, currentConfigId)) return currentConfigId
+  return tab.configId
+}
+
 /** True when this tab is the agent named by `configId`, including a legacy alias. */
 export function agentTabSelected(tab: AgentTab, configId: string | null): boolean {
   if (!configId) return false

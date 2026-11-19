@@ -5,6 +5,7 @@ import type { SupportedAcpAgentEntry } from '@/lib/agents/supported-acp-agents'
 import {
   type AgentTab,
   agentInRowName,
+  agentTabViewId,
   agentTrackCapacity,
   buildAgentTabs,
   capabilitySummary,
@@ -86,6 +87,18 @@ describe('stableAgentTabs OpenCode alias', () => {
     expect(opencodeTabs[0]?.name).toBe('OpenCode')
     expect(opencodeTabs[0]?.entry?.id).toBe('opencode')
     expect(tabs.some((tab) => tab.entry?.id === 'gemini')).toBe(true)
+  })
+
+  it('keeps the chat id when the selected OpenCode tab is the same agent', () => {
+    const saved = config('acp-registry:opencode', 'OpenCode')
+    const tab: AgentTab = {
+      configId: saved.id,
+      name: 'OpenCode',
+      config: saved,
+      entry: entry(saved, 'opencode')
+    }
+    expect(agentTabViewId(tab, 'acp-registry:opencode-v2')).toBe('acp-registry:opencode-v2')
+    expect(agentTabViewId(tab, 'acp-registry:gemini')).toBe('acp-registry:opencode')
   })
 })
 
