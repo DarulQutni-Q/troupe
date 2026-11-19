@@ -10,14 +10,14 @@ use std::time::{Duration, SystemTime};
 use serde_json::Value;
 
 use super::supervisor::Supervisor as CodexSupervisor;
-use super::{CodexLimitHandle, CODEX_CONFIG_ID};
+use super::{CODEX_CONFIG_ID, CodexLimitHandle};
 use crate::acp::claude_agent::{ClaudeAgentService, SignInCheck};
 use crate::acp::claude_limit::supervisor::Supervisor as ClaudeSupervisor;
-use crate::acp::claude_limit::{ClaudeLimitHandle, CLAUDE_CONFIG_ID};
+use crate::acp::claude_limit::{CLAUDE_CONFIG_ID, ClaudeLimitHandle};
 use crate::acp::codex_agent::{CodexAgentService, CodexSignInCheck};
 use crate::acp::config::{AgentConfig, AgentId, SessionId};
-use crate::acp::manager::real_loop_tests::{find_python, MOCK_AGENT, SKIP_ENV, TIMEOUT_TEST_LOCK};
 use crate::acp::manager::SessionCreationContext;
+use crate::acp::manager::real_loop_tests::{MOCK_AGENT, SKIP_ENV, TIMEOUT_TEST_LOCK, find_python};
 use crate::acp::session_persistence::SessionPersistence;
 use crate::acp::{AcpManager, SpawnScope};
 use crate::web::WsRelaySink;
@@ -220,8 +220,21 @@ fn mock_env() -> HashMap<String, String> {
 fn which(cmd: &str) -> Option<PathBuf> {
     std::env::var_os("PATH").and_then(|path| {
         std::env::split_paths(&path).find_map(|dir| {
-            let candidate = dir.join(cmd);
-            candidate.is_file().then_some(candidate)
+            let named = if cfg!(windows) {
+                dir.join(format!("{cmd}.exe"))
+            } else {
+                dir.join(cmd)
+            };
+            if named.is_file() {
+                return Some(named);
+            }
+            if cfg!(windows) {
+                let plain = dir.join(cmd);
+                if plain.is_file() {
+                    return Some(plain);
+                }
+            }
+            None
         })
     })
 }
@@ -315,9 +328,19 @@ async fn a_codex_stop_keeps_a_claude_recipe_and_the_chat_resumes() {
         .expect("the recipe is still on the host");
     let records = host
         .log_until(&claude_chat, |records| {
-            actions(records, "claude_limit_action")
-                .iter()
-                .any(|action| action["action"] == "resumed" || action["action"] == "failed")
+            let actions = actions(records, "claude_limit_action");
+            if actions.iter().any(|action| action["action"] == "failed") {
+                return true;
+            }
+            let resumed = actions.iter().any(|action| action["action"] == "resumed");
+            let answered = records.iter().any(|(kind, payload)| {
+                kind == "message_chunk"
+                    && payload
+                        .pointer("/content/text")
+                        .and_then(|text| text.as_str())
+                        .is_some_and(|text| text.starts_with("config_dir="))
+            });
+            resumed && answered
         })
         .await;
     let done = actions(&records, "claude_limit_action");
@@ -365,9 +388,19 @@ async fn a_claude_stop_keeps_a_codex_recipe_and_the_chat_resumes() {
         .expect("the recipe is still on the host");
     let records = host
         .log_until(&codex_chat, |records| {
-            actions(records, "codex_limit_action")
-                .iter()
-                .any(|action| action["action"] == "resumed" || action["action"] == "failed")
+            let actions = actions(records, "codex_limit_action");
+            if actions.iter().any(|action| action["action"] == "failed") {
+                return true;
+            }
+            let resumed = actions.iter().any(|action| action["action"] == "resumed");
+            let answered = records.iter().any(|(kind, payload)| {
+                kind == "message_chunk"
+                    && payload
+                        .pointer("/content/text")
+                        .and_then(|text| text.as_str())
+                        .is_some_and(|text| text.starts_with("codex_home="))
+            });
+            resumed && answered
         })
         .await;
     let done = actions(&records, "codex_limit_action");
@@ -375,6 +408,16 @@ async fn a_claude_stop_keeps_a_codex_recipe_and_the_chat_resumes() {
         done.last().map(|action| action["action"].as_str()),
         Some(Some("resumed")),
         "resume after a claude stop: {done:?}"
+    );
+    assert!(
+        records.iter().any(|(kind, payload)| {
+            kind == "message_chunk"
+                && payload
+                    .pointer("/content/text")
+                    .and_then(|text| text.as_str())
+                    .is_some_and(|text| text.starts_with("codex_home="))
+        }),
+        "the resumed chat did not answer"
     );
     let _ = host.acp.kill(&host.acp.list_agents()[0]).await;
 }

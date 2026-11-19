@@ -573,6 +573,14 @@ impl CodexAccountStore {
         let Some(dir) = self.account_dir(&id) else {
             return builtin_resolution(BUILTIN_ACCOUNT_NAME);
         };
+        // Same repair as `resolve`: a new chat that names an account still
+        // needs the shared links, and this already holds the store lock.
+        if let Err(error) = links::ensure_links(&self.shared_dir, &dir) {
+            log::warn!(
+                "[codex-accounts] could not repair shared links: {:?}",
+                error.kind()
+            );
+        }
         AccountResolution {
             account_id: id,
             account_name: name,

@@ -9,7 +9,7 @@ use std::time::SystemTime;
 use agent_client_protocol::schema::v1::{ContentBlock, TextContent};
 
 use crate::acp::config::{AgentId, SessionId};
-use crate::acp::manager::HostMove;
+use crate::acp::manager::{HostMove, LaunchRecipe};
 use crate::acp::{AcpManager, LaunchChat, SpawnScope};
 use crate::logging::redact_session_id;
 use crate::web::prompt_turn::{
@@ -143,7 +143,9 @@ pub(crate) async fn relaunch(
             },
         )
         .await?;
-    reopen(acp, moving, &spawned.agent_id, session_id, label).await?;
+    // `release` stops the old agent. The other supervisor may then forget the
+    // stored recipe. Reopen from the copy taken before that stop.
+    reopen(acp, moving, &spawned.agent_id, session_id, &recipe, label).await?;
     Ok(Relaunch::Done(spawned.agent_id))
 }
 
@@ -201,11 +203,9 @@ async fn reopen(
     moving: &HostMove,
     agent_id: &AgentId,
     session_id: &SessionId,
+    recipe: &LaunchRecipe,
     label: &str,
 ) -> Result<(), String> {
-    let recipe = acp
-        .launch_recipe(session_id)
-        .ok_or_else(|| "the host has no launch recipe for this chat".to_string())?;
     let resumed = acp
         .resume_session_in_move(
             moving,
@@ -228,9 +228,9 @@ async fn reopen(
         moving,
         agent_id,
         session_id.clone(),
-        recipe.cwd,
-        recipe.additional_directories,
-        recipe.mcp_servers,
+        recipe.cwd.clone(),
+        recipe.additional_directories.clone(),
+        recipe.mcp_servers.clone(),
     )
     .await
     .map(|_| ())

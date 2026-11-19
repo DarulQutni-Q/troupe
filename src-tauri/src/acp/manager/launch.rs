@@ -99,7 +99,8 @@ impl AcpManager {
     /// opened the chat.
     pub fn forget_recipes_without_agent(&self) {
         let agents = self.agents.lock();
-        let held = self.kept_recipes.lock().clone();
+        // Held for the whole prune, so a hold registered now is visible.
+        let held = self.kept_recipes.lock();
         let mut recipes = self.recipes.lock();
         let before = recipes.len();
         recipes.retain(|session_id, recipe| {

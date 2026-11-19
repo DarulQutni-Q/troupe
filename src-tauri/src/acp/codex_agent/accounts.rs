@@ -195,6 +195,19 @@ impl CodexAgentService {
                         .to_string();
                     self.ensure_signed_in(store, &project_account, Choice::FollowProject)
                         .await?;
+                    let current = store
+                        .snapshot()?
+                        .account_for(Some(project_id), None)
+                        .to_string();
+                    if current != project_account {
+                        log::info!(
+                            "[codex-accounts] chat profile unchanged: the project account changed during the sign-in check"
+                        );
+                        return Err(
+                            "The project's Codex account changed while its sign-in was checked. Choose it again."
+                                .to_string(),
+                        );
+                    }
                 }
             }
         }
