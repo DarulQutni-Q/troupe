@@ -1,10 +1,14 @@
 import { useCallback, useRef, useState } from 'react'
-import { ChatEntryIcon } from '@/components/chat/ChatHistoryEntryRow'
 import { ChatDeleteConfirmDialog } from '@/components/chat/ChatHistoryTab'
 import { ProjectIcon } from '@/components/ProjectIcon'
-import { ChatRowTrail, type ProjectChatEntry } from '@/components/sidebar/project-chat-row'
+import {
+  CHAT_LIVE_STATE_WORD,
+  ChatRowTrail,
+  type ProjectChatEntry
+} from '@/components/sidebar/project-chat-row'
 import { usePaneDnd } from '@/hooks/use-pane-dnd'
 import { isContextMenuKey, openContextMenuFrom } from '@/lib/context-menu-key'
+import { formatRailRelativeTime } from '@/lib/relative-time'
 import { cn } from '@/lib/utils'
 import { useProjectChatsHidden } from '@/stores/shell-layout-store'
 import type { Project } from '@/types/project'
@@ -19,6 +23,7 @@ import { logRailEvent } from '../shell-log'
 import { useChatCardActions } from '../use-chat-card-actions'
 import { type ChatRowMenuActions, useChatRowMenuActions } from '../use-chat-row-menu-actions'
 import { isOpenChatCard, useChatLiveState, useProjectChats } from '../use-project-chats'
+import { RailChatAgents, stackAgentIds } from './rail-agent-stack'
 import { RailChatMenu } from './rail-chat-menu'
 import {
   RailChatGroup,
@@ -30,6 +35,7 @@ import {
   RailChatRowMore,
   RailChatStatusDot,
   RailChatTitle,
+  RailChatTooltip,
   RailChatTrailSlot,
   RailShowMore
 } from './rail-chats'
@@ -40,8 +46,7 @@ import {
   RailHoverPanelProjectRow,
   RailHoverPanelTrigger
 } from './rail-hover-panel'
-import { RAIL_BLOCK_FADE_CLASS } from './rail-motion'
-import { RAIL_WORKTREE_CHIP_HEIGHT, RailWorktreeChip, usePickedWorktree } from './worktree-switcher'
+import { RailWorktreeBranch } from './worktree-switcher'
 
 /**
  * The chat peek opens 4px above the project row that sits on top of the
@@ -91,8 +96,12 @@ function RailProjectChatRow({
 }: RailProjectChatRowProps): React.JSX.Element {
   const { entry } = card
   const collapsed = useRailCollapsed()
-  const { liveState, statusWord } = useChatLiveState(entry.id)
+  const { liveState } = useChatLiveState(entry.id)
+  const statusWord = CHAT_LIVE_STATE_WORD[liveState]
   const dragEndedAt = useRef<number | null>(null)
+  const time = formatRailRelativeTime(entry.lastActivityAt)
+  const ago = time === 'now' || !time ? time : `${time} ago`
+  const agentCount = stackAgentIds(entry.agents).length
   return (
     <RailChatMenu
       entry={entry}
@@ -101,63 +110,74 @@ function RailProjectChatRow({
       onOpenChange={onMenuOpenChange}
     >
       <RailChatRowFrame>
-        <RailChatRow
-          open={open}
-          dragging={dragging}
-          draggable={canDrag}
-          onDragStart={
-            canDrag
-              ? (event) => {
-                  dragEndedAt.current = null
-                  onDragChat(entry, event)
-                }
-              : undefined
-          }
-          onDragEnd={
-            canDrag
-              ? () => {
-                  dragEndedAt.current = performance.now()
-                  onDragChatEnd()
-                }
-              : undefined
-          }
-          onClick={() => {
-            const endedAt = dragEndedAt.current
-            dragEndedAt.current = null
-            if (endedAt !== null && performance.now() - endedAt < CLICK_AFTER_DRAG_MS) return
-            onOpenChat(entry)
-          }}
-          onKeyDown={(event) => {
-            // WebKit sends no contextmenu event for Shift+F10.
-            if (!isContextMenuKey(event)) return
-            event.preventDefault()
-            openContextMenuFrom(event.currentTarget)
-          }}
-          title={
-            collapsed ? undefined : [entry.title, entry.startedByLabel].filter(Boolean).join('\n')
-          }
-          aria-label={[entry.title, entry.startedByLabel, statusWord].filter(Boolean).join(', ')}
-          {...props}
+        <RailChatTooltip
+          title={entry.title}
+          state={liveState}
+          detail={[entry.startedByLabel, ago].filter(Boolean).join(' · ')}
         >
-          <RailChatIcon>
-            <ChatEntryIcon
-              agentId={entry.agentId}
-              agentConfigId={entry.agentConfigId}
-              agents={entry.agents}
-            />
-            {collapsed && <RailChatStatusDot state={liveState} />}
-          </RailChatIcon>
-          <RailChatTitle>{entry.title}</RailChatTitle>
-          {!collapsed && (
-            <RailChatTrailSlot>
-              <ChatRowTrail
-                liveState={liveState}
-                lastActivityAt={entry.lastActivityAt}
-                closed={entry.status === 'closed'}
+          <RailChatRow
+            open={open}
+            nested
+            dragging={dragging}
+            draggable={canDrag}
+            onDragStart={
+              canDrag
+                ? (event) => {
+                    dragEndedAt.current = null
+                    onDragChat(entry, event)
+                  }
+                : undefined
+            }
+            onDragEnd={
+              canDrag
+                ? () => {
+                    dragEndedAt.current = performance.now()
+                    onDragChatEnd()
+                  }
+                : undefined
+            }
+            onClick={() => {
+              const endedAt = dragEndedAt.current
+              dragEndedAt.current = null
+              if (endedAt !== null && performance.now() - endedAt < CLICK_AFTER_DRAG_MS) return
+              onOpenChat(entry)
+            }}
+            onKeyDown={(event) => {
+              // WebKit sends no contextmenu event for Shift+F10.
+              if (!isContextMenuKey(event)) return
+              event.preventDefault()
+              openContextMenuFrom(event.currentTarget)
+            }}
+            aria-label={[
+              entry.title,
+              agentCount >= 2 ? `${agentCount} agents` : null,
+              entry.startedByLabel,
+              statusWord
+            ]
+              .filter(Boolean)
+              .join(', ')}
+            {...props}
+          >
+            <RailChatIcon>
+              <RailChatAgents
+                agentId={entry.agentId}
+                agentConfigId={entry.agentConfigId}
+                agents={entry.agents}
               />
-            </RailChatTrailSlot>
-          )}
-        </RailChatRow>
+              {collapsed && <RailChatStatusDot state={liveState} />}
+            </RailChatIcon>
+            <RailChatTitle>{entry.title}</RailChatTitle>
+            {!collapsed && (
+              <RailChatTrailSlot>
+                <ChatRowTrail
+                  variant="rail"
+                  liveState={liveState}
+                  lastActivityAt={entry.lastActivityAt}
+                />
+              </RailChatTrailSlot>
+            )}
+          </RailChatRow>
+        </RailChatTooltip>
         <RailChatRowMore
           aria-label={`More actions for ${entry.title}`}
           onClick={(event) => openContextMenuFrom(event.currentTarget)}
@@ -305,8 +325,6 @@ export function RailProjectChats({
     [startChatDrag, peek, collapsed, closePeekAfterDragStart, onChatDragStart]
   )
   const endDragChat = useCallback(() => onChatDragEnd?.(), [onChatDragEnd])
-  // The peek repeats the worktree chip, so it moves up by the chip line too.
-  const chipOffset = usePickedWorktree(project) ? RAIL_WORKTREE_CHIP_HEIGHT : 0
 
   // The confirm outlives the row (a deleted chat's row goes away).
   const deleteConfirm = peek ? null : (
@@ -332,15 +350,15 @@ export function RailProjectChats({
   const group = (
     <RailChatGroup
       ref={groupRef}
+      expandedKey={peek ? undefined : project.id}
       id={peek ? undefined : railChatsListId(project.id)}
       total={cards.length}
       pinnedIndex={openIndex === -1 ? undefined : openIndex}
       data-testid={peek ? 'rail-chat-peek-chats' : 'rail-project-chats'}
       // Marks the open project's list (every project lists its chats).
       data-open-project={(isOpenProject && !peek) || undefined}
-      // The chat icons sit right of the icon column, so the list fades out
-      // as one block and fades back in on the other density.
-      className={peek ? undefined : RAIL_BLOCK_FADE_CLASS}
+      // No block fade: each row and its icon travel to the collapsed square
+      // with the width (`RailChatRow` `nested`); only titles and trails fade.
     >
       <RailChatList aria-label={`Chats in ${project.name}`}>
         {cards.map((card, index) => {
@@ -374,7 +392,7 @@ export function RailProjectChats({
           )
         })}
       </RailChatList>
-      <RailShowMore />
+      <RailShowMore nested />
     </RailChatGroup>
   )
   if (!collapsed) {
@@ -391,7 +409,7 @@ export function RailProjectChats({
       <RailHoverPanel open={peekOpen || chatMenuOpen} onOpenChange={setPeekOpen}>
         <RailHoverPanelTrigger asChild>{group}</RailHoverPanelTrigger>
         <RailHoverPanelContent
-          alignOffset={PEEK_ALIGN_OFFSET - chipOffset}
+          alignOffset={PEEK_ALIGN_OFFSET}
           forceMount={peekDragging || undefined}
           className="data-[state=closed]:invisible"
           data-testid="rail-chat-peek"
@@ -400,8 +418,9 @@ export function RailProjectChats({
             <RailHoverPanelProjectRow
               icon={<ProjectIcon project={project} size={16} />}
               name={project.name}
-            />
-            <RailWorktreeChip project={project} collapsed={false} />
+            >
+              <RailWorktreeBranch project={project} interactive={false} />
+            </RailHoverPanelProjectRow>
             <RailProjectChats
               project={project}
               isOpenProject={isOpenProject}

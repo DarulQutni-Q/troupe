@@ -10,7 +10,8 @@ import {
   RailChatRow,
   RailChatStatusDot,
   RailChatTitle,
-  RailShowMore
+  RailShowMore,
+  useRailChatListExpanded
 } from './rail-chats'
 import { RailDensityProvider } from './rail-density'
 import { RailNav, RailNavRow } from './rail-nav'
@@ -113,6 +114,30 @@ function ChatGroup({
   )
 }
 
+describe('Rail chat list expanded state', () => {
+  function Flag(): React.JSX.Element {
+    const open = useRailChatListExpanded('p1')
+    return <span data-testid="list-open">{open ? 'yes' : 'no'}</span>
+  }
+
+  it('publishes Show more for the project row and clears it on unmount', () => {
+    const view = render(
+      <>
+        <Flag />
+        <RailChatGroup total={6} expandedKey="p1">
+          <RailShowMore />
+        </RailChatGroup>
+      </>
+    )
+    expect(screen.getByTestId('list-open')).toHaveTextContent('no')
+    fireEvent.click(screen.getByRole('button', { name: 'Show 1 more' }))
+    expect(screen.getByTestId('list-open')).toHaveTextContent('yes')
+    view.unmount()
+    render(<Flag />)
+    expect(screen.getByTestId('list-open')).toHaveTextContent('no')
+  })
+})
+
 describe('RailChatGroup parts', () => {
   const rows = () =>
     within(screen.getByRole('list', { name: 'Chats in Alpha' })).getAllByRole('button')
@@ -121,9 +146,31 @@ describe('RailChatGroup parts', () => {
     render(<ChatGroup total={2} />)
     expect(screen.getAllByRole('listitem')).toHaveLength(2)
     const [first] = rows()
-    expect(first).toHaveClass('h-7.5', 'pl-8.75', 'pr-3', 'gap-2.25')
+    expect(first).toHaveClass('h-7.5', 'pl-3', 'pr-4', 'gap-2')
     expect(within(first).getByText('Chat 0')).toHaveClass('fade-end', 'text-secondary-foreground')
     expect(within(first).getByTestId('trail-0')).toBeInTheDocument()
+  })
+
+  it('insets a nested (project) chat row 22px, keeping its content on the title column', () => {
+    render(
+      <RailChatGroup total={6}>
+        <RailChatList aria-label="Chats in Beta">
+          <RailChatItem index={0}>
+            <RailChatRow nested>
+              <RailChatTitle>Nested chat</RailChatTitle>
+            </RailChatRow>
+          </RailChatItem>
+        </RailChatList>
+        <RailShowMore nested />
+      </RailChatGroup>
+    )
+    const row = screen.getByRole('button', { name: 'Nested chat' })
+    expect(row).toHaveClass('ml-[22px]', 'w-[calc(100%-22px)]', 'pl-3', 'pr-4')
+    expect(row).not.toHaveClass('w-full')
+    expect(screen.getByRole('button', { name: 'Show 1 more' })).toHaveClass(
+      'ml-[22px]',
+      'pl-[34px]'
+    )
   })
 
   it('shows five chats, then expands in place with Show N more and collapses with Show less', () => {

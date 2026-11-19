@@ -74,6 +74,21 @@ describe('ProjectItem new chat button', () => {
     expect(onClick).not.toHaveBeenCalled()
   })
 
+  it('keeps "+" at rest on the active project, and shows it on hover or focus elsewhere', () => {
+    renderItem({ isActive: false })
+    const plus = screen.getByTestId('project-row-new-chat').parentElement
+    expect(plus).toHaveClass('hidden', 'group-hover:flex', 'group-focus-within:flex')
+    // Without the "+", the row ends 16px in: its marks sit on the right lane.
+    const row = screen.getByTestId('project-item-p1').querySelector('[data-project-row]')
+    expect(row).toHaveClass('pr-4', 'group-hover:pr-3')
+  })
+
+  it('shows "+" at rest on the active project', () => {
+    renderItem({ isActive: true })
+    expect(screen.getByTestId('project-row-new-chat').parentElement).toHaveClass('flex')
+    expect(screen.getByTestId('project-row-new-chat').parentElement).not.toHaveClass('hidden')
+  })
+
   it('has no "+" while renaming', () => {
     renderItem({ isEditing: true })
     expect(screen.queryByTestId('project-row-new-chat')).not.toBeInTheDocument()

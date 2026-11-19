@@ -52,13 +52,16 @@ describe('sidebar indicators', () => {
     expect(container.querySelector('.bg-muted-foreground\\/60')).toBeTruthy()
   })
 
-  it('CrashedMark shows "Crashed" in warning without a pulse', () => {
+  it('CrashedMark is a red dot on the lane, named "Terminal crashed", without a pulse', () => {
     render(<CrashedMark />)
 
-    const mark = screen.getByTitle('Terminal crashed')
-    expect(mark).toHaveTextContent('Crashed')
-    expect(mark).toHaveClass('text-warning')
-    expect(mark.className).not.toContain('animate-pulse')
+    // An error, so destructive (not warning); a 6px dot in a 12px slot like
+    // the chat status dots. The name carries the meaning, not the colour.
+    const mark = screen.getByRole('img', { name: 'Terminal crashed' })
+    expect(mark).toHaveClass('size-3')
+    expect(mark.firstElementChild).toHaveClass('size-1.5', 'rounded-full', 'bg-destructive')
+    expect(mark).not.toHaveTextContent('Crashed')
+    expect(mark.innerHTML).not.toContain('animate-pulse')
   })
 
   it('resolveProjectLiveState: activity wins, then an idle agent, else nothing', () => {
@@ -80,19 +83,20 @@ describe('sidebar indicators', () => {
     expect(screen.getByRole('status', { name: 'Project activity' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '2 need you' }))
     expect(onOpen).toHaveBeenCalledTimes(1)
-    expect(screen.getByTitle('Terminal crashed')).toBeInTheDocument()
+    expect(screen.getByRole('img', { name: 'Terminal crashed' })).toBeInTheDocument()
   })
 
-  it('ProjectStatusMarks shows the idle dot (not a spinner) for an idle agent', () => {
-    render(
+  it('ProjectStatusMarks shows nothing for an idle agent (the chat rows carry the status)', () => {
+    const { container } = render(
       <ProjectStatusMarks
         status={{ live: 'idle-agent', attentionCount: 0, crashed: false }}
         onOpenNeedsYou={() => {}}
       />
     )
 
-    expect(screen.getByRole('img', { name: 'Agent running, idle' })).toBeInTheDocument()
+    expect(screen.queryByRole('img', { name: 'Agent running, idle' })).not.toBeInTheDocument()
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
     expect(screen.queryByRole('button')).not.toBeInTheDocument()
+    expect(container).toBeEmptyDOMElement()
   })
 })

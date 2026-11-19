@@ -406,13 +406,19 @@ describe('ProjectSidebar', () => {
     }
   })
 
-  it('shows a "Crashed" mark (no pulse) on a project with a crashed terminal', () => {
+  it('shows a red crash dot (no pulse) on a project with a crashed terminal', () => {
     mockUseProjectsWithErrors.mockReturnValue(new Set(['2']))
     renderWithRouter({})
 
-    const mark = within(screen.getByTestId('project-item-2')).getByTitle('Terminal crashed')
-    expect(mark).toHaveTextContent('Crashed')
-    expect(mark.className).not.toContain('animate-pulse')
+    const mark = within(screen.getByTestId('project-item-2')).getByRole('img', {
+      name: 'Terminal crashed'
+    })
+    expect(mark.firstElementChild).toHaveClass('bg-destructive', 'rounded-full')
+    expect(mark.innerHTML).not.toContain('animate-pulse')
+    // Keyboard users get it from the row's own name.
+    expect(
+      screen.getByRole('button', { name: 'Project: Project Two, terminal crashed' })
+    ).toBeInTheDocument()
   })
 
   it('should show empty state when no projects', () => {
@@ -843,39 +849,17 @@ describe('ProjectSidebar rail rows', () => {
     expect(await screen.findByText('Create New Group')).toBeInTheDocument()
   })
 
-  it('shows +N −M at rest, and on hover overlays gear + chip without reflowing the row', () => {
+  it('shows no diff stat on the expanded row (the Changes panel has it); actions overlay the name', () => {
     useGitStatusStore.setState({ diffStats: { '/repo/two': { added: 3, removed: 1 } } })
     renderWithRouter({ projects: gitProjects })
 
     const row = screen.getByTestId('project-item-2')
-    const stat = within(row).getByTestId('project-diff-stat')
-    expect(stat).toHaveTextContent('+3 −1')
-    // The stat keeps its place; the actions sit on top of the name box's end.
-    expect(stat.parentElement).not.toHaveClass('group-hover:hidden')
+    expect(within(row).queryByTestId('project-diff-stat')).not.toBeInTheDocument()
+    // The actions sit on top of the name box's end; the name fades before them.
     const actions = within(row).getByTestId('project-row-actions')
     expect(actions).toHaveClass('absolute', 'hidden', 'group-hover:flex', 'group-focus-within:flex')
     expect(actions).toContainElement(within(row).getByLabelText('Settings for Project Two'))
-    expect(actions.parentElement).toContainElement(stat)
-    // The stat slot is at least as wide as the actions, so they cover only
-    // the stat and the name needs no hover fade.
-    expect(stat.parentElement).toHaveClass('min-w-11', 'justify-end', 'group-hover:invisible')
-    expect(within(row).getByTitle('Project Two')).not.toHaveClass(
-      'group-hover:fade-before-row-actions'
-    )
-  })
-
-  it('shows one side only for a one-sided stat and nothing for a clean tree', () => {
-    useGitStatusStore.setState({
-      diffStats: { '/repo/one': { added: 2, removed: 0 }, '/repo/two': { added: 0, removed: 0 } }
-    })
-    renderWithRouter({ projects: gitProjects })
-
-    expect(
-      within(screen.getByTestId('project-item-1')).getByTestId('project-diff-stat')
-    ).toHaveTextContent(/^\+2$/)
-    expect(
-      within(screen.getByTestId('project-item-2')).queryByTestId('project-diff-stat')
-    ).not.toBeInTheDocument()
+    expect(within(row).getByTitle('Project Two')).toHaveClass('group-hover:fade-before-row-actions')
   })
 
   it('hides the gear and chip on an active row at rest, so the name keeps the room', () => {
@@ -887,20 +871,15 @@ describe('ProjectSidebar rail rows', () => {
     expect(gear.parentElement).toHaveClass('hidden', 'group-hover:flex', 'group-focus-within:flex')
   })
 
-  it('watches each git project, refreshes right after, and unwatches on unmount', () => {
+  it('does not watch the working copies while the Rail is expanded (no stat to show)', () => {
     const { unmount } = renderWithRouter({ projects: gitProjects })
 
-    expect(watchDiffStat).toHaveBeenCalledTimes(2)
-    expect(watchDiffStat).toHaveBeenCalledWith('/repo/one')
-    expect(watchDiffStat).toHaveBeenCalledWith('/repo/two')
-    expect(refreshDiffStat).toHaveBeenCalledWith('/repo/one')
-    expect(refreshDiffStat).toHaveBeenCalledWith('/repo/two')
-    expect(watchDiffStat.mock.invocationCallOrder[0]).toBeLessThan(
-      refreshDiffStat.mock.invocationCallOrder[0]
-    )
-
+    // Only the collapsed Rail's project card shows a stat, so the expanded
+    // rows start no git work for it.
+    expect(watchDiffStat).not.toHaveBeenCalled()
+    expect(refreshDiffStat).not.toHaveBeenCalled()
     unmount()
-    expect(unwatch).toHaveBeenCalledTimes(2)
+    expect(unwatch).not.toHaveBeenCalled()
   })
 
   it('does not watch a non-git project and shows no stat for it', () => {

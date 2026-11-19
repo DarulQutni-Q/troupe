@@ -343,13 +343,15 @@ describe('ShellRail', () => {
         expect(toggles[0]).toHaveAttribute('aria-pressed', 'true')
         expect(toggles[0]).toHaveAttribute('data-testid', 'rail-toggle')
         expect(toggles[0]).toHaveClass('size-7')
-        // The toggle is the header's only control, at its end: its 14px glyph
-        // ends 24px from the Rail edge, on the row actions' right edge.
+        // The toggle is the header's only control, at its end: 16px from the
+        // Rail edge, so its centre sits on x 218 with the rows' `+` and marks.
         const headerButtons = within(header).getAllByRole('button')
         expect(headerButtons).toEqual([toggles[0]])
         expect(header.lastElementChild).toContainElement(toggles[0])
-        expect(header.lastElementChild).toHaveClass('mr-[17px]')
-        expect(slot.nextElementSibling).toBeNull()
+        expect(header.lastElementChild).toHaveClass('mr-4')
+        // The mark is the header's first part; drag space follows it.
+        expect(header.firstElementChild).toBe(slot)
+        expect(slot.nextElementSibling).toHaveClass('flex-1')
         unmount()
       }
     })
@@ -362,10 +364,13 @@ describe('ShellRail', () => {
         const header = screen.getByTestId('rail-header')
         const clearance = within(header).getByTestId('traffic-light-clearance')
         // The mark follows the clearance; the toggle stays at the header's end.
-        expect(clearance.nextElementSibling?.firstElementChild).toBe(
-          within(header).getByTestId('shell-brand-mark')
-        )
-        expect(within(header).queryByTestId('rail-header-mark-slot')).not.toBeInTheDocument()
+        const slot = within(header).getByTestId('rail-header-mark-slot')
+        expect(clearance.nextElementSibling).toBe(slot)
+        expect(slot.firstElementChild).toBe(within(header).getByTestId('shell-brand-mark'))
+        // No 56px slot: the mark sits right after the clearance and travels to
+        // the collapsed icon column (x = 28) with the width: 14 - 78 = -64px.
+        expect(slot).not.toHaveClass('w-14')
+        expect(slot.style.getPropertyValue('--rail-travel-x')).toBe('-64px')
         expect(header.lastElementChild).toContainElement(screen.getByTestId('rail-toggle'))
       } finally {
         macRef.current = false
@@ -554,10 +559,17 @@ describe('ShellRail', () => {
       for (const text of ['New chat', 'Search', 'Projects', 'Alpha', 'Beta', 'Chat a']) {
         expect(within(nav).queryByText(text)).not.toBeInTheDocument()
       }
-      // The header row stays (same height) but holds no mark and no toggle.
+      // The header row stays (same height) and holds only the Troupe mark,
+      // centred on the icon column (the macOS lights hide while collapsed);
+      // no toggle (it moves to the main top row).
       const header = screen.getByTestId('rail-header')
-      expect(header).toHaveClass('h-11')
-      expect(header).toBeEmptyDOMElement()
+      expect(header).toHaveClass('h-11', 'w-14')
+      expect(within(header).getByTestId('rail-header-mark-slot')).toHaveClass(
+        'w-14',
+        'justify-center'
+      )
+      expect(within(header).getByTestId('shell-brand-mark')).toHaveAttribute('aria-hidden', 'true')
+      expect(within(header).queryByRole('button')).toBeNull()
       expect(screen.queryByRole('button', { name: 'Expand or collapse projects' })).toBeNull()
       // SSH is hidden; the old icon stack and tab track are gone.
       expect(within(nav).queryByTestId('ssh-section')).not.toBeInTheDocument()

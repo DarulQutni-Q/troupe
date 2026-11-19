@@ -72,8 +72,9 @@ describe('QuickChatsGroup', () => {
     renderGroup()
     const openRow = screen.getByRole('button', { name: 'Newer notes' })
     expect(openRow).toHaveAttribute('aria-current', 'true')
-    expect(openRow).toHaveClass('keycap', 'px-3')
-    expect(openRow).not.toHaveClass('pl-8.75')
+    // A top-level row: full width (no project inset), 12px left, 16px right.
+    expect(openRow).toHaveClass('keycap', 'w-full', 'pl-3', 'pr-4')
+    expect(openRow).not.toHaveClass('ml-[22px]')
     expect(openRow.querySelector('[data-rail-icon-column]')).toHaveClass('size-4')
     expect(openRow.querySelector('[data-rail-icon-column]')).toHaveAttribute('aria-hidden', 'true')
     expect(openRow.querySelector('[data-termul-icon="Chat"]')).toBeTruthy()
@@ -87,7 +88,8 @@ describe('QuickChatsGroup', () => {
       .map((button) => button.getAttribute('aria-label'))
     expect(titles).toEqual(['Newer notes', 'Older notes'])
     expect(screen.queryByText('Legacy unassigned')).not.toBeInTheDocument()
-    expect(screen.getByTestId('rail-section-quick chats')).toBeInTheDocument()
+    // 12px start: the title starts on x 20, in line with the row icons (Paper S2.0).
+    expect(screen.getByTestId('rail-section-quick chats')).toHaveClass('pl-3', 'pr-3')
   })
 
   it('keeps the header and its + when there are no quick chats', () => {

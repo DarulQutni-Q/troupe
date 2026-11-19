@@ -875,6 +875,45 @@
   }
 }
 
+/* Rail expand/collapse: a part that sits at a different x in the two
+   densities travels by `--rail-travel-x` with the width (`RAIL_TRAVEL_CLASS`
+   in rail-motion.ts). `-out` runs while collapsing and holds its end until the
+   collapsed layout takes over; `-in` runs from the collapsed x while
+   expanding. */
+@keyframes rail-travel-out {
+  to {
+    translate: var(--rail-travel-x) 0;
+  }
+}
+
+@keyframes rail-travel-in {
+  from {
+    translate: var(--rail-travel-x) 0;
+  }
+}
+
+/* A project's chat row also closes its clip to the 30px collapsed square
+   (4px outset on the other sides keeps the keycap drop). */
+@keyframes rail-row-travel-out {
+  from {
+    clip-path: inset(-4px -4px -4px -4px round 8px);
+  }
+  to {
+    translate: var(--rail-travel-x) 0;
+    clip-path: inset(-4px calc(100% - 30px) -4px -4px round 8px);
+  }
+}
+
+@keyframes rail-row-travel-in {
+  from {
+    translate: var(--rail-travel-x) 0;
+    clip-path: inset(-4px calc(100% - 30px) -4px -4px round 8px);
+  }
+  to {
+    clip-path: inset(-4px -4px -4px -4px round 8px);
+  }
+}
+
 /* xterm.css is unlayered and paints `.xterm-viewport` `#000` when
    `allowTransparency` is false. Keep that option off (xterm: it costs
    performance and must be set before `open`). This rule sits outside
