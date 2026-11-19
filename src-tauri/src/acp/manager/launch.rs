@@ -92,19 +92,18 @@ impl AcpManager {
     }
 
     /// Forget the recipes of the chats whose agent is no longer live, except
-    /// those `keep` names (a chat waiting for its scheduled resume). Closing a
-    /// tab does not close its chat, so without this every chat ever opened
-    /// would keep its recipe, MCP headers included. A limit only arrives from
-    /// a live agent, which recorded the recipe when it opened the chat.
-    pub fn forget_recipes_without_agent(&self, keep: impl Fn(&SessionId) -> bool) {
+    /// chats either limit supervisor is holding (`keep_launch_recipe`) until a
+    /// reset. Closing a tab does not close its chat, so without this every
+    /// chat ever opened would keep its recipe, MCP headers included. A limit
+    /// only arrives from a live agent, which recorded the recipe when it
+    /// opened the chat.
+    pub fn forget_recipes_without_agent(&self) {
         let agents = self.agents.lock();
         let held = self.kept_recipes.lock().clone();
         let mut recipes = self.recipes.lock();
         let before = recipes.len();
         recipes.retain(|session_id, recipe| {
-            agents.contains_key(&recipe.agent_id)
-                || keep(session_id)
-                || held.contains(&session_id.0)
+            agents.contains_key(&recipe.agent_id) || held.contains(&session_id.0)
         });
         let forgotten = before - recipes.len();
         if forgotten > 0 {

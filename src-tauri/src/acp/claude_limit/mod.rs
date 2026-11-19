@@ -4,9 +4,10 @@
 //! it when the limit resets. The renderer only shows what happened
 //! (`acp:claude_limit_action`).
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
+
+pub(crate) use crate::acp::limit_runtime::{LimitedAccounts, TurnClock};
 
 use serde::Serialize;
 use tokio::sync::{mpsc, oneshot};
@@ -21,7 +22,7 @@ use crate::web::WsRelaySink;
 pub mod decide;
 mod relaunch;
 pub(crate) mod schedule;
-mod supervisor;
+pub(crate) mod supervisor;
 
 pub const CLAUDE_CONFIG_ID: &str = "acp-registry:claude-acp";
 
@@ -29,7 +30,7 @@ pub const RESUME_GRACE: Duration = Duration::from_secs(15);
 
 const SCHEDULE_FILE: &str = "claude-limit-resumes.json";
 
-enum Input {
+pub(crate) enum Input {
     Limit {
         agent_id: AgentId,
         session_id: SessionId,
@@ -53,66 +54,6 @@ enum Input {
     AgentStopped { agent_id: AgentId },
 }
 
-/// Numbers the turns of every chat. The supervisor acts on one input at a
-/// time, so a `TurnStarted` can wait in its inbox while it resumes another
-/// chat; it reads the clock instead, which the driver sets before the agent
-/// sees the prompt.
-#[derive(Default)]
-pub(crate) struct TurnClock {
-    /// The last turn number, and the last turn of each chat whose
-    /// `TurnStarted` the supervisor has not handled yet.
-    turns: parking_lot::Mutex<(u64, HashMap<String, u64>)>,
-}
-
-impl TurnClock {
-    fn start(&self, session_id: &str) -> u64 {
-        let mut turns = self.turns.lock();
-        turns.0 += 1;
-        let seq = turns.0;
-        turns.1.insert(session_id.to_string(), seq);
-        seq
-    }
-
-    /// The last turn number of any chat.
-    pub(crate) fn now(&self) -> u64 {
-        self.turns.lock().0
-    }
-
-    /// A turn of the chat started after `mark` (a [`Self::now`] reading).
-    pub(crate) fn started_since(&self, session_id: &str, mark: u64) -> bool {
-        self.turns
-            .lock()
-            .1
-            .get(session_id)
-            .is_some_and(|seq| *seq > mark)
-    }
-
-    /// The supervisor handled turn `seq`. A later turn keeps its entry until
-    /// its own `TurnStarted` is handled.
-    pub(crate) fn settle(&self, session_id: &str, seq: u64) {
-        let mut turns = self.turns.lock();
-        if turns.1.get(session_id) == Some(&seq) {
-            turns.1.remove(session_id);
-        }
-    }
-}
-
-/// Accounts that reached a limit, until their reset. The supervisor marks
-/// them; a new chat's Account pick reads them. A cached usage read can still
-/// show room for an Account that just reached its limit.
-#[derive(Default)]
-pub(crate) struct LimitedAccounts(parking_lot::Mutex<HashMap<String, SystemTime>>);
-
-impl LimitedAccounts {
-    fn mark(&self, account_id: &str, until: SystemTime) {
-        self.0.lock().insert(account_id.to_string(), until);
-    }
-
-    fn snapshot(&self) -> HashMap<String, SystemTime> {
-        self.0.lock().clone()
-    }
-}
-
 #[derive(Clone)]
 pub struct ClaudeLimitHandle {
     tx: mpsc::UnboundedSender<Input>,
@@ -121,9 +62,9 @@ pub struct ClaudeLimitHandle {
 }
 
 pub struct ClaudeLimitInbox {
-    rx: mpsc::UnboundedReceiver<Input>,
-    clock: Arc<TurnClock>,
-    limited: Arc<LimitedAccounts>,
+    pub(crate) rx: mpsc::UnboundedReceiver<Input>,
+    pub(crate) clock: Arc<TurnClock>,
+    pub(crate) limited: Arc<LimitedAccounts>,
 }
 
 impl ClaudeLimitHandle {

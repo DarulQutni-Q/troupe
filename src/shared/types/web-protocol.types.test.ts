@@ -93,8 +93,8 @@ describe('web-protocol.types — event/request type registries (AC2)', () => {
     expect(WS_REQUEST_TYPES).toContain('get_session_payload')
   })
 
-  it('exports exactly 86 request types including chat MCP install approval', () => {
-    expect(WS_REQUEST_TYPES).toHaveLength(86)
+  it('exports exactly 88 request types including per-chat Codex account and resume', () => {
+    expect(WS_REQUEST_TYPES).toHaveLength(88)
     const expected = [
       'send_prompt',
       'cancel_prompt',

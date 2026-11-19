@@ -4,9 +4,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::mpsc;
 
-use super::decide::{
-    self, ChatHolder, LimitContext, LimitDecision, ResumePlan, SHORTEST_WINDOW,
-};
+use super::decide::{self, ChatHolder, LimitContext, LimitDecision, ResumePlan, SHORTEST_WINDOW};
 use super::relaunch::Relaunch;
 use super::schedule::{Schedule, ScheduledResume};
 use super::{
@@ -33,7 +31,7 @@ struct Attempt {
     account_id: String,
 }
 
-pub(super) struct Supervisor {
+pub(crate) struct Supervisor {
     pub(super) acp: Arc<AcpManager>,
     pub(super) relay: Arc<WsRelaySink>,
     pub(super) schedule: Schedule,
@@ -44,7 +42,7 @@ pub(super) struct Supervisor {
 }
 
 impl Supervisor {
-    pub(super) fn new(
+    pub(crate) fn new(
         acp: Arc<AcpManager>,
         relay: Arc<WsRelaySink>,
         schedule: Schedule,
@@ -63,7 +61,7 @@ impl Supervisor {
         }
     }
 
-    pub(super) async fn run(mut self, mut inbox: mpsc::UnboundedReceiver<Input>) {
+    pub(crate) async fn run(mut self, mut inbox: mpsc::UnboundedReceiver<Input>) {
         loop {
             let wait = self.schedule.next_at().map(|at| {
                 let due = epoch(at) + self.grace;
@@ -111,12 +109,19 @@ impl Supervisor {
         }
     }
 
-    /// Forget the recipe of every chat whose agent stopped and that does not
-    /// wait for a scheduled resume.
+    /// Forget the recipe of every chat whose agent stopped and that neither
+    /// supervisor is holding for a scheduled resume.
     fn forget_unheld_recipes(&self) {
-        let schedule = &self.schedule;
-        self.acp
-            .forget_recipes_without_agent(|session_id| schedule.get(&session_id.0).is_some());
+        self.acp.forget_recipes_without_agent();
+    }
+
+    fn hold_recipe(&self, session_id: &str) {
+        self.acp.keep_launch_recipe(session_id, true);
+    }
+
+    fn release_recipe(&self, session_id: &str) {
+        self.acp.keep_launch_recipe(session_id, false);
+        self.forget_unheld_recipes();
     }
 
     /// Drop the chat's scheduled resume; `announce` tells its clients.
@@ -128,7 +133,7 @@ impl Supervisor {
             "[claude-limit] scheduled resume of chat {} dropped: {why}",
             redact_session_id(&session_id.0)
         );
-        self.forget_unheld_recipes();
+        self.release_recipe(&session_id.0);
         if announce {
             self.emit(
                 session_id,
@@ -189,11 +194,8 @@ impl Supervisor {
             &agent_account,
             resets_at.map_or(now + SHORTEST_WINDOW, epoch),
         );
-        let candidates = decide::rank_alternatives(&decide::candidates(
-            &snapshot,
-            &usage,
-            Some(&agent_account),
-        ));
+        let candidates =
+            decide::rank_alternatives(&decide::candidates(&snapshot, &usage, Some(&agent_account)));
         let decision = decide::decide(&LimitContext {
             agent_account: &agent_account,
             chat_account: &chat_account,
@@ -232,7 +234,11 @@ impl Supervisor {
                             "[claude-limit] switching the account of chat {chat} failed: {}",
                             scrub(&error, &session_id)
                         );
-                        self.emit(&session_id, &project_id, ClaudeLimitAction::Failed { reason: error });
+                        self.emit(
+                            &session_id,
+                            &project_id,
+                            ClaudeLimitAction::Failed { reason: error },
+                        );
                     }
                 }
             }
@@ -244,6 +250,7 @@ impl Supervisor {
             }
             LimitDecision::ResumeAt { at } => {
                 let at = epoch_secs(at);
+                self.hold_recipe(&session_id.0);
                 self.schedule.insert(ScheduledResume {
                     session_id: session_id.0.clone(),
                     project_id: project_id.clone(),
@@ -271,13 +278,18 @@ impl Supervisor {
                     .launch_recipe(session_id)
                     .ok_or_else(|| "This chat is not open on the host.".to_string())?;
                 let ClaudeLaunchAuth::Account(account_id) = recipe.launch.claude else {
-                    return Err("This chat does not run on a Claude account Troupe manages.".to_string());
+                    return Err(
+                        "This chat does not run on a Claude account Troupe manages.".to_string()
+                    );
                 };
                 if recipe.launch.config.config_id.as_deref() != Some(CLAUDE_CONFIG_ID) {
-                    return Err("This chat does not run on a Claude account Troupe manages.".to_string());
+                    return Err(
+                        "This chat does not run on a Claude account Troupe manages.".to_string()
+                    );
                 }
                 let project_id = recipe.launch.project_id.clone().unwrap_or_default();
                 let at = epoch_secs(at);
+                self.hold_recipe(&session_id.0);
                 self.schedule.insert(ScheduledResume {
                     session_id: session_id.0.clone(),
                     project_id: project_id.clone(),
@@ -310,9 +322,7 @@ impl Supervisor {
     /// A turn of the chat started after its resume was scheduled: the user or
     /// an automation continued it, so the resume must not touch that turn.
     fn turn_started_since(&self, entry: &ScheduledResume) -> bool {
-        let started = self
-            .clock
-            .started_since(&entry.session_id, entry.turn_mark);
+        let started = self.clock.started_since(&entry.session_id, entry.turn_mark);
         if started {
             log::info!(
                 "[claude-limit] chat {} started a turn after its resume was scheduled; left alone",
@@ -325,6 +335,7 @@ impl Supervisor {
     async fn resume(&mut self, entry: ScheduledResume) {
         let session_id = SessionId(entry.session_id.clone());
         let chat = redact_session_id(&entry.session_id);
+        let finish = |this: &Self| this.release_recipe(&entry.session_id);
         if self.acp.launch_recipe(&session_id).is_none() {
             log::warn!("[claude-limit] chat {chat} was due to continue, but the host restarted since; it continues when a client reopens it");
             self.emit(
@@ -335,6 +346,7 @@ impl Supervisor {
                         .to_string(),
                 },
             );
+            finish(self);
             return;
         }
         let cancelled = |this: &Self| {
@@ -343,6 +355,7 @@ impl Supervisor {
                 &entry.project_id,
                 ClaudeLimitAction::ResumeCancelled,
             );
+            this.release_recipe(&entry.session_id);
         };
         // Held before the owner is read, so a client reopen in flight lands
         // first and one that starts now waits for this resume.
@@ -361,7 +374,9 @@ impl Supervisor {
                 .ok()?
                 .runtime_agent_id
         });
-        let launch = owner.as_ref().and_then(|agent| self.acp.agent_launch(agent));
+        let launch = owner
+            .as_ref()
+            .and_then(|agent| self.acp.agent_launch(agent));
         let holder = match (&owner, &launch) {
             (None, _) => ChatHolder::Nobody,
             (Some(_), Some(launch))
@@ -374,11 +389,8 @@ impl Supervisor {
             }
             (Some(_), _) => ChatHolder::Other,
         };
-        let plan = decide::plan_resume(
-            holder,
-            entry.account_id.as_deref(),
-            chat_account.as_deref(),
-        );
+        let plan =
+            decide::plan_resume(holder, entry.account_id.as_deref(), chat_account.as_deref());
         log::info!("[claude-limit] chat {chat} is due to continue: {plan:?}");
         if plan == ResumePlan::Skip || self.turn_started_since(&entry) {
             cancelled(self);
@@ -410,7 +422,9 @@ impl Supervisor {
             (_, owner) => match self.relaunch(&moving, &session_id, owner.as_ref()).await {
                 Ok(Relaunch::Done(relaunched)) => relaunched,
                 Ok(Relaunch::HeldElsewhere(holder)) => {
-                    log::info!("[claude-limit] chat {chat} is open on agent {holder} now; left there");
+                    log::info!(
+                        "[claude-limit] chat {chat} is open on agent {holder} now; left there"
+                    );
                     cancelled(self);
                     return;
                 }
@@ -424,7 +438,7 @@ impl Supervisor {
                         &entry.project_id,
                         ClaudeLimitAction::Failed { reason },
                     );
-                    self.forget_unheld_recipes();
+                    finish(self);
                     return;
                 }
             },
@@ -446,6 +460,7 @@ impl Supervisor {
         let notice = resume_notice(&account, window_name(entry.window.as_deref()), &reset);
         self.send_notice(&agent_id, &session_id, &notice).await;
         drop(moving);
+        finish(self);
     }
 
     /// The live agent that holds the chat, other than `except`.
@@ -454,20 +469,7 @@ impl Supervisor {
         session_id: &SessionId,
         except: Option<&AgentId>,
     ) -> Option<AgentId> {
-        for agent in self.acp.list_agents() {
-            if Some(&agent) == except {
-                continue;
-            }
-            if self
-                .acp
-                .owns_session(&agent, session_id.clone())
-                .await
-                .unwrap_or(false)
-            {
-                return Some(agent);
-            }
-        }
-        None
+        crate::acp::limit_runtime::live_owner(&self.acp, session_id, except).await
     }
 
     pub(super) fn emit(&self, session_id: &SessionId, project_id: &str, action: ClaudeLimitAction) {
@@ -483,13 +485,7 @@ impl Supervisor {
     }
 }
 
-/// `error` with the chat's id shortened, for the log.
-pub(super) fn scrub(error: &str, session_id: &SessionId) -> String {
-    if session_id.0.is_empty() {
-        return error.to_string();
-    }
-    error.replace(&session_id.0, &redact_session_id(&session_id.0))
-}
+pub(super) use crate::acp::limit_runtime::scrub;
 
 fn account_ref(snapshot: &ClaudeAccountsSnapshot, id: &str) -> AccountRef {
     let name = snapshot

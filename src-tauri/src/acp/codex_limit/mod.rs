@@ -4,9 +4,10 @@
 //! it when the limit resets. The renderer only shows what happened
 //! (`acp:codex_limit_action`).
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
+
+pub(crate) use crate::acp::limit_runtime::{LimitedAccounts, TurnClock};
 
 use serde::Serialize;
 use tokio::sync::{mpsc, oneshot};
@@ -51,55 +52,6 @@ enum Input {
     AgentStopped {
         agent_id: AgentId,
     },
-}
-
-/// Numbers the turns of every chat. Copied from the Claude supervisor so a
-/// `TurnStarted` can wait in the inbox while another chat resumes.
-#[derive(Default)]
-pub(crate) struct TurnClock {
-    turns: parking_lot::Mutex<(u64, HashMap<String, u64>)>,
-}
-
-impl TurnClock {
-    fn start(&self, session_id: &str) -> u64 {
-        let mut turns = self.turns.lock();
-        turns.0 += 1;
-        let seq = turns.0;
-        turns.1.insert(session_id.to_string(), seq);
-        seq
-    }
-
-    pub(crate) fn now(&self) -> u64 {
-        self.turns.lock().0
-    }
-
-    pub(crate) fn started_since(&self, session_id: &str, mark: u64) -> bool {
-        self.turns
-            .lock()
-            .1
-            .get(session_id)
-            .is_some_and(|seq| *seq > mark)
-    }
-
-    pub(crate) fn settle(&self, session_id: &str, seq: u64) {
-        let mut turns = self.turns.lock();
-        if turns.1.get(session_id) == Some(&seq) {
-            turns.1.remove(session_id);
-        }
-    }
-}
-
-#[derive(Default)]
-pub(crate) struct LimitedAccounts(parking_lot::Mutex<HashMap<String, SystemTime>>);
-
-impl LimitedAccounts {
-    fn mark(&self, account_id: &str, until: SystemTime) {
-        self.0.lock().insert(account_id.to_string(), until);
-    }
-
-    fn snapshot(&self) -> HashMap<String, SystemTime> {
-        self.0.lock().clone()
-    }
 }
 
 #[derive(Clone)]
@@ -303,3 +255,7 @@ pub fn resume_notice(account: &str, window: &str, reset: &str) -> String {
 #[cfg(test)]
 #[path = "real_loop_tests.rs"]
 mod real_loop_tests;
+
+#[cfg(test)]
+#[path = "cross_keep_tests.rs"]
+mod cross_keep_tests;

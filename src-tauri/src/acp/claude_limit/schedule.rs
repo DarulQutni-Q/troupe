@@ -92,10 +92,6 @@ impl Schedule {
         removed
     }
 
-    pub fn get(&self, session_id: &str) -> Option<&ScheduledResume> {
-        self.entries.get(session_id)
-    }
-
     pub fn next_at(&self) -> Option<i64> {
         self.entries.values().map(|entry| entry.at).min()
     }
