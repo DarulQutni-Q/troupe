@@ -24,8 +24,13 @@ export async function readOwnChatAccount(sessionId: string): Promise<string | nu
   }
 }
 
-/** The chat's own Codex Account; `null` when it follows its Project. */
-async function readOwnCodexChatAccount(sessionId: string): Promise<string | null | undefined> {
+/**
+ * The chat's own Codex Account; `null` when it follows its Project,
+ * `undefined` when the host cannot list the Accounts.
+ */
+export async function readOwnCodexChatAccount(
+  sessionId: string
+): Promise<string | null | undefined> {
   try {
     return ownCodexChatAccountId(await codexAccountsApi.list(), sessionId)
   } catch {

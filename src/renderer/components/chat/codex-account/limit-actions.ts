@@ -5,13 +5,12 @@ import { toast } from 'sonner'
 import { create } from 'zustand'
 import { ACP_EVENTS, onAcpEvent } from '@/lib/acp-api'
 import { notifyCodexAccountListChanged } from '@/lib/codex-account-list'
-import { codexAccountsApi } from '@/lib/codex-accounts-api'
 import { logFrontendError } from '@/lib/log-api'
 import { agentReuseKey, reuseScopeFor } from '@/stores/acp-reuse-keys'
 import { renewAgentCredentials, useAcpStore } from '@/stores/acp-store'
+import { readOwnCodexChatAccount } from '@/stores/acp-store/chat-reuse-scope'
 import { recordCurrentLaunch } from '@/stores/acp-store/shared-state'
 import { useCodexResumeStore } from './use-codex-limit'
-import { ownChatAccountId } from './use-project-codex-account'
 
 /** When the host continues each chat after its limit resets, epoch ms. */
 export const useCodexResumeAt = create<Record<string, number>>(() => ({}))
@@ -88,21 +87,8 @@ function dropPending(sessionId: string): void {
   }
 }
 
-async function readOwnCodexAccount(sessionId: string): Promise<string | null | undefined> {
-  try {
-    return ownChatAccountId(await codexAccountsApi.list(), sessionId)
-  } catch {
-    void logFrontendError({
-      level: 'warn',
-      source: 'codexLimit.follow',
-      message: `Codex accounts unreadable for chat ${sessionId}; it gets an agent of its own`
-    })
-    return undefined
-  }
-}
-
 async function keyFollowedAgent(event: FollowEvent): Promise<void> {
-  const chatScope = reuseScopeFor(event.sessionId, await readOwnCodexAccount(event.sessionId))
+  const chatScope = reuseScopeFor(event.sessionId, await readOwnCodexChatAccount(event.sessionId))
   const session = useAcpStore.getState().sessions[event.sessionId]
   if (session?.agentId !== event.newAgentId) return
   if (chatScope === undefined && session.projectId) {
