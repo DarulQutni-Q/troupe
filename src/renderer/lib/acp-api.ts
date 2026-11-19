@@ -214,6 +214,8 @@ export interface SubagentMessage {
   seq: number
   timestamp: number
   text: string
+  /** ACP `messageId` of its chunks, when the agent sent one. */
+  messageId?: string
 }
 
 export interface ToolCall {

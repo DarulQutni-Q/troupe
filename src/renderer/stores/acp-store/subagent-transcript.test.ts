@@ -67,13 +67,19 @@ function toolCall(payload: Record<string, unknown>): void {
   _flushCoalescedForTesting()
 }
 
-function chunk(text: string, parentToolCallId?: string, role: 'agent' | 'thought' = 'agent'): void {
+function chunk(
+  text: string,
+  parentToolCallId?: string,
+  role: 'agent' | 'thought' = 'agent',
+  messageId?: string
+): void {
   useAcpStore.getState()._onMessageChunk({
     agentId: 'agent-1',
     sessionId: 's1',
     role,
     content: { type: 'text', text },
-    ...(parentToolCallId ? { parentToolCallId } : {})
+    ...(parentToolCallId ? { parentToolCallId } : {}),
+    ...(messageId ? { messageId } : {})
   })
   _flushCoalescedForTesting()
 }
@@ -153,6 +159,20 @@ describe('subagent transcript ingest (live)', () => {
     const [before, after] = stored('d1').subagentMessages ?? []
     const childSeq = stored('c1').seq ?? Number.NaN
     expect(before.seq < childSeq && childSeq < after.seq).toBe(true)
+  })
+
+  it('starts a new message when the agent starts a new ACP message, with no tool call between', () => {
+    toolCall({ toolCallId: 'd1', status: 'in_progress', rawInput: dispatchInput })
+    chunk('Checking ', 'd1', 'agent', 'm1')
+    chunk('now.', 'd1', 'agent', 'm1')
+    chunk('de28c202f is the fix.', 'd1', 'agent', 'm2')
+    chunk(' Done.', 'd1')
+    expect(
+      stored('d1').subagentMessages?.map(({ text, messageId }) => ({ text, messageId }))
+    ).toEqual([
+      { text: 'Checking now.', messageId: 'm1' },
+      { text: 'de28c202f is the fix. Done.', messageId: 'm2' }
+    ])
   })
 
   it('keeps one message across tool calls another subagent or the main turn made', () => {

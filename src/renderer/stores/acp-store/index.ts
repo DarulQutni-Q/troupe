@@ -366,7 +366,11 @@ async function installTransportRecovery(
           recoveredToolCalls[idx] = withSubagentText(
             recoveredToolCalls[idx],
             text,
-            { seq: event.seq, timestamp: Date.now() },
+            {
+              seq: event.seq,
+              timestamp: Date.now(),
+              messageId: typeof payload.messageId === 'string' ? payload.messageId : undefined
+            },
             recoveredToolCalls
           )
         }

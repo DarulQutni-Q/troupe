@@ -15,6 +15,8 @@ import { withSubagentRecord } from './subagent-lifecycle'
 import type { AcpState } from './types'
 
 const MAX_PARENT_ID_CHARS = 512
+/** Longest ACP `messageId` a subagent message keeps; a longer one counts as absent. */
+const MAX_MESSAGE_ID_CHARS = 256
 /** Text kept across a dispatch's subagent messages; the oldest goes first. */
 export const MAX_SUBAGENT_TEXT_CHARS = 8_000
 /** Subagent messages kept on a dispatch call; the oldest go first. */
@@ -56,9 +58,12 @@ function isSubagentMessage(value: unknown): value is SubagentMessage {
 /** A wire `subagentMessages` value as messages: well-formed entries only, within the bounds. */
 export function parseSubagentMessages(value: unknown): SubagentMessage[] | undefined {
   if (!Array.isArray(value)) return undefined
-  const messages = value
-    .filter(isSubagentMessage)
-    .map(({ seq, timestamp, text }) => ({ seq, timestamp, text }))
+  const messages = value.filter(isSubagentMessage).map(({ seq, timestamp, text, messageId }) => ({
+    seq,
+    timestamp,
+    text,
+    ...boundedMessageId(messageId)
+  }))
   return messages.length > 0 ? boundSubagentMessages(messages) : undefined
 }
 
@@ -86,6 +91,12 @@ function boundSubagentMessages(messages: SubagentMessage[]): SubagentMessage[] {
   return kept
 }
 
+function boundedMessageId(id: unknown): { messageId?: string } {
+  return typeof id === 'string' && id.length > 0 && id.length <= MAX_MESSAGE_ID_CHARS
+    ? { messageId: id }
+    : {}
+}
+
 /** The subagent text a chunk adds; null for thought, user, and non-text chunks. */
 export function subagentChunkText(role: unknown, content: unknown): string | null {
   const block = asRecord(content)
@@ -95,26 +106,32 @@ export function subagentChunkText(role: unknown, content: unknown): string | nul
 
 /**
  * `call` with a subagent text chunk added. The chunk extends the last message,
- * unless one of the subagent's tool calls arrived after that message started:
- * then it opens a new message stamped with `stamp`, so text and tool calls
- * keep their order.
+ * unless it carries a different ACP `messageId`, or one of the subagent's
+ * tool calls arrived after that message started: then it opens a new message
+ * stamped with `stamp`, so messages stay apart and text and tool calls keep
+ * their order.
  */
 export function withSubagentText(
   call: ToolCall,
   text: string,
-  stamp: { seq: number; timestamp: number },
+  stamp: { seq: number; timestamp: number; messageId?: string },
   calls: readonly ToolCall[]
 ): ToolCall {
   const messages = call.subagentMessages ?? []
   const last = messages[messages.length - 1]
+  const { messageId } = boundedMessageId(stamp.messageId)
   const opens =
     !last ||
+    (messageId !== undefined && last.messageId !== messageId) ||
     calls.some(
       (tc) =>
         tc.parentToolCallId === call.toolCallId && typeof tc.seq === 'number' && tc.seq > last.seq
     )
   const next = opens
-    ? [...messages, { ...stamp, text }]
+    ? [
+        ...messages,
+        { seq: stamp.seq, timestamp: stamp.timestamp, text, ...(messageId ? { messageId } : {}) }
+      ]
     : [...messages.slice(0, -1), { ...last, text: last.text + text }]
   return { ...call, subagentMessages: boundSubagentMessages(next) }
 }
@@ -153,7 +170,7 @@ export function appendSubagentChunk(
   next[idx] = withSubagentText(
     list[idx],
     text,
-    { seq: replaySeq ?? nextSeq(), timestamp: Date.now() },
+    { seq: replaySeq ?? nextSeq(), timestamp: Date.now(), messageId: e.messageId },
     list
   )
   return { toolCalls: { ...s.toolCalls, [e.sessionId]: next } }

@@ -262,16 +262,6 @@ function Outcome({
   const reduced = useReducedMotion() ?? false
   const record = toolCall.subagent
   const filePathContext = useRecordFilePathContext(record)
-  const prose = (text: string, streaming: boolean) => (
-    <AgentProse
-      text={text}
-      streaming={streaming}
-      reduced={reduced}
-      filePathContext={filePathContext}
-      linkScope={`subagent:${toolCall.toolCallId}`}
-    />
-  )
-
   const outputFile = record?.background ? record.outputFile : undefined
   const outputLine = outputFile && (
     <p className="break-all font-mono text-xs text-muted-foreground">Output file: {outputFile}</p>
@@ -318,7 +308,15 @@ function Outcome({
   return (
     <Section title="Result">
       {errorLine}
-      {shown && prose(shown, false)}
+      {shown && (
+        <AgentProse
+          text={shown}
+          streaming={false}
+          reduced={reduced}
+          filePathContext={filePathContext}
+          linkScope={`subagent:${toolCall.toolCallId}`}
+        />
+      )}
       {outputLine}
       {diff}
     </Section>
