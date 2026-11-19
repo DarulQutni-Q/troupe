@@ -136,12 +136,15 @@ fn merge_settings(
         settings.max_depth = max_depth;
     }
     for agent in patch.agents.unwrap_or_default() {
-        settings.agents.insert(agent.agent_id, agent.allowed);
+        settings
+            .agents
+            .insert(agent.agent_id.trim().to_string(), agent.allowed);
     }
     for agent in patch.models.unwrap_or_default() {
+        let key = agent.agent_id.trim().to_string();
         match agent.model {
-            Some(model) => settings.models.insert(agent.agent_id, model),
-            None => settings.models.remove(&agent.agent_id),
+            Some(model) => settings.models.insert(key, model),
+            None => settings.models.remove(&key),
         };
     }
 }
