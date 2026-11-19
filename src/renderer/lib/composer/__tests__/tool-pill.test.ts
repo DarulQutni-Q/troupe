@@ -51,6 +51,9 @@ describe('Troupe tool pill', () => {
     expect(composerWireText(`schedule it ${toolToken('automations')}`, [])).toBe(
       'schedule it (Use the automation tools from the troupe MCP server)'
     )
+    expect(composerWireText(`${toolToken('orchestrate')} review this diff`, [])).toBe(
+      '(Use the subagent tools from the troupe MCP server) review this diff'
+    )
   })
 
   it('sends the wire text to the agent and keeps the pill for the timeline', () => {
@@ -109,6 +112,11 @@ describe('Troupe tool pill', () => {
     expect(wireBlocksToDisplay([{ type: 'text', text: `${BROWSER_WIRE} open localhost` }])).toEqual(
       [{ type: 'text', text: `${toolToken('browser')} open localhost` }]
     )
+    expect(
+      wireBlocksToDisplay([
+        { type: 'text', text: '(Use the subagent tools from the troupe MCP server) review this' }
+      ])
+    ).toEqual([{ type: 'text', text: `${toolToken('orchestrate')} review this` }])
   })
 
   it('turns a 0.4.x prompt naming the termul server back into pills when a chat reopens', () => {

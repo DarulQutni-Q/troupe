@@ -6,7 +6,7 @@
  *
  * The host serves these tools from its `troupe` MCP server
  * (`src-tauri/src/acp/host_mcp/child.rs`): the browser tool, the canvas
- * tools and the automation tools.
+ * tools, the automation tools and the subagent tools.
  */
 
 /** The MCP server name the host registers for its own tools. */
@@ -15,7 +15,7 @@ const HOST_MCP_SERVER = 'troupe'
 /** The server name 0.4.x hosts registered; persisted prompts still carry it. */
 const LEGACY_MCP_SERVER = 'termul'
 
-export type TermulToolId = 'browser' | 'canvas' | 'automations'
+export type TermulToolId = 'browser' | 'canvas' | 'automations' | 'orchestrate'
 
 /**
  * `closed`: the agent can call the tool, but it fails until the user opens
@@ -76,6 +76,15 @@ export const TERMUL_TOOLS: readonly TermulToolEntry[] = [
     label: 'Automations',
     description: 'Schedule background work',
     ...wire('the automation tools'),
+    state: always
+  },
+  {
+    id: 'orchestrate',
+    label: 'Orchestrate',
+    description: 'Hand parts of the task to other agents',
+    ...wire('the subagent tools'),
+    // Preferences can turn sub-agents off; `subagent_start` then refuses
+    // with `disabled` and the agent says so.
     state: always
   }
 ]

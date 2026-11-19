@@ -719,7 +719,7 @@ describe('mobile composer: Add to chat sheet', () => {
       'Files',
       '@Mention a file or conversationAttach project files or another chat as context',
       '/CommandsAgent commands and skills',
-      'Troupe toolsBrowser, canvas and automations',
+      'Troupe toolsBrowser, canvas, automations and orchestration',
       'ConnectorsNone added'
     ])
   })

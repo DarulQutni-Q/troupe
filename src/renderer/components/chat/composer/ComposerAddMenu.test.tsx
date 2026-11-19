@@ -71,7 +71,8 @@ describe('ComposerAddMenu', () => {
     expect(rows).toEqual([
       'BrowserOpen, click and read pages',
       'CanvasDesign on the project canvasClosed',
-      'AutomationsSchedule background work'
+      'AutomationsSchedule background work',
+      'OrchestrateHand parts of the task to other agents'
     ])
     fireEvent.click(screen.getByRole('menuitem', { name: /^Browser/ }))
     await waitFor(() => expect(handle.insertTool).toHaveBeenCalledWith('browser'))
