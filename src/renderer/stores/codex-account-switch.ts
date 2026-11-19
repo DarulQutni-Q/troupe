@@ -10,7 +10,10 @@
 import type { RemovedCodexAccount } from '@shared/types/codex-accounts.types'
 import { toast } from 'sonner'
 import { runningBackgroundCommands } from '@/components/chat/background-commands'
-import { ownChatAccountId } from '@/components/chat/codex-account/use-project-codex-account'
+import {
+  ownChatAccountId,
+  projectCodexAccountId
+} from '@/components/chat/codex-account/use-project-codex-account'
 import { runningBackgroundSubagents } from '@/components/chat/subagent-strip'
 import { acpApi } from '@/lib/acp-api'
 import { resumeMissesSession } from '@/lib/acp-resume-policy'
@@ -161,10 +164,10 @@ const restartFollowUp = new Map<
 export async function restartCodexSession(
   sessionId: string,
   options: { resend?: boolean; cancelTurn?: boolean; notice?: string } = {}
-): Promise<boolean | 'notice-failed'> {
+): Promise<boolean | 'notice-failed' | 'queued'> {
   if (isCodexAccountRestarting(sessionId)) {
     restartFollowUp.set(sessionId, options)
-    return false
+    return 'queued'
   }
   setCodexAccountRestarting(sessionId, true)
   let releasedShared = false
@@ -240,6 +243,9 @@ export async function restartCodexSession(
     })
     const active = useAcpStore.getState().sessions[sessionId]?.status === 'active'
     if (active && options.notice) {
+      // Composer sends are refused while this flag is set. Drop it for the
+      // notice, then put it back so the cleanup below still owns the restart.
+      setCodexAccountRestarting(sessionId, false)
       try {
         await useAcpStore.getState().sendPrompt(sessionId, options.notice)
       } catch (error) {
@@ -249,6 +255,8 @@ export async function restartCodexSession(
           message: `Chat ${sessionId} restarted, but its continuation notice failed: ${error instanceof Error ? error.message : String(error)}`
         })
         return 'notice-failed'
+      } finally {
+        setCodexAccountRestarting(sessionId, true)
       }
     }
     return active
@@ -266,12 +274,21 @@ export async function restartCodexSession(
     if (again) {
       restartFollowUp.delete(sessionId)
       const state = useAcpStore.getState()
-      if (
-        isOpen(state, sessionId) &&
-        isCodexSession(state, sessionId) &&
-        !runsProjectAccount(state, sessionId)
-      ) {
-        await restartCodexSession(sessionId, again)
+      if (isOpen(state, sessionId) && isCodexSession(state, sessionId)) {
+        if (!runsProjectAccount(state, sessionId)) {
+          await restartCodexSession(sessionId, again)
+        } else if (again.notice && state.sessions[sessionId]?.status === 'active') {
+          await useAcpStore
+            .getState()
+            .sendPrompt(sessionId, again.notice)
+            .catch((error: unknown) => {
+              void logFrontendError({
+                level: 'warn',
+                source: 'codexAccountSwitch.restart',
+                message: `Chat ${sessionId} moved, but its continuation notice failed: ${error instanceof Error ? error.message : String(error)}`
+              })
+            })
+        }
       }
     }
   }
@@ -358,7 +375,10 @@ export async function applyProjectCodexAccount(
     })
     void restartCodexSession(id)
   }
-  for (const id of Object.keys(state.openingHistoryIds)) void restartAfterReopen(id, projectId)
+  for (const id of Object.keys(state.openingHistoryIds)) {
+    if (ownAccount.has(id)) continue
+    void restartAfterReopen(id, projectId)
+  }
   for (const cwd of rewarmCwds) {
     useAcpStore
       .getState()
@@ -495,7 +515,15 @@ export async function switchChatCodexAccount(
     expectedAccountId: runsOn
   })
   if (!applied) return 'lost'
-  if ((accountId ?? chat.projectAccountId) === runsOn) return 'kept'
+  let resolved = accountId ?? chat.projectAccountId
+  if (accountId === null) {
+    try {
+      resolved = projectCodexAccountId(await codexAccountsApi.list(), projectId)
+    } catch {
+      resolved = chat.projectAccountId
+    }
+  }
+  if (resolved === runsOn) return 'kept'
   const idle = switchBlockedReason(useAcpStore.getState(), sessionId) === null
   const restart = restartCodexSession(
     sessionId,
@@ -507,5 +535,6 @@ export async function switchChatCodexAccount(
   }
   const outcome = await restart
   if (outcome === 'notice-failed') return 'notice-failed'
+  if (outcome === 'queued') return 'pending'
   return outcome ? 'restarted' : 'failed'
 }

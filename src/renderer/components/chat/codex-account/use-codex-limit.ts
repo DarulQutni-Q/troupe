@@ -117,14 +117,17 @@ export const useCodexResumeStore = create<ResumeState>((set, get) => ({
     void codexAccountsApi.setResume(sessionId, at).then(
       () => {
         const current = useAcpStore.getState().sessions[sessionId]?.openTurnId ?? null
-        // The host marks the turn when this request arrives. A turn that
-        // started while it was in flight is not "after" that mark, so tell
-        // the host to drop the schedule once the request has landed.
-        if (!ownsResume(sessionId, at, turnId) || turnReplaced(turnId, current)) {
+        const owns = ownsResume(sessionId, at, turnId)
+        const slotEmpty = !(sessionId in get().at)
+        // A newer schedule for this chat owns the host wait. Cancelling here
+        // would drop that newer time. Cancel only this attempt, or a slot
+        // that is already empty because the user cleared it locally.
+        if (owns && turnReplaced(turnId, current)) {
           return codexAccountsApi.setResume(sessionId, null).then(() => {
             if (ownsResume(sessionId, at, turnId)) get().forget(sessionId)
           })
         }
+        if (!owns && slotEmpty) return codexAccountsApi.setResume(sessionId, null)
       },
       (error: unknown) => {
         void logFrontendError({
@@ -227,9 +230,10 @@ export function useCodexLimit(sessionId: string): CodexLimit | null {
   async function switchTo(target: CodexAccountChoice): Promise<void> {
     if (useCodexSwitchingStore.getState()[sessionId]) return
     setSwitchingTo(sessionId, target.account.name)
-    cancelResume(sessionId)
-    // The clock clears locally. The host still continues at the reset unless told.
-    void codexAccountsApi.setResume(sessionId, null).catch(() => undefined)
+    const savedAt = useCodexResumeStore.getState().at[sessionId]
+    const savedTurn = useCodexResumeStore.getState().turns[sessionId]
+    const hadResume = sessionId in useCodexResumeStore.getState().at
+    useCodexResumeStore.getState().forget(sessionId)
     try {
       const moved = await switchChatCodexAccount(
         {
@@ -243,8 +247,22 @@ export function useCodexLimit(sessionId: string): CodexLimit | null {
         atLimit ? { notice: chatSwitchNotice(currentName, target.account.name, limitWindow) } : {}
       )
       await reloadAccounts()
+      if (moved === 'restarted' || moved === 'pending' || moved === 'notice-failed') {
+        void codexAccountsApi.setResume(sessionId, null).catch(() => undefined)
+      } else if (hadResume) {
+        useCodexResumeStore.setState((state) => ({
+          at: { ...state.at, [sessionId]: savedAt },
+          turns: { ...state.turns, [sessionId]: savedTurn }
+        }))
+      }
       showChatSwitchToast(chatSwitchToast(moved, target.account.name))
     } catch (err) {
+      if (hadResume && !(sessionId in useCodexResumeStore.getState().at)) {
+        useCodexResumeStore.setState((state) => ({
+          at: { ...state.at, [sessionId]: savedAt },
+          turns: { ...state.turns, [sessionId]: savedTurn }
+        }))
+      }
       toastAccountChoiceError(err, 'Could not switch')
       void reloadAccounts()
     } finally {
