@@ -922,6 +922,17 @@ async fn a_block_saved_under_an_installed_agents_bare_id_still_holds() {
     );
 }
 
+/// A bare switch moves even when its agent is not installed at startup, so
+/// installing the agent later cannot lift the block.
+#[tokio::test]
+async fn a_bare_block_moves_when_its_agent_is_not_installed_yet() {
+    let (engine, _data) = engine_with_saved_switches(&[], &[], &[("opencode", false)]).await;
+    assert_eq!(
+        engine.settings_view().agents,
+        [("acp-registry:opencode".to_string(), false)].into_iter().collect()
+    );
+}
+
 /// An agent the registry knows had its own row next to the bare duplicate,
 /// so a block saved on the duplicate never applied to it and is dropped.
 #[tokio::test]

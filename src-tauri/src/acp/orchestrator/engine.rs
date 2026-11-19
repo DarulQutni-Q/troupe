@@ -61,28 +61,23 @@ impl OrchestratorEngine {
         engine
     }
 
-    /// Switches were once saved under an installed agent's bare id. An agent
-    /// the registry lacked had only that row, so its switch moves to the
-    /// config id. An agent the registry knew also had its own row, which the
-    /// bare switch never applied to, so that switch is dropped. Done once and
-    /// saved, so a later registry record of the agent cannot lift a block.
+    /// Switches were once saved under an installed agent's bare id: any key
+    /// without the config-id prefix that the registry lacks, since registry
+    /// keys are never removed. An agent the registry lacked had only that
+    /// row, so its switch moves to the config id. An agent the registry knew
+    /// also had its own row, which the bare switch never applied to, so that
+    /// switch is dropped. The move applies in memory even when it cannot be
+    /// saved, and a later registry record or install cannot lift a block.
     fn migrate_bare_switches(&self) {
-        let Some(installed) = &self.installed else {
-            return;
-        };
-        let saved = self.settings.get();
-        let bare: Vec<String> = installed
-            .installed_agents()
-            .into_iter()
-            .map(|agent| agent.agent_id)
-            .filter(|id| saved.agents.contains_key(id) && !self.registry.contains(id))
-            .collect();
-        if bare.is_empty() {
-            return;
-        }
-        let moved = self.settings.update(|settings| {
-            for id in &bare {
-                let Some(allowed) = settings.agents.remove(id) else {
+        let moved = self.settings.apply_and_save(|settings| {
+            let bare: Vec<String> = settings
+                .agents
+                .keys()
+                .filter(|id| !id.starts_with(REGISTRY_PREFIX) && !self.registry.contains(id))
+                .cloned()
+                .collect();
+            for id in bare {
+                let Some(allowed) = settings.agents.remove(&id) else {
                     continue;
                 };
                 let key = format!("{REGISTRY_PREFIX}{id}");
@@ -92,7 +87,7 @@ impl OrchestratorEngine {
             }
         });
         if let Err(error) = moved {
-            log::warn!("[orchestrator] could not move bare sub-agent switches: {error}");
+            log::warn!("[orchestrator] could not save the moved sub-agent switches: {error}");
         }
     }
 

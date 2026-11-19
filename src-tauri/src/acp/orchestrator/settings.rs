@@ -148,6 +148,26 @@ impl SettingsStore {
         self.update(|settings| *settings = input)
     }
 
+    /// Apply `edit` in memory, then save it when it changed anything. A
+    /// failed save keeps the edit for this run. A file from a newer host is
+    /// never written.
+    pub(crate) fn apply_and_save(
+        &self,
+        edit: impl FnOnce(&mut OrchestratorSettings),
+    ) -> Result<(), String> {
+        let _writer = self.writer.lock();
+        let mut next = self.get();
+        edit(&mut next);
+        if next == self.get() {
+            return Ok(());
+        }
+        *self.settings.lock() = next.clone();
+        match (&self.path, self.newer_schema) {
+            (Some(path), None) => persist(path, &next),
+            _ => Ok(()),
+        }
+    }
+
     /// Apply `edit` to the current settings, then validate and persist the
     /// result as one write. A refused edit leaves the settings unchanged.
     pub(crate) fn update(
