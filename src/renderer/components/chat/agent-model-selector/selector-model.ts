@@ -1,6 +1,8 @@
 import type { PersistedModelCatalog } from '@shared/types/persistence.types'
 import type { StoredAgentConfig } from '@/lib/acp-agents-persistence'
 import type { AgentCapabilities, SessionConfigOption, SessionModelState } from '@/lib/acp-api'
+import { canonicalAgentDisplayName } from '@/lib/agents/acp-registry'
+import { sameAgentId } from '@/lib/agents/agent-aliases'
 import type { SupportedAcpAgentEntry } from '@/lib/agents/supported-acp-agents'
 import {
   flattenConfigOptionValues,
@@ -250,6 +252,16 @@ export interface AgentTab {
   entry: SupportedAcpAgentEntry | null
 }
 
+/** True when this tab is the agent named by `configId`, including a legacy alias. */
+export function agentTabSelected(tab: AgentTab, configId: string | null): boolean {
+  if (!configId) return false
+  return (
+    sameAgentId(tab.configId, configId) ||
+    (tab.config != null && sameAgentId(tab.config.id, configId)) ||
+    (tab.entry != null && sameAgentId(tab.entry.id, configId))
+  )
+}
+
 function tabFromEntry(
   entry: SupportedAcpAgentEntry,
   agentConfigs: readonly StoredAgentConfig[]
@@ -281,15 +293,27 @@ function allAgentTabs({
   const byId = new Map(all.map((tab) => [tab.configId, tab]))
   const pinnedTab = (configId: string | null): AgentTab | null => {
     if (!configId) return null
-    const found = byId.get(configId)
+    const found = all.find((tab) => agentTabSelected(tab, configId))
     if (found) return found
     const config = agentConfigs.find((c) => c.id === configId)
-    return config ? { configId, name: config.name, config, entry: null } : null
+    return config
+      ? {
+          configId,
+          name: canonicalAgentDisplayName(config.id, config.name),
+          config,
+          entry: null
+        }
+      : null
   }
   const extra: AgentTab[] = []
   for (const id of [currentConfigId, armedConfigId, viewConfigId]) {
     const tab = pinnedTab(id)
-    if (tab && !byId.has(tab.configId) && !extra.some((t) => t.configId === tab.configId)) {
+    if (
+      tab &&
+      !byId.has(tab.configId) &&
+      !all.some((existing) => agentTabSelected(existing, tab.configId)) &&
+      !extra.some((existing) => agentTabSelected(existing, tab.configId))
+    ) {
       extra.push(tab)
     }
   }

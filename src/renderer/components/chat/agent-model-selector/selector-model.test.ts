@@ -58,6 +58,37 @@ const E = config('e', 'Epsilon')
 const CONFIGS = [A, B, C, D, E]
 const ENTRIES = CONFIGS.map((c) => entry(c, c.id))
 
+describe('stableAgentTabs OpenCode alias', () => {
+  function opencodeEntry(name: string): SupportedAcpAgentEntry {
+    return entry(config('acp-registry:opencode', name), 'opencode')
+  }
+
+  it.each([
+    'OpenCode V2',
+    'OpenCode (legacy ID)'
+  ])('shows one OpenCode tab when the open chat is saved as %s', (legacyName) => {
+    const opencode = opencodeEntry('OpenCode')
+    const gemini = entry(config('acp-registry:gemini', 'Gemini'), 'gemini')
+    const saved = config('acp-registry:opencode-v2', legacyName)
+    const { visible, overflow } = stableAgentTabs({
+      currentConfigId: saved.id,
+      armedConfigId: null,
+      viewConfigId: saved.id,
+      entries: [opencode, gemini],
+      agentConfigs: [opencode.config!, gemini.config!, saved],
+      capacity: 8
+    })
+    const tabs = [...visible, ...overflow]
+    const opencodeTabs = tabs.filter(
+      (tab) => tab.entry?.id === 'opencode' || tab.configId === saved.id || tab.name === legacyName
+    )
+    expect(opencodeTabs).toHaveLength(1)
+    expect(opencodeTabs[0]?.name).toBe('OpenCode')
+    expect(opencodeTabs[0]?.entry?.id).toBe('opencode')
+    expect(tabs.some((tab) => tab.entry?.id === 'gemini')).toBe(true)
+  })
+})
+
 describe('buildAgentTabs', () => {
   it('puts the current agent first, then the armed target, then ready agents', () => {
     const { visible, overflow } = buildAgentTabs({

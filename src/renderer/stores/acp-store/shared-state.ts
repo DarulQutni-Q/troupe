@@ -22,6 +22,7 @@ import {
   isCodexAccountSignedOutError,
   isDefiniteSpawnRejection
 } from '@/lib/agents/acp-spawn-errors'
+import { findStoredAgentConfig } from '@/lib/agents/agent-aliases'
 import { __resetCommandEngineForTesting } from '@/lib/command-engine'
 import { __clearCommandJournalForTesting } from '@/lib/command-journal'
 import { projectForCwd, resolveAgentSpawnEnv } from '@/lib/env-parser'
@@ -861,7 +862,7 @@ function currentLaunch(
   env: Record<string, string>
   signature: string
 } | null {
-  const config = state.agentConfigs.find((c) => c.id === configId)
+  const config = findStoredAgentConfig(state.agentConfigs, configId)
   if (!config) return null
   const project = resolveSpawnProject(cwd, projectId)
   const resolvedProjectId = project?.id ?? ''

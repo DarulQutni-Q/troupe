@@ -120,6 +120,7 @@ import {
   rememberLastSelectedAgent
 } from '@/lib/agents/last-selected-agent'
 import {
+  entryServesConfigId,
   installedBinaryConfig,
   manualBinaryConfig,
   pickDefaultConfiguredAgent,
@@ -360,7 +361,9 @@ export function AgentLauncher({ paneId, className }: AgentLauncherProps): React.
   const targetRegistry = usingRemoteRegistry ? activeRegistry : remoteRegistry
   const selectedEntry = useMemo(
     () =>
-      supportedAgents.find((entry) => entry.configId === selectedConfigId) ??
+      supportedAgents.find((entry) =>
+        selectedConfigId ? entryServesConfigId(entry, selectedConfigId) : false
+      ) ??
       pickDefaultSupportedAgent(supportedAgents) ??
       supportedAgents[0] ??
       null,
