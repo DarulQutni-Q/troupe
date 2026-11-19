@@ -21,7 +21,7 @@ function setResumeAt(sessionId: string, at: number | null): void {
     return at === null ? rest : { ...rest, [sessionId]: at }
   }, true)
   if (at === null) {
-    useCodexResumeStore.getState().cancel(sessionId)
+    useCodexResumeStore.getState().forget(sessionId)
     return
   }
   useCodexResumeStore.setState((state) => ({ at: { ...state.at, [sessionId]: at } }))

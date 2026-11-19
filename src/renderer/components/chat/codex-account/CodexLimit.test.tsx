@@ -92,6 +92,7 @@ beforeEach(() => {
   switcher.switchProjectCodexAccount.mockResolvedValue(true)
   switcher.switchChatCodexAccount.mockResolvedValue('restarted')
   api.setResume.mockResolvedValue(undefined)
+  useCodexResumeStore.setState({ at: {}, turns: {}, timers: {} })
 })
 
 describe('CodexLimitWarning', () => {
@@ -190,6 +191,47 @@ describe('CodexLimitNotice', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Switch to Work and continue' }))
     await vi.waitFor(() => expect(api.setResume).toHaveBeenCalledWith('s1', null))
     expect(switcher.switchChatCodexAccount).toHaveBeenCalled()
+  })
+
+  it('drops a resume the host refused and keeps the wait button', async () => {
+    api.setResume.mockRejectedValue(new Error('offline'))
+    const resetsAt = new Date(Date.now() + 3_600_000).toISOString()
+    api.usage.mockResolvedValue([
+      read('default', 100, resetsAt),
+      read('ab12', 100, resetsAt),
+      read('cd34', 100, resetsAt)
+    ])
+    render(<CodexLimitNotice sessionId="s1" />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue when it resets' }))
+    await vi.waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith('Could not schedule the continue: offline')
+    )
+    expect(screen.getByRole('button', { name: 'Continue when it resets' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument()
+  })
+
+  it('keeps the scheduled continue when cancelling it fails', async () => {
+    const resetsAt = new Date(Date.now() + 3_600_000).toISOString()
+    api.usage.mockResolvedValue([
+      read('default', 100, resetsAt),
+      read('ab12', 100, resetsAt),
+      read('cd34', 100, resetsAt)
+    ])
+    render(<CodexLimitNotice sessionId="s1" />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue when it resets' }))
+    expect(await screen.findByRole('button', { name: 'Cancel' })).toBeInTheDocument()
+    api.setResume.mockRejectedValue(new Error('offline'))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await vi.waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        'Could not cancel the continue',
+        expect.objectContaining({
+          description: 'offline',
+          action: expect.objectContaining({ label: 'Retry' })
+        })
+      )
+    )
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument()
   })
 
   it('offers wait for reset and Add account when no other account has room', async () => {

@@ -20,7 +20,7 @@ import {
 } from '@/stores/codex-account-switch'
 import { useWorkspaceStore } from '@/stores/workspace-store'
 import { ensureCodexResumeTurnWatch, isAtLimit } from './use-codex-limit'
-import { type CodexAccountChoice, projectCodexAccountId } from './use-project-codex-account'
+import { type CodexAccountChoice, codexAccountFor } from './use-project-codex-account'
 
 export type AutoSwitchDecision =
   | { kind: 'switch'; to: CodexAccountChoice }
@@ -98,7 +98,8 @@ async function stampProbeLimits(): Promise<void> {
     // A finished chat stays on screen. Only a turn that is still held is marked.
     const held = session.activeTurn === true || session.openTurnId != null
     if (!held || !runsProjectAccount(state, sessionId)) continue
-    const accountId = projectCodexAccountId(snapshot, session.projectId)
+    // The chat's own account, else the project's. A pin is not the project account.
+    const accountId = codexAccountFor(snapshot, session.projectId, sessionId)
     const window = primaryCodexWindow(reads[accountId])
     if (!window || window.percent < 100 || !windowStillOpen(window)) continue
     const limit: ClaudeRateLimit = {

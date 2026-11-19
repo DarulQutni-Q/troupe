@@ -12,6 +12,7 @@ import { toast } from 'sonner'
 import { runningBackgroundCommands } from '@/components/chat/background-commands'
 import { ownChatAccountId } from '@/components/chat/codex-account/use-project-codex-account'
 import { runningBackgroundSubagents } from '@/components/chat/subagent-strip'
+import { acpApi } from '@/lib/acp-api'
 import { resumeMissesSession } from '@/lib/acp-resume-policy'
 import { codexAccountsApi } from '@/lib/codex-accounts-api'
 import { logFrontendError } from '@/lib/log-api'
@@ -27,6 +28,7 @@ import {
   switchBlockedReason,
   useAcpStore
 } from '@/stores/acp-store'
+import { liveSiblingCount, reloadInFlight } from '@/stores/acp-store/reload-guard'
 import { useAgentChatLifetimeStore } from '@/stores/agent-chat-lifetime-store'
 import { isCodexAccountRestarting, setCodexAccountRestarting } from '@/stores/codex-account-restart'
 import { getAgentChatSessionIdsInAllTrees, useWorkspaceStore } from '@/stores/workspace-store'
@@ -150,19 +152,6 @@ const restartFollowUp = new Map<
   { resend?: boolean; cancelTurn?: boolean; notice?: string }
 >()
 
-async function waitForSharedAgent(agentId: string, sessionId: string): Promise<void> {
-  for (;;) {
-    const state = useAcpStore.getState()
-    const busy = Object.entries(state.sessions).find(([id, session]) => {
-      if (id === sessionId || session.agentId !== agentId || !isOpen(state, id)) return false
-      const reason = switchBlockedReason(state, id)
-      return reason !== null && !isBackgroundWorkBlock(reason)
-    })
-    if (!busy) return
-    await waitUntilIdle(busy[0], true)
-  }
-}
-
 /**
  * Restart one Codex chat on the Account it resolves to now and resume the
  * same session. `notice` is a new prompt once the chat runs again. `resend`
@@ -172,12 +161,13 @@ async function waitForSharedAgent(agentId: string, sessionId: string): Promise<v
 export async function restartCodexSession(
   sessionId: string,
   options: { resend?: boolean; cancelTurn?: boolean; notice?: string } = {}
-): Promise<boolean> {
+): Promise<boolean | 'notice-failed'> {
   if (isCodexAccountRestarting(sessionId)) {
     restartFollowUp.set(sessionId, options)
     return false
   }
   setCodexAccountRestarting(sessionId, true)
+  let releasedShared = false
   try {
     const store = useAcpStore.getState()
     if (!isOpen(store, sessionId) || !isCodexSession(store, sessionId)) return false
@@ -208,19 +198,27 @@ export async function restartCodexSession(
     // the same exhausted account.
     if (!(await waitUntilIdle(sessionId, Boolean(options.cancelTurn)))) return false
     const oldAgentId = useAcpStore.getState().sessions[sessionId]?.agentId
+    const shared =
+      oldAgentId !== undefined &&
+      liveSiblingCount(useAcpStore.getState().sessions, sessionId, oldAgentId) > 0
     if (!openChatIds().has(sessionId)) {
-      if (oldAgentId) await stopOldAgent(oldAgentId, `turn of unopened chat ${sessionId} ended`)
+      if (oldAgentId && !shared) {
+        await stopOldAgent(oldAgentId, `turn of unopened chat ${sessionId} ended`)
+      }
       return false
     }
     void logFrontendError({
       level: 'info',
       source: 'codexAccountSwitch.restart',
-      message: `Restarting chat ${sessionId} on its project account (resend=${Boolean(options.resend)})`
+      message: `Restarting chat ${sessionId} on its project account (resend=${Boolean(options.resend)}, shared agent=${shared})`
     })
-    // Stop the old process first: its reuse key goes with it, and a web reopen
-    // cannot adopt it, so the reopen spawns with the new Account.
-    if (oldAgentId) {
-      await waitForSharedAgent(oldAgentId, sessionId)
+    // Release the old process first so a web reopen cannot adopt it. Another
+    // open chat on that process keeps it; only this chat's session closes.
+    if (shared && oldAgentId) {
+      reloadInFlight.add(sessionId)
+      releasedShared = true
+      await acpApi.closeSession(oldAgentId, sessionId).catch(() => undefined)
+    } else if (oldAgentId) {
       await useAcpStore
         .getState()
         .killAgent(oldAgentId)
@@ -242,16 +240,16 @@ export async function restartCodexSession(
     })
     const active = useAcpStore.getState().sessions[sessionId]?.status === 'active'
     if (active && options.notice) {
-      await useAcpStore
-        .getState()
-        .sendPrompt(sessionId, options.notice)
-        .catch((error: unknown) => {
-          void logFrontendError({
-            level: 'warn',
-            source: 'codexAccountSwitch.restart',
-            message: `Chat ${sessionId} restarted, but its continuation notice failed: ${error instanceof Error ? error.message : String(error)}`
-          })
+      try {
+        await useAcpStore.getState().sendPrompt(sessionId, options.notice)
+      } catch (error) {
+        void logFrontendError({
+          level: 'warn',
+          source: 'codexAccountSwitch.restart',
+          message: `Chat ${sessionId} restarted, but its continuation notice failed: ${error instanceof Error ? error.message : String(error)}`
         })
+        return 'notice-failed'
+      }
     }
     return active
   } catch (error) {
@@ -262,6 +260,7 @@ export async function restartCodexSession(
     })
     return false
   } finally {
+    if (releasedShared) reloadInFlight.delete(sessionId)
     setCodexAccountRestarting(sessionId, false)
     const again = restartFollowUp.get(sessionId)
     if (again) {
@@ -297,7 +296,8 @@ async function restartAfterReopen(sessionId: string, projectId: string): Promise
  * in the background when their turn ends. An unopened chat is not reopened.
  * The last prompt is not sent again.
  */
-async function chatsWithOwnAccount(): Promise<Set<string>> {
+/** `null` when the list could not be read. An empty set means no chat owns an account. */
+async function chatsWithOwnAccount(): Promise<Set<string> | null> {
   try {
     const snapshot = await codexAccountsApi.list()
     return new Set(
@@ -309,9 +309,9 @@ async function chatsWithOwnAccount(): Promise<Set<string>> {
     void logFrontendError({
       level: 'warn',
       source: 'codexAccountSwitch.apply',
-      message: `Listing Codex accounts failed; restarting every chat of the project: ${error instanceof Error ? error.message : String(error)}`
+      message: `Listing Codex accounts failed; left chats alone until the list can be read: ${error instanceof Error ? error.message : String(error)}`
     })
-    return new Set()
+    return null
   }
 }
 
@@ -321,6 +321,7 @@ export async function applyProjectCodexAccount(
 ): Promise<void> {
   if (!options.credentialsRenewed) renewAgentCredentials(CODEX_AGENT_CONFIG_ID, projectId)
   const ownAccount = await chatsWithOwnAccount()
+  if (ownAccount === null) return
   const state = useAcpStore.getState()
   const openIds = openChatIds()
   const projectChats = Object.values(state.sessions).filter(
@@ -419,7 +420,14 @@ export function chatSwitchNotice(from: string, to: string, window: string): stri
   return `You moved this chat from Codex account ${from} to ${to} because ${from} reached its ${window} limit. Continue the task you were working on. Subagents and background commands that were running before the switch were stopped; restart the ones that are still needed.`
 }
 
-export type ChatAccountSwitch = 'unchanged' | 'kept' | 'lost' | 'restarted' | 'failed' | 'pending'
+export type ChatAccountSwitch =
+  | 'unchanged'
+  | 'kept'
+  | 'lost'
+  | 'restarted'
+  | 'failed'
+  | 'pending'
+  | 'notice-failed'
 
 export interface ChatSwitchToast {
   kind: 'success' | 'info' | 'error'
@@ -453,6 +461,12 @@ export function chatSwitchToast(
         kind: 'error',
         title: `Could not restart this chat on ${to}`,
         description: 'Send a message to continue.'
+      }
+    case 'notice-failed':
+      return {
+        kind: 'error',
+        title: 'The chat moved to the new account',
+        description: 'The message asking it to continue was not sent. Send a message to continue.'
       }
   }
 }
@@ -491,5 +505,7 @@ export async function switchChatCodexAccount(
     void restart
     return 'pending'
   }
-  return (await restart) ? 'restarted' : 'failed'
+  const outcome = await restart
+  if (outcome === 'notice-failed') return 'notice-failed'
+  return outcome ? 'restarted' : 'failed'
 }

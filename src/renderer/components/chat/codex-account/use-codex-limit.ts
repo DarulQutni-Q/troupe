@@ -71,6 +71,9 @@ interface ResumeState {
   turns: Record<string, string | null>
   timers: Record<string, ReturnType<typeof setTimeout>>
   schedule: (sessionId: string, at: number) => void
+  /** Drop the local schedule. Does not talk to the host. */
+  forget: (sessionId: string) => void
+  /** Drop the local schedule and ask the host to drop it. */
   cancel: (sessionId: string) => void
 }
 
@@ -80,35 +83,70 @@ function turnReplaced(scheduled: string | null, current: string | null): boolean
   return current !== null && current !== scheduled
 }
 
+function ownsResume(sessionId: string, at: number, turnId: string | null): boolean {
+  const state = useCodexResumeStore.getState()
+  return state.at[sessionId] === at && state.turns[sessionId] === turnId
+}
+
+/** Drop the local schedule. The host copy is a separate call. */
+function forgetResume(
+  set: (partial: Partial<ResumeState>) => void,
+  get: () => ResumeState,
+  sessionId: string
+): void {
+  const timer = get().timers[sessionId]
+  if (timer) clearTimeout(timer)
+  set({
+    at: Object.fromEntries(Object.entries(get().at).filter(([id]) => id !== sessionId)),
+    turns: Object.fromEntries(Object.entries(get().turns).filter(([id]) => id !== sessionId)),
+    timers: Object.fromEntries(Object.entries(get().timers).filter(([id]) => id !== sessionId))
+  })
+}
+
 export const useCodexResumeStore = create<ResumeState>((set, get) => ({
   at: {},
   turns: {},
   timers: {},
   schedule: (sessionId, at) => {
-    get().cancel(sessionId)
+    forgetResume(set, get, sessionId)
     const turnId = useAcpStore.getState().sessions[sessionId]?.openTurnId ?? null
     set((state) => ({
       at: { ...state.at, [sessionId]: at },
       turns: { ...state.turns, [sessionId]: turnId }
     }))
-    void Promise.resolve()
-      .then(() => codexAccountsApi.setResume(sessionId, at))
-      .catch((error: unknown) => {
+    void codexAccountsApi.setResume(sessionId, at).then(
+      () => {
+        const current = useAcpStore.getState().sessions[sessionId]?.openTurnId ?? null
+        // The host marks the turn when this request arrives. A turn that
+        // started while it was in flight is not "after" that mark, so tell
+        // the host to drop the schedule once the request has landed.
+        if (!ownsResume(sessionId, at, turnId) || turnReplaced(turnId, current)) {
+          return codexAccountsApi.setResume(sessionId, null).then(() => {
+            if (ownsResume(sessionId, at, turnId)) get().forget(sessionId)
+          })
+        }
+      },
+      (error: unknown) => {
         void logFrontendError({
           level: 'warn',
           source: 'codexLimit.resume',
           message: `Could not ask the host to continue chat ${sessionId}: ${error instanceof Error ? error.message : String(error)}`
         })
-      })
+        if (!ownsResume(sessionId, at, turnId)) return
+        get().forget(sessionId)
+        toastAccountChoiceError(error, 'Could not schedule the continue')
+      }
+    )
   },
+  forget: (sessionId) => forgetResume(set, get, sessionId),
   cancel: (sessionId) => {
-    const timer = get().timers[sessionId]
-    if (timer) clearTimeout(timer)
-    set((state) => {
-      const { [sessionId]: _at, ...nextAt } = state.at
-      const { [sessionId]: _turn, ...turns } = state.turns
-      const { [sessionId]: _timer, ...timers } = state.timers
-      return { at: nextAt, turns, timers }
+    forgetResume(set, get, sessionId)
+    void codexAccountsApi.setResume(sessionId, null).catch((error: unknown) => {
+      void logFrontendError({
+        level: 'warn',
+        source: 'codexLimit.resume',
+        message: `Could not cancel the continue for chat ${sessionId}: ${error instanceof Error ? error.message : String(error)}`
+      })
     })
   }
 }))

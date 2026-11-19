@@ -146,6 +146,39 @@ describe('claude account switch', () => {
     expect(isCodexSession(state, 'other')).toBe(false)
   })
 
+  it('closes only this chat when another open chat still uses the agent', async () => {
+    const closeSession = vi.spyOn(acpApi, 'closeSession').mockResolvedValue(undefined)
+    useAcpStore.setState((s) => ({
+      sessions: {
+        ...s.sessions,
+        c1: { ...s.sessions.c1, agentId: 'agent-shared' },
+        c2: { ...s.sessions.c2, agentId: 'agent-shared', activeTurn: false, openTurnId: null }
+      }
+    }))
+    await expect(restartCodexSession('c1')).resolves.toBe(true)
+    expect(closeSession).toHaveBeenCalledWith('agent-shared', 'c1')
+    expect(killAgent).not.toHaveBeenCalled()
+    closeSession.mockRestore()
+  })
+
+  it('reports a continuation notice the restarted chat did not accept', async () => {
+    const sendPrompt = vi.fn(async () => {
+      throw new Error('offline')
+    })
+    useAcpStore.setState({ sendPrompt } as never)
+    await expect(restartCodexSession('c1', { notice: 'go on' })).resolves.toBe('notice-failed')
+    expect(sendPrompt).toHaveBeenCalledWith('c1', 'go on')
+    expect(killAgent).toHaveBeenCalledWith('agent-c1')
+    expect(useAcpStore.getState().sessions.c1?.status).toBe('active')
+  })
+
+  it('leaves every chat alone when the account list cannot be read', async () => {
+    api.list.mockRejectedValue(new Error('offline'))
+    await applyProjectCodexAccount('office')
+    expect(retryCrashedSession).not.toHaveBeenCalled()
+    expect(killAgent).not.toHaveBeenCalled()
+  })
+
   it('restarts an idle chat on a fresh process without resending, and clears the old limit', async () => {
     await expect(restartCodexSession('c1')).resolves.toBe(true)
     expect(killAgent).toHaveBeenCalledWith('agent-c1')
