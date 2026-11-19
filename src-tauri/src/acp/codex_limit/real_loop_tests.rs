@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -24,7 +25,7 @@ const SCHEDULE_FILE: &str = "codex-limit-resumes.json";
 
 struct FixedUsage {
     by_id: HashMap<String, f64>,
-    resets_at: i64,
+    resets_at: Arc<AtomicI64>,
 }
 
 #[async_trait::async_trait]
@@ -44,7 +45,7 @@ impl CodexUsageProbe for FixedUsage {
             "rateLimits": {
                 "primary": {
                     "usedPercent": percent,
-                    "resetsAt": self.resets_at,
+                    "resetsAt": self.resets_at.load(Ordering::Relaxed),
                     "windowDurationMins": 300
                 }
             }
@@ -58,7 +59,7 @@ struct Host {
     relay: Arc<WsRelaySink>,
     persistence: Arc<SessionPersistence>,
     accounts: HashMap<&'static str, String>,
-    resets_at: i64,
+    resets_at: Arc<AtomicI64>,
     _serial: tokio::sync::MutexGuard<'static, ()>,
 }
 
@@ -89,9 +90,10 @@ impl Host {
             percents.insert(id.clone(), *percent);
             accounts.insert(*name, id);
         }
+        let resets_at = Arc::new(AtomicI64::new(resets_at));
         codex.set_usage_probe_for_test(Arc::new(FixedUsage {
             by_id: percents,
-            resets_at,
+            resets_at: Arc::clone(&resets_at),
         }));
         codex
             .set_project_account(
@@ -333,12 +335,16 @@ async fn with_no_room_the_chat_continues_at_the_reset_after_its_agent_was_reaped
     let Some(python) = find_python() else {
         return;
     };
-    let resets_at = now_secs() + 3;
-    let Some(host) = Host::start(&[("default", 100.0), ("Work", 100.0)], "Work", resets_at).await
+    let Some(host) = Host::start(&[("default", 100.0), ("Work", 100.0)], "Work", now_secs() + 3600)
+        .await
     else {
         return;
     };
     let (old_agent, session_id) = host.open_chat(python).await;
+    // The reset is measured from the open chat, so host setup cannot make it due
+    // before the test has seen the scheduled resume.
+    let resets_at = now_secs() + 3;
+    host.resets_at.store(resets_at, Ordering::Relaxed);
     host.prompt_and_leave(&old_agent, &session_id, "codexlimit");
 
     let scheduled = host
@@ -350,7 +356,7 @@ async fn with_no_room_the_chat_continues_at_the_reset_after_its_agent_was_reaped
             "sessionId": session_id.0,
             "projectId": PROJECT,
             "action": "resume_scheduled",
-            "at": host.resets_at * 1000,
+            "at": resets_at * 1000,
         })]
     );
     let file: Value =

@@ -554,9 +554,9 @@ pub struct AcpManager {
     codex_agent: Arc<crate::acp::codex_agent::CodexAgentService>,
     launches: Mutex<HashMap<AgentId, AgentLaunch>>,
     recipes: Mutex<HashMap<SessionId, LaunchRecipe>>,
-    /// Chats whose launch recipe must survive an idle reap: a Codex chat
-    /// waiting for its limit to reset. Claude keeps its own through the
-    /// callback `forget_recipes_without_agent` receives.
+    /// Chats whose launch recipe must survive an idle reap. Both the Claude
+    /// and the Codex limit supervisors hold a chat here while it waits for
+    /// its limit to reset, and release it when that wait ends.
     kept_recipes: Mutex<std::collections::HashSet<String>>,
     claude_limit: std::sync::OnceLock<crate::acp::claude_limit::ClaudeLimitHandle>,
     codex_limit: std::sync::OnceLock<crate::acp::codex_limit::CodexLimitHandle>,

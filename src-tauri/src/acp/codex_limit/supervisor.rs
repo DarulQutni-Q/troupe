@@ -105,10 +105,10 @@ impl Supervisor {
         }
     }
 
+    /// Forget the recipe of every chat whose agent stopped and that neither
+    /// supervisor is holding for a scheduled resume.
     fn forget_unheld_recipes(&self) {
-        let schedule = &self.schedule;
-        self.acp
-            .forget_recipes_without_agent(|session_id| schedule.get(&session_id.0).is_some());
+        self.acp.forget_recipes_without_agent();
     }
 
     fn hold_recipe(&self, session_id: &str) {
@@ -243,6 +243,7 @@ impl Supervisor {
             }
             LimitDecision::ResumeAt { at } => {
                 let at = epoch_secs(at);
+                self.hold_recipe(&session_id.0);
                 self.schedule.insert(ScheduledResume {
                     session_id: session_id.0.clone(),
                     project_id: project_id.clone(),
@@ -251,7 +252,6 @@ impl Supervisor {
                     window: Some(kind),
                     turn_mark: self.clock.now(),
                 });
-                self.hold_recipe(&session_id.0);
                 self.emit(
                     &session_id,
                     &project_id,
@@ -282,6 +282,7 @@ impl Supervisor {
                 }
                 let project_id = recipe.launch.project_id.clone().unwrap_or_default();
                 let at = epoch_secs(at);
+                self.hold_recipe(&session_id.0);
                 self.schedule.insert(ScheduledResume {
                     session_id: session_id.0.clone(),
                     project_id: project_id.clone(),
@@ -290,7 +291,6 @@ impl Supervisor {
                     window: None,
                     turn_mark: self.clock.now(),
                 });
-                self.hold_recipe(&session_id.0);
                 log::info!("[codex-limit] chat {chat} continues at {at} (asked by a client)");
                 self.emit(
                     session_id,
@@ -455,20 +455,7 @@ impl Supervisor {
         session_id: &SessionId,
         except: Option<&AgentId>,
     ) -> Option<AgentId> {
-        for agent in self.acp.list_agents() {
-            if Some(&agent) == except {
-                continue;
-            }
-            if self
-                .acp
-                .owns_session(&agent, session_id.clone())
-                .await
-                .unwrap_or(false)
-            {
-                return Some(agent);
-            }
-        }
-        None
+        crate::acp::limit_runtime::live_owner(&self.acp, session_id, except).await
     }
 
     pub(super) fn emit(&self, session_id: &SessionId, project_id: &str, action: CodexLimitAction) {
@@ -484,12 +471,7 @@ impl Supervisor {
     }
 }
 
-pub(super) fn scrub(error: &str, session_id: &SessionId) -> String {
-    if session_id.0.is_empty() {
-        return error.to_string();
-    }
-    error.replace(&session_id.0, &redact_session_id(&session_id.0))
-}
+pub(super) use crate::acp::limit_runtime::scrub;
 
 fn account_ref(snapshot: &CodexAccountsSnapshot, id: &str) -> AccountRef {
     let name = snapshot

@@ -35,6 +35,7 @@ pub mod host_ticket;
 pub mod https_only;
 pub mod install;
 pub mod legacy_models;
+pub mod limit_runtime;
 pub mod manager;
 pub mod mcp_oauth;
 pub mod mcp_probe;
