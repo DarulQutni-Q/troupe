@@ -94,6 +94,7 @@ const snapshot = (autoSwitch = true) => ({
   accounts: [account('default', 'Personal'), account('ab12', 'Work'), account('cd34', 'Side')],
   defaultAccountId: 'default',
   projectAccounts: {} as Record<string, string>,
+  chatAccounts: {} as Record<string, string>,
   autoSwitch
 })
 

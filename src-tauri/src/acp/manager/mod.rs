@@ -428,7 +428,7 @@ pub struct SpawnOutcome {
 }
 
 /// What a spawn opens: the Project selects the Claude and Codex Account, and
-/// the chat the agent is started for can select its own Claude Account.
+/// the chat the agent is started for can select its own Account.
 #[derive(Debug, Clone, Default)]
 pub struct SpawnScope {
     pub project_id: Option<String>,
@@ -554,7 +554,12 @@ pub struct AcpManager {
     codex_agent: Arc<crate::acp::codex_agent::CodexAgentService>,
     launches: Mutex<HashMap<AgentId, AgentLaunch>>,
     recipes: Mutex<HashMap<SessionId, LaunchRecipe>>,
+    /// Chats whose launch recipe must survive an idle reap: a Codex chat
+    /// waiting for its limit to reset. Claude keeps its own through the
+    /// callback `forget_recipes_without_agent` receives.
+    kept_recipes: Mutex<std::collections::HashSet<String>>,
     claude_limit: std::sync::OnceLock<crate::acp::claude_limit::ClaudeLimitHandle>,
+    codex_limit: std::sync::OnceLock<crate::acp::codex_limit::CodexLimitHandle>,
     reopen_gates: Arc<reopen_gate::ReopenGates>,
 }
 
@@ -601,7 +606,9 @@ impl AcpManager {
             codex_agent: Arc::new(crate::acp::codex_agent::CodexAgentService::without_host_state()),
             launches: Mutex::new(HashMap::new()),
             recipes: Mutex::new(HashMap::new()),
+            kept_recipes: Mutex::new(std::collections::HashSet::new()),
             claude_limit: std::sync::OnceLock::new(),
+            codex_limit: std::sync::OnceLock::new(),
             reopen_gates: Arc::default(),
         }
     }
@@ -659,7 +666,9 @@ impl AcpManager {
             codex_agent: Arc::new(crate::acp::codex_agent::CodexAgentService::without_host_state()),
             launches: Mutex::new(HashMap::new()),
             recipes: Mutex::new(HashMap::new()),
+            kept_recipes: Mutex::new(std::collections::HashSet::new()),
             claude_limit: std::sync::OnceLock::new(),
+            codex_limit: std::sync::OnceLock::new(),
             reopen_gates: Arc::default(),
         }
     }
@@ -796,7 +805,7 @@ impl AcpManager {
         scope: SpawnScope,
     ) -> Result<SpawnOutcome, String> {
         let launch_config = config.clone();
-        let (host_auth_ready, claude) = self
+        let (host_auth_ready, claude, codex) = self
             .prepare_spawn_config(&mut config, scope.project_id.as_deref(), &scope.chat)
             .await?;
         let outcome = self
@@ -808,6 +817,7 @@ impl AcpManager {
                 config: launch_config,
                 project_id: scope.project_id,
                 claude,
+                codex,
             },
         );
         Ok(outcome)
@@ -822,6 +832,28 @@ impl AcpManager {
     #[must_use]
     pub fn claude_limit(&self) -> Option<&crate::acp::claude_limit::ClaudeLimitHandle> {
         self.claude_limit.get()
+    }
+
+    pub fn set_codex_limit(&self, handle: crate::acp::codex_limit::CodexLimitHandle) {
+        if self.codex_limit.set(handle).is_err() {
+            log::warn!("[codex-limit] supervisor already installed; kept the first");
+        }
+    }
+
+    #[must_use]
+    pub fn codex_limit(&self) -> Option<&crate::acp::codex_limit::CodexLimitHandle> {
+        self.codex_limit.get()
+    }
+
+    /// Keep or drop the launch recipe of a chat whose agent may be reaped
+    /// while it waits, for example for a Codex limit to reset.
+    pub fn keep_launch_recipe(&self, session_id: &str, keep: bool) {
+        let mut held = self.kept_recipes.lock();
+        if keep {
+            held.insert(session_id.to_string());
+        } else {
+            held.remove(session_id);
+        }
     }
 
     /// Serve the `start_chat` and `send_to_chat` host tools with `chats`.
@@ -842,7 +874,7 @@ impl AcpManager {
         project_id: Option<&str>,
         sinks: Vec<Arc<dyn EventSink>>,
     ) -> Result<SpawnOutcome, String> {
-        let (host_auth_ready, _) = self
+        let (host_auth_ready, _, _) = self
             .prepare_spawn_config(
                 &mut config,
                 project_id,
@@ -854,25 +886,32 @@ impl AcpManager {
     }
 
     /// Launch-arg normalization, the persisted Factory key, and the managed
-    /// Claude account of `chat` in `project_id` or the Codex account of
-    /// `project_id`. Returns host-auth readiness.
+    /// Claude or Codex account of `chat` in `project_id`. Returns host-auth
+    /// readiness and the account each spawn runs on.
     async fn prepare_spawn_config(
         &self,
         config: &mut AgentConfig,
         project_id: Option<&str>,
         chat: &crate::acp::claude_agent::LaunchChat,
-    ) -> Result<(bool, crate::acp::claude_agent::ClaudeLaunchAuth), String> {
+    ) -> Result<
+        (
+            bool,
+            crate::acp::claude_agent::ClaudeLaunchAuth,
+            crate::acp::codex_agent::CodexLaunchAuth,
+        ),
+        String,
+    > {
         crate::acp::factory_key::normalize_launch_args(config);
         crate::acp::factory_key::inject(config)?;
         let claude = self
             .claude_agent
             .prepare_managed_launch(config, project_id, chat)
             .await?;
-        let codex_ready = self
+        let codex = self
             .codex_agent
-            .prepare_managed_config_for_project(config, project_id)
+            .prepare_managed_launch(config, project_id, chat)
             .await?;
-        Ok((claude.host_auth_ready() || codex_ready, claude))
+        Ok((claude.host_auth_ready() || codex.applied(), claude, codex))
     }
 
     /// The [`SpawnOutcome`] of the live agent spawned under `command_id`, or
@@ -1759,15 +1798,22 @@ impl AcpManager {
         // A turn of a durable chat (one with an accept hook) ends its
         // scheduled resume. The driver runs the hook before the agent sees
         // the prompt, so the signal precedes any limit the turn reaches.
-        let on_accept = match (on_accept, self.claude_limit.get()) {
-            (Some(hook), Some(limit)) => {
-                let (limit, session) = (limit.clone(), session_id.clone());
+        let on_accept = match on_accept {
+            Some(hook) => {
+                let claude = self.claude_limit.get().cloned();
+                let codex = self.codex_limit.get().cloned();
+                let session = session_id.clone();
                 Some(Box::new(move || {
-                    limit.turn_started(session);
+                    if let Some(limit) = &claude {
+                        limit.turn_started(session.clone());
+                    }
+                    if let Some(limit) = &codex {
+                        limit.turn_started(session);
+                    }
                     hook();
                 }) as PromptAcceptHook)
             }
-            (hook, _) => hook,
+            None => None,
         };
         let (accepted_tx, accepted_rx) = oneshot::channel();
         let (completion_tx, completion_rx) = oneshot::channel();
@@ -2052,9 +2098,7 @@ impl AcpManager {
     }
 
     #[cfg(test)]
-    pub fn host_plan_server_for_tests(
-        &self,
-    ) -> Arc<crate::acp::host_mcp::parent::HostPlanServer> {
+    pub fn host_plan_server_for_tests(&self) -> Arc<crate::acp::host_mcp::parent::HostPlanServer> {
         Arc::clone(&self.host_plan_server)
     }
 
@@ -2151,6 +2195,7 @@ impl AcpManager {
     ) -> Result<(), SessionPersistenceError> {
         self.forget_launch_recipe(session_id, None);
         self.claude_agent.forget_chat_account(session_id);
+        self.codex_agent.forget_chat_account(session_id);
         if let Ok(metadata) = persistence.metadata(session_id) {
             if metadata.kind == crate::acp::session_persistence::SessionKind::Quick {
                 // `runtime_agent_id` is the agent from create. Reopen starts a

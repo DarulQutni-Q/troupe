@@ -89,22 +89,7 @@ impl ClaudeAccountsSnapshot {
     }
 }
 
-/// The Account a spawn uses: the chat's own choice, else its Project's, else
-/// the Default Account. The store drops choices that name a removed Account,
-/// so every id this returns exists.
-#[must_use]
-pub fn chosen_account<'a>(
-    default_account_id: &'a str,
-    project_profiles: &'a BTreeMap<String, String>,
-    chat_profiles: &'a BTreeMap<String, String>,
-    project_id: Option<&str>,
-    chat_id: Option<&str>,
-) -> &'a str {
-    chat_id
-        .and_then(|chat| chat_profiles.get(chat.trim()))
-        .or_else(|| project_id.and_then(|project| project_profiles.get(project.trim())))
-        .map_or(default_account_id, String::as_str)
-}
+pub use crate::acp::account_choice::chosen_account;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -364,7 +349,8 @@ impl ClaudeAccountStore {
             .filter(|(_, account)| account.as_str() == id)
             .map(|(chat, _)| chat.clone())
             .collect();
-        file.chat_profiles.retain(|_, account| account.as_str() != id);
+        file.chat_profiles
+            .retain(|_, account| account.as_str() != id);
         self.save(&file)?;
         if let Some(dir) = self.account_dir(id) {
             remove_account_dir(&dir);

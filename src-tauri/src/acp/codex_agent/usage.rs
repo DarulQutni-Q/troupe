@@ -32,7 +32,7 @@ const CODEX_ACCESS_TOKEN_ENV: &str = "CODEX_ACCESS_TOKEN";
 /// Runs the usage probe for one Codex home (`None` = the host's own) and
 /// returns the verdict. The home directory must already exist.
 #[async_trait::async_trait]
-pub(super) trait CodexUsageProbe: Send + Sync {
+pub(crate) trait CodexUsageProbe: Send + Sync {
     async fn probe(&self, codex_home: &Path) -> ProbeVerdict;
 }
 
@@ -168,6 +168,12 @@ impl CodexAgentService {
             .iter()
             .filter_map(|row| cache.get(&row.id).map(|entry| entry.usage.clone()))
             .collect())
+    }
+
+    /// Replace the usage probe. Tests use this to report fixed windows.
+    #[cfg(test)]
+    pub(crate) fn set_usage_probe_for_test(&mut self, probe: Arc<dyn CodexUsageProbe>) {
+        self.usage_probe = probe;
     }
 }
 

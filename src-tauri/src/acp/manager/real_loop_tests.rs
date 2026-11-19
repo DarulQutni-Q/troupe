@@ -140,6 +140,16 @@ for line in sys.stdin:
             send({"jsonrpc": "2.0", "id": rid,
                   "error": {"code": -32603, "message": "Internal error",
                             "data": {"status": 400}}})
+        elif text.startswith("codexlimit"):
+            send({"jsonrpc": "2.0", "id": rid, "error": {
+                "code": -32603, "message": "Codex reached its usage limit",
+                "data": {"errorKind": "rate_limited"}}})
+        elif text.startswith("Troupe moved this chat from Codex") or text.startswith("Troupe continued this chat because the"):
+            chunk("codex_home=" + os.environ.get("CODEX_HOME", ""), msg["params"]["sessionId"])
+            if os.environ.get("MOCK_NOTICE_HANG") == "1":
+                hung = rid
+            else:
+                send({"jsonrpc": "2.0", "id": rid, "result": {"stopReason": "end_turn"}})
         elif text.startswith("limit:"):
             # Claude Code at its plan limit: a usage update says the window is
             # rejected, and the turn stays open until it is cancelled.

@@ -45,6 +45,7 @@ const SNAPSHOT: CodexAccountsSnapshot = {
   ],
   defaultAccountId: 'default',
   projectAccounts: { office: 'ab12' },
+  chatAccounts: {},
   autoSwitch: true
 }
 
@@ -128,7 +129,8 @@ describe('CodexProviderSettings', () => {
     api.list.mockResolvedValue({
       ...SNAPSHOT,
       accounts: [{ id: 'default', name: 'Default', builtin: true, signedIn: undefined }],
-      projectAccounts: {}
+      projectAccounts: {},
+      chatAccounts: {}
     })
     render(<CodexProviderSettings />)
     const row = await screen.findByTestId('codex-account-default')

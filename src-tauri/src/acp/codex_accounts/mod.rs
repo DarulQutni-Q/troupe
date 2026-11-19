@@ -5,7 +5,8 @@
 //! (`~/.codex`, or the host's `CODEX_HOME`). Every other Account has a
 //! Troupe-owned directory under `<state dir>/codex-accounts/<id>` whose shared
 //! entries link back to the shared home. Each Project uses one Account;
-//! a Project without a choice uses the Default Account.
+//! a Project without a choice uses the Default Account. A chat can run on
+//! its own Account; a chat without a choice uses its Project's.
 //!
 //! The store keeps no secrets: logins live in Codex's own credential
 //! store (`auth.json` or the OS keyring entry for that home).
@@ -18,6 +19,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use super::account_choice::chosen_account;
 use super::atomic_file;
 
 /// Id of the built-in Account that uses the shared Codex home.
@@ -66,9 +68,27 @@ pub struct CodexAccountsSnapshot {
     // JSON key stays `projectAccounts`.
     #[serde(rename = "projectAccounts")]
     pub project_profiles: BTreeMap<String, String>,
+    /// Chat (session) id → Account id, only for chats with their own choice.
+    // JSON key stays `chatAccounts`.
+    #[serde(rename = "chatAccounts")]
+    pub chat_profiles: BTreeMap<String, String>,
     /// A chat at its Account's limit continues on the signed-in Account with
     /// the most room.
     pub auto_switch: bool,
+}
+
+impl CodexAccountsSnapshot {
+    /// The Account `chat_id` in `project_id` runs on; see [`chosen_account`].
+    #[must_use]
+    pub fn account_for(&self, project_id: Option<&str>, chat_id: Option<&str>) -> &str {
+        chosen_account(
+            &self.default_account_id,
+            &self.project_profiles,
+            &self.chat_profiles,
+            project_id,
+            chat_id,
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,6 +112,16 @@ pub struct AccountResolution {
     pub config_dir: Option<PathBuf>,
 }
 
+/// What removing an Account moved, so clients restart the chats that ran it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemovedAccount {
+    /// Projects that used the Account and now follow the Default Account.
+    pub moved_project_ids: Vec<String>,
+    /// Chats that had the Account as their own and now follow their Project.
+    pub moved_chat_ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StoreFile {
@@ -104,6 +134,9 @@ struct StoreFile {
     // JSON key stays `projectAccounts`.
     #[serde(default, rename = "projectAccounts")]
     project_profiles: BTreeMap<String, String>,
+    // JSON key stays `chatAccounts`.
+    #[serde(default, rename = "chatAccounts")]
+    chat_profiles: BTreeMap<String, String>,
     /// Files written before the setting existed read as on.
     #[serde(default = "auto_switch_default")]
     auto_switch: bool,
@@ -124,6 +157,7 @@ impl StoreFile {
             }],
             default_account_id: BUILTIN_ACCOUNT_ID.to_string(),
             project_profiles: BTreeMap::new(),
+            chat_profiles: BTreeMap::new(),
             auto_switch: auto_switch_default(),
         }
     }
@@ -141,17 +175,21 @@ impl StoreFile {
         }
         let known: Vec<String> = self.entries.iter().map(|a| a.id.clone()).collect();
         self.project_profiles.retain(|_, id| known.contains(id));
+        self.chat_profiles.retain(|_, id| known.contains(id));
     }
 
     fn has_account(&self, id: &str) -> bool {
         self.entries.iter().any(|a| a.id == id)
     }
 
-    /// The Account a Project uses: its own choice, else the default.
-    fn project_account(&self, project_id: &str) -> &str {
-        self.project_profiles
-            .get(project_id)
-            .unwrap_or(&self.default_account_id)
+    fn account_for(&self, project_id: Option<&str>, chat_id: Option<&str>) -> &str {
+        chosen_account(
+            &self.default_account_id,
+            &self.project_profiles,
+            &self.chat_profiles,
+            project_id,
+            chat_id,
+        )
     }
 }
 
@@ -181,6 +219,12 @@ impl CodexAccountStore {
             shared_dir,
             lock: parking_lot::Mutex::new(()),
         }
+    }
+
+    /// The host state directory this store was opened under.
+    #[must_use]
+    pub fn state_dir(&self) -> &Path {
+        self.store_path.parent().unwrap_or_else(|| Path::new("."))
     }
 
     /// The shared Codex home of this host: the host's
@@ -219,6 +263,7 @@ impl CodexAccountStore {
                 .collect(),
             default_account_id: file.default_account_id,
             project_profiles: file.project_profiles,
+            chat_profiles: file.chat_profiles,
             auto_switch: file.auto_switch,
         })
     }
@@ -287,9 +332,10 @@ impl CodexAccountStore {
     }
 
     /// Remove an Account and its directory. Projects that used it, and the
-    /// default when it pointed at it, return to the built-in Account. Returns
-    /// the ids of the Projects that moved.
-    pub fn remove(&self, id: &str) -> Result<Vec<String>, String> {
+    /// default when it pointed at it, return to the built-in Account; chats
+    /// that used it follow their Project again. Returns the Projects and
+    /// chats that moved.
+    pub fn remove(&self, id: &str) -> Result<RemovedAccount, String> {
         if id == BUILTIN_ACCOUNT_ID {
             return Err("The built-in account cannot be removed".to_string());
         }
@@ -311,12 +357,27 @@ impl CodexAccountStore {
         for project in &moved {
             file.project_profiles.remove(project);
         }
+        let moved_chats: Vec<String> = file
+            .chat_profiles
+            .iter()
+            .filter(|(_, account)| account.as_str() == id)
+            .map(|(chat, _)| chat.clone())
+            .collect();
+        file.chat_profiles
+            .retain(|_, account| account.as_str() != id);
         self.save(&file)?;
         if let Some(dir) = self.account_dir(id) {
             remove_account_dir(&dir);
         }
-        log::info!("[codex-accounts] profile removed; projects moved to the default");
-        Ok(moved)
+        log::info!(
+            "[codex-accounts] profile removed; {} projects moved to the default, {} chats follow their project",
+            moved.len(),
+            moved_chats.len()
+        );
+        Ok(RemovedAccount {
+            moved_project_ids: moved,
+            moved_chat_ids: moved_chats,
+        })
     }
 
     pub fn set_default(&self, id: &str) -> Result<(), String> {
@@ -361,7 +422,7 @@ impl CodexAccountStore {
                 return Err(unknown_account(id));
             }
         }
-        if expected.is_some_and(|expected| file.project_account(project_id) != expected) {
+        if expected.is_some_and(|expected| file.account_for(Some(project_id), None) != expected) {
             log::info!(
                 "[codex-accounts] project profile unchanged: the project no longer uses the expected profile"
             );
@@ -381,10 +442,66 @@ impl CodexAccountStore {
         Ok(true)
     }
 
-    /// The Account a spawn for `project_id` uses. A damaged store falls back
-    /// to the built-in Account so Codex chats keep working.
+    /// Choose the Account of one chat of `project_id`. `None` makes the chat
+    /// follow its Project again. With `expected`, the choice applies only
+    /// while the chat still runs on that Account (its own, else its
+    /// Project's, else the default). Returns whether the choice applied.
+    pub fn set_chat_account(
+        &self,
+        project_id: &str,
+        chat_id: &str,
+        account_id: Option<&str>,
+        expected: Option<&str>,
+    ) -> Result<bool, String> {
+        let chat_id = chat_id.trim();
+        if chat_id.is_empty() {
+            return Err("A chat id is required".to_string());
+        }
+        let _guard = self.lock_store()?;
+        let mut file = self.load()?;
+        if let Some(id) = account_id {
+            if !file.has_account(id) {
+                return Err(unknown_account(id));
+            }
+        }
+        if expected
+            .is_some_and(|expected| file.account_for(Some(project_id), Some(chat_id)) != expected)
+        {
+            log::info!(
+                "[codex-accounts] chat profile unchanged: the chat no longer uses the expected profile"
+            );
+            return Ok(false);
+        }
+        match account_id {
+            Some(id) => {
+                file.chat_profiles
+                    .insert(chat_id.to_string(), id.to_string());
+            }
+            None => {
+                file.chat_profiles.remove(chat_id);
+            }
+        }
+        self.save(&file)?;
+        log::info!("[codex-accounts] chat profile updated");
+        Ok(true)
+    }
+
+    /// Drop the choice of a deleted chat.
+    pub fn forget_chat(&self, chat_id: &str) -> Result<(), String> {
+        let _guard = self.lock_store()?;
+        let mut file = self.load()?;
+        if file.chat_profiles.remove(chat_id.trim()).is_none() {
+            return Ok(());
+        }
+        self.save(&file)?;
+        log::info!("[codex-accounts] chat profile dropped with its chat");
+        Ok(())
+    }
+
+    /// The Account a spawn for `chat_id` in `project_id` uses. A damaged
+    /// store falls back to the built-in Account so Codex chats keep working.
     #[must_use]
-    pub fn resolve(&self, project_id: Option<&str>) -> AccountResolution {
+    pub fn resolve(&self, project_id: Option<&str>, chat_id: Option<&str>) -> AccountResolution {
         let Ok(_guard) = self.lock_store() else {
             return builtin_resolution(BUILTIN_ACCOUNT_NAME);
         };
@@ -395,11 +512,7 @@ impl CodexAccountStore {
                 return builtin_resolution(BUILTIN_ACCOUNT_NAME);
             }
         };
-        let id = project_id
-            .map_or(file.default_account_id.as_str(), |project| {
-                file.project_account(project.trim())
-            })
-            .to_string();
+        let id = file.account_for(project_id, chat_id).to_string();
         let name = file
             .entries
             .iter()
@@ -424,6 +537,42 @@ impl CodexAccountStore {
                 error.kind()
             );
         }
+        AccountResolution {
+            account_id: id,
+            account_name: name,
+            config_dir: Some(dir),
+        }
+    }
+
+    /// The Account `id`, for a spawn whose chat does not exist yet.
+    #[must_use]
+    pub fn resolve_id(&self, id: &str) -> AccountResolution {
+        let Ok(_guard) = self.lock_store() else {
+            return builtin_resolution(BUILTIN_ACCOUNT_NAME);
+        };
+        let file = match self.load() {
+            Ok(file) => file,
+            Err(error) => {
+                log::warn!("[codex-accounts] resolve fell back to the built-in account: {error}");
+                return builtin_resolution(BUILTIN_ACCOUNT_NAME);
+            }
+        };
+        let id = if file.has_account(id) {
+            id.to_string()
+        } else {
+            BUILTIN_ACCOUNT_ID.to_string()
+        };
+        let name = file
+            .entries
+            .iter()
+            .find(|a| a.id == id)
+            .map_or_else(|| BUILTIN_ACCOUNT_NAME.to_string(), |a| a.name.clone());
+        if id == BUILTIN_ACCOUNT_ID {
+            return builtin_resolution(&name);
+        }
+        let Some(dir) = self.account_dir(&id) else {
+            return builtin_resolution(BUILTIN_ACCOUNT_NAME);
+        };
         AccountResolution {
             account_id: id,
             account_name: name,

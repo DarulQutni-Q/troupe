@@ -78,11 +78,15 @@ fn launch(config_id: &str, claude: ClaudeLaunchAuth) -> AgentLaunch {
         },
         project_id: Some("proj-1".to_string()),
         claude,
+        codex: crate::acp::codex_agent::CodexLaunchAuth::Unmanaged,
     }
 }
 
 fn work() -> AgentLaunch {
-    launch(CLAUDE_CONFIG_ID, ClaudeLaunchAuth::Account("work".to_string()))
+    launch(
+        CLAUDE_CONFIG_ID,
+        ClaudeLaunchAuth::Account("work".to_string()),
+    )
 }
 
 fn in_an_hour() -> Option<SystemTime> {
@@ -130,8 +134,12 @@ fn cancelled(session: &str) -> Value {
 async fn a_turn_of_the_chat_cancels_its_scheduled_resume() {
     let host = start();
     let agent = AgentId("agent-1".to_string());
-    host.acp
-        .install_test_agent_with_turns(agent.clone(), ["s1".to_string()].into(), Vec::new(), false);
+    host.acp.install_test_agent_with_turns(
+        agent.clone(),
+        ["s1".to_string()].into(),
+        Vec::new(),
+        false,
+    );
     host.acp.record_launch_for_test(&agent, "s1", work());
     host.handle
         .set_resume(SessionId("s1".to_string()), in_an_hour())
@@ -164,11 +172,17 @@ async fn a_turn_of_the_chat_cancels_its_scheduled_resume() {
 async fn set_resume_refuses_a_chat_without_a_managed_claude_account() {
     let host = start();
     let cases = [
-        ("codex", launch("acp-registry:codex-acp", ClaudeLaunchAuth::Unmanaged)),
+        (
+            "codex",
+            launch("acp-registry:codex-acp", ClaudeLaunchAuth::Unmanaged),
+        ),
         ("api-key", launch(CLAUDE_CONFIG_ID, ClaudeLaunchAuth::Fixed)),
         (
             "other-config",
-            launch("custom:claude", ClaudeLaunchAuth::Account("work".to_string())),
+            launch(
+                "custom:claude",
+                ClaudeLaunchAuth::Account("work".to_string()),
+            ),
         ),
     ];
     for (session, launch) in cases {

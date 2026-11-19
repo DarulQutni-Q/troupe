@@ -5,6 +5,7 @@
 //! and bridges agent events to the renderer over Tauri IPC. The chat UI lives in
 //! `src/renderer`.
 
+pub mod account_choice;
 pub mod agent_process;
 pub mod agent_session_import;
 pub mod archive;
@@ -17,11 +18,11 @@ pub mod claude_accounts;
 pub mod claude_admin;
 pub mod claude_agent;
 pub mod claude_limit;
-pub mod worker_chats;
 pub mod client;
 pub mod codex_accounts;
 pub mod codex_admin;
 pub mod codex_agent;
+pub mod codex_limit;
 pub mod commands;
 pub mod config;
 pub mod credentials;
@@ -48,6 +49,7 @@ pub mod session_payload;
 pub mod session_persistence;
 pub(crate) mod subagents;
 pub mod terminal;
+pub mod worker_chats;
 
 // Re-exported for the renderer bridge and `lib.rs` wiring. `AcpManager`
 // is used now (managed in `lib.rs`); the config/id types are part of the public

@@ -28,8 +28,29 @@ pub(super) struct SetProjectCodexAccountPayload {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(super) struct SetChatCodexAccountPayload {
+    project_id: String,
+    session_id: String,
+    /// `null` makes the chat follow its Project again.
+    #[serde(default)]
+    account_id: Option<String>,
+    /// Apply only while the chat still runs on this Account.
+    #[serde(default)]
+    expected_account_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct SetCodexAutoSwitchPayload {
     enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct SetCodexResumePayload {
+    session_id: String,
+    /// Epoch milliseconds; `null` cancels the chat's scheduled resume.
+    at: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -159,6 +180,90 @@ pub(super) async fn handle_set_project_codex_account(
     }
 }
 
+/// `set_chat_codex_account { projectId, sessionId, accountId | null,
+/// expectedAccountId? }` → `{ applied }`; `applied` is `false` when the chat
+/// no longer runs on `expectedAccountId`.
+pub(super) async fn handle_set_chat_codex_account(
+    id: String,
+    payload: &Value,
+    acp: &Arc<AcpManager>,
+) -> WsReply {
+    let parsed: SetChatCodexAccountPayload = match serde_json::from_value(payload.clone()) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            return WsReply::err(
+                id,
+                WsErrorCode::Unsupported,
+                format!(
+                "malformed set_chat_codex_account payload (want projectId, sessionId, accountId): {error}"
+            ),
+            )
+        }
+    };
+    match acp
+        .codex_agent()
+        .set_chat_account(
+            &parsed.project_id,
+            &parsed.session_id,
+            parsed.account_id.as_deref(),
+            parsed.expected_account_id.as_deref(),
+            crate::acp::CodexSignInCheck::Required,
+        )
+        .await
+    {
+        Ok(applied) => {
+            info!(
+                project = %parsed.project_id,
+                session = %crate::logging::redact_session_id(&parsed.session_id),
+                account = parsed.account_id.as_deref().unwrap_or("project"),
+                applied,
+                "chat Codex account set over ws"
+            );
+            WsReply::ok(id, Some(json!({ "applied": applied })))
+        }
+        Err(error) => choice_refused(id, error),
+    }
+}
+
+/// `set_codex_resume { sessionId, at }` → `{}`: the host continues the chat
+/// at `at` after its Codex limit resets, or cancels that with `null`.
+pub(super) async fn handle_set_codex_resume(
+    id: String,
+    payload: &Value,
+    acp: &Arc<AcpManager>,
+) -> WsReply {
+    let parsed: SetCodexResumePayload = match serde_json::from_value(payload.clone()) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            return WsReply::err(
+                id,
+                WsErrorCode::Unsupported,
+                format!("malformed set_codex_resume payload (want sessionId, at): {error}"),
+            )
+        }
+    };
+    let Some(limit) = acp.codex_limit() else {
+        return WsReply::err(
+            id,
+            WsErrorCode::Unsupported,
+            "this host does not continue Codex chats at a reset".to_string(),
+        );
+    };
+    let at = parsed
+        .at
+        .map(|ms| std::time::UNIX_EPOCH + std::time::Duration::from_millis(ms));
+    match limit
+        .set_resume(crate::acp::SessionId(parsed.session_id), at)
+        .await
+    {
+        Ok(()) => WsReply::ok(id, Some(json!({}))),
+        Err(error) => {
+            warn!(error = %error, "set_codex_resume failed");
+            WsReply::err(id, WsErrorCode::Unsupported, error)
+        }
+    }
+}
+
 /// `set_codex_auto_switch { enabled }` → `{}`. The flag is stored. Automatic
 /// switching itself waits until a usage probe exists.
 pub(super) async fn handle_set_codex_auto_switch(
@@ -250,9 +355,9 @@ pub(super) async fn handle_rename_codex_account(
     }
 }
 
-/// `remove_codex_account { accountId }` → `{ movedProjectIds }`. Runs
-/// `codex logout` for that home first. The built-in Account is refused. An
-/// Account that is already gone answers `{ movedProjectIds: [] }`.
+/// `remove_codex_account { accountId }` → `{ movedProjectIds, movedChatIds }`.
+/// Runs `codex logout` for that home first. The built-in Account is refused.
+/// An Account that is already gone answers empty lists.
 pub(super) async fn handle_remove_codex_account(
     id: String,
     payload: &Value,
@@ -272,12 +377,25 @@ pub(super) async fn handle_remove_codex_account(
     let service = acp.codex_agent();
     match service.remove_account(&profile_id).await {
         Ok(moved) => {
-            info!(moved = moved.len(), "Codex profile removed over ws");
-            WsReply::ok(id, Some(json!({ "movedProjectIds": moved })))
+            info!(
+                projects = moved.moved_project_ids.len(),
+                chats = moved.moved_chat_ids.len(),
+                "Codex profile removed over ws"
+            );
+            WsReply::ok(
+                id,
+                Some(json!({
+                    "movedProjectIds": moved.moved_project_ids,
+                    "movedChatIds": moved.moved_chat_ids,
+                })),
+            )
         }
         Err(_) if matches!(service.has_account(&profile_id), Ok(false)) => {
             info!("Codex profile already removed");
-            WsReply::ok(id, Some(json!({ "movedProjectIds": [] })))
+            WsReply::ok(
+                id,
+                Some(json!({ "movedProjectIds": [], "movedChatIds": [] })),
+            )
         }
         Err(error) => {
             warn!(error = %error, "remove_codex_account failed");

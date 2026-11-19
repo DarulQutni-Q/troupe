@@ -82,6 +82,7 @@ beforeEach(() => {
     ],
     defaultAccountId: 'default',
     projectAccounts: {},
+    chatAccounts: {},
     autoSwitch: true
   })
   switcher.switchProjectCodexAccount.mockResolvedValue(['s1'])

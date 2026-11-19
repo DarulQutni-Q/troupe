@@ -5,6 +5,7 @@ use agent_client_protocol::schema::v1::McpServer;
 
 use super::AcpManager;
 use crate::acp::claude_agent::ClaudeLaunchAuth;
+use crate::acp::codex_agent::CodexLaunchAuth;
 use crate::acp::config::{AgentConfig, AgentId, SessionId};
 
 /// The spawn inputs of one agent, before the host added credentials.
@@ -13,6 +14,7 @@ pub struct AgentLaunch {
     pub config: AgentConfig,
     pub project_id: Option<String>,
     pub claude: ClaudeLaunchAuth,
+    pub codex: CodexLaunchAuth,
 }
 
 #[derive(Debug, Clone)]
@@ -82,6 +84,9 @@ impl AcpManager {
             recipes.remove(&session_id);
         }
         if let Some(limit) = self.claude_limit.get() {
+            limit.chat_closed(session_id.clone(), agent_id.is_none());
+        }
+        if let Some(limit) = self.codex_limit.get() {
             limit.chat_closed(session_id, agent_id.is_none());
         }
     }
@@ -93,14 +98,19 @@ impl AcpManager {
     /// a live agent, which recorded the recipe when it opened the chat.
     pub fn forget_recipes_without_agent(&self, keep: impl Fn(&SessionId) -> bool) {
         let agents = self.agents.lock();
+        let held = self.kept_recipes.lock().clone();
         let mut recipes = self.recipes.lock();
         let before = recipes.len();
         recipes.retain(|session_id, recipe| {
-            agents.contains_key(&recipe.agent_id) || keep(session_id)
+            agents.contains_key(&recipe.agent_id)
+                || keep(session_id)
+                || held.contains(&session_id.0)
         });
         let forgotten = before - recipes.len();
         if forgotten > 0 {
-            log::info!("[acp] forgot the launch recipes of {forgotten} chat(s) whose agent stopped");
+            log::info!(
+                "[acp] forgot the launch recipes of {forgotten} chat(s) whose agent stopped"
+            );
         }
     }
 

@@ -20,7 +20,7 @@ use crate::web::WsRelaySink;
 
 pub mod decide;
 mod relaunch;
-mod schedule;
+pub(crate) mod schedule;
 mod supervisor;
 
 pub const CLAUDE_CONFIG_ID: &str = "acp-registry:claude-acp";
@@ -45,7 +45,10 @@ enum Input {
     /// that turn reaches.
     TurnStarted { session_id: SessionId, seq: u64 },
     /// The chat was closed, or deleted with its log.
-    Closed { session_id: SessionId, deleted: bool },
+    Closed {
+        session_id: SessionId,
+        deleted: bool,
+    },
     /// The agent stopped (killed, reaped or crashed).
     AgentStopped { agent_id: AgentId },
 }

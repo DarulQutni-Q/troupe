@@ -7,7 +7,8 @@ use std::sync::Arc;
 
 use super::{strip_api_credentials, CodexAgentService, CODEX_ACP_CONFIG_ID, CODEX_HOME_ENV};
 use crate::acp::codex_accounts::{
-    signed_out_error, CodexAccount, CodexAccountStore, CodexAccountsSnapshot, BUILTIN_ACCOUNT_ID,
+    signed_out_error, CodexAccount, CodexAccountStore, CodexAccountsSnapshot, RemovedAccount,
+    BUILTIN_ACCOUNT_ID,
 };
 use crate::acp::config::AgentConfig;
 
@@ -29,9 +30,16 @@ pub enum CodexSignInCheck {
 enum Choice {
     Account,
     FollowDefault,
+    FollowProject,
 }
 
 impl CodexAgentService {
+    /// The host state directory, when this service has an account store.
+    #[must_use]
+    pub fn state_dir(&self) -> Option<&std::path::Path> {
+        self.profile_store.as_ref().map(|store| store.state_dir())
+    }
+
     pub(super) fn account_store(&self) -> Result<&Arc<CodexAccountStore>, String> {
         self.profile_store
             .as_ref()
@@ -152,6 +160,58 @@ impl CodexAgentService {
         store.set_project_account(project_id, account_id, expected)
     }
 
+    /// Choose the Account of one chat; `None` makes it follow its Project
+    /// again, so the check probes the Account the Project resolves to.
+    /// `expected` makes the choice a compare-and-set on the Account the chat
+    /// runs on now; returns whether the choice applied.
+    pub async fn set_chat_account(
+        &self,
+        project_id: &str,
+        chat_id: &str,
+        account_id: Option<&str>,
+        expected: Option<&str>,
+        check: CodexSignInCheck,
+    ) -> Result<bool, String> {
+        let store = self.account_store()?;
+        if let Some(expected) = expected {
+            if store
+                .snapshot()?
+                .account_for(Some(project_id), Some(chat_id))
+                != expected
+            {
+                log::info!(
+                    "[codex-accounts] chat profile unchanged: the chat no longer uses the expected profile"
+                );
+                return Ok(false);
+            }
+        }
+        if check == CodexSignInCheck::Required {
+            match account_id {
+                Some(id) => self.ensure_signed_in(store, id, Choice::Account).await?,
+                None => {
+                    let project_account = store
+                        .snapshot()?
+                        .account_for(Some(project_id), None)
+                        .to_string();
+                    self.ensure_signed_in(store, &project_account, Choice::FollowProject)
+                        .await?;
+                }
+            }
+        }
+        store.set_chat_account(project_id, chat_id, account_id, expected)
+    }
+
+    /// Drop the Account choice of a deleted chat. A host without Accounts
+    /// has none.
+    pub fn forget_chat_account(&self, chat_id: &str) {
+        let Some(store) = &self.profile_store else {
+            return;
+        };
+        if let Err(error) = store.forget_chat(chat_id) {
+            log::warn!("[codex-accounts] could not drop the chat profile: {error}");
+        }
+    }
+
     /// Only a confirmed login (`codex login status` exits 0) may be chosen.
     /// An unknown id passes here; the store setter reports it.
     async fn ensure_signed_in(
@@ -176,6 +236,7 @@ impl CodexAgentService {
         );
         let subject = match choice {
             Choice::FollowDefault => format!("The default Codex account \"{}\"", account.name),
+            Choice::FollowProject => format!("The project's Codex account \"{}\"", account.name),
             Choice::Account => format!("The Codex account \"{}\"", account.name),
         };
         let state = if matches!(status, Ok(Some(false))) {
@@ -190,8 +251,8 @@ impl CodexAgentService {
 
     /// Run `codex logout` with the Account's home, then remove it. A failed
     /// sign-out is logged; the Account is still removed. Returns the Projects
-    /// that moved to the built-in Account.
-    pub async fn remove_account(&self, id: &str) -> Result<Vec<String>, String> {
+    /// and chats that moved.
+    pub async fn remove_account(&self, id: &str) -> Result<RemovedAccount, String> {
         let store = self.account_store()?;
         if id == BUILTIN_ACCOUNT_ID {
             return store.remove(id);

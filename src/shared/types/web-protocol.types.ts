@@ -321,9 +321,15 @@ export const WS_REQUEST_TYPES = [
   'list_codex_usage',
   'set_default_codex_account',
   'set_project_codex_account',
+  // `{ projectId, sessionId, accountId | null, expectedAccountId? }` →
+  // `{ applied }`: the chat's own Account; `null` follows the Project again.
+  'set_chat_codex_account',
   // `{ enabled }` → `{}`. A chat at its Account's limit continues on the
   // signed-in Account with the most room.
   'set_codex_auto_switch',
+  // `{ sessionId, at }` → `{}`: the host continues the chat at `at` (epoch
+  // ms) after its Codex limit resets; `at: null` cancels.
+  'set_codex_resume',
   // `{ name }` → the new signed-out account.
   'add_codex_account',
   // `{ accountId, name }` → `{}`.
@@ -411,7 +417,9 @@ export const WS_COMMAND_CLASSES: Readonly<
   list_codex_usage: ['read', null],
   set_default_codex_account: ['idempotent', null],
   set_project_codex_account: ['idempotent', null],
+  set_chat_codex_account: ['idempotent', null],
   set_codex_auto_switch: ['idempotent', null],
+  set_codex_resume: ['idempotent', null],
   add_codex_account: ['command', 'payload'],
   rename_codex_account: ['idempotent', null],
   remove_codex_account: ['idempotent', null],

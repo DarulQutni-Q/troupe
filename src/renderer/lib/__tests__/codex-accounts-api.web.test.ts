@@ -25,6 +25,7 @@ const SNAPSHOT = {
   accounts: [{ id: 'default', name: 'Default', builtin: true, signedIn: true }],
   defaultAccountId: 'default',
   projectAccounts: {},
+  chatAccounts: {},
   autoSwitch: true
 }
 

@@ -19,6 +19,7 @@ fn launch() -> AgentLaunch {
         },
         project_id: Some("proj-1".to_string()),
         claude: ClaudeLaunchAuth::Account("work".to_string()),
+        codex: crate::acp::codex_agent::CodexLaunchAuth::Unmanaged,
     }
 }
 
@@ -59,7 +60,10 @@ async fn a_reopen_without_an_mcp_list_keeps_the_last_one() {
     };
     reopen(Some(vec![server("docs")])).await.unwrap();
     reopen(None).await.unwrap();
-    assert_eq!(recipe_servers(&manager, "s1"), Some(vec!["docs".to_string()]));
+    assert_eq!(
+        recipe_servers(&manager, "s1"),
+        Some(vec!["docs".to_string()])
+    );
 
     reopen(Some(vec![server("search")])).await.unwrap();
     assert_eq!(
