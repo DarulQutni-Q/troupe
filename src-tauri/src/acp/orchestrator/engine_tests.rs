@@ -822,3 +822,46 @@ async fn an_installed_agent_the_registry_knows_is_listed_once() {
         }]
     );
 }
+
+#[tokio::test]
+async fn an_installed_agent_the_registry_lacks_is_listed_under_its_config_id() {
+    let (engine, _data) = engine_with_installed(&[], &["opencode"]).await;
+    assert_eq!(
+        engine.list_agents(),
+        vec![crate::acp::orchestrator::AgentListing {
+            agent_id: "acp-registry:opencode".to_string(),
+            name: "opencode".to_string(),
+            allowed: true,
+        }]
+    );
+    let config = engine
+        .resolve_agent("acp-registry:opencode")
+        .expect("the listed key resolves");
+    assert_eq!(config.config_id.as_deref(), Some("acp-registry:opencode"));
+    assert_eq!(config.command, "/opt/opencode/bin/opencode");
+}
+
+#[tokio::test]
+async fn a_bare_installed_id_starts_under_its_config_id() {
+    let (engine, _data) =
+        engine_with_installed(&[registry_agent("cursor", "Cursor")], &["cursor"]).await;
+    let mut disallowed = OrchestratorSettings::default();
+    disallowed
+        .agents
+        .insert("acp-registry:cursor".to_string(), false);
+    engine.set_settings(disallowed).expect("settings");
+    let caller = crate::acp::orchestrator::CallerRef {
+        agent: AgentId("agent-parent".to_string()),
+        session: SessionId(CHAT.to_string()),
+    };
+    let bare = StartRequest {
+        agent: "cursor".to_string(),
+        ..request("finish")
+    };
+    assert_eq!(
+        engine.start(caller, bare).await,
+        Err(crate::acp::orchestrator::StartError::AgentNotAllowed(
+            "acp-registry:cursor".to_string()
+        ))
+    );
+}

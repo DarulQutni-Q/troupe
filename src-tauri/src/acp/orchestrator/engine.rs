@@ -29,6 +29,9 @@ use crate::web::EventSink;
 const SPAWN_BOUND: Duration = Duration::from_secs(120);
 /// `subagent_start` task length bound.
 const MAX_TASK_CHARS: usize = 8_000;
+/// The config id prefix the renderer saves a catalog agent under: the
+/// installed agent `x` is the registry's `acp-registry:x`.
+const REGISTRY_PREFIX: &str = "acp-registry:";
 
 pub struct OrchestratorEngine {
     pub(super) manager: Arc<AcpManager>,
@@ -57,40 +60,49 @@ impl OrchestratorEngine {
     }
 
     /// The launchable agents: the known-agents registry merged with the
-    /// installed overlay, deduped by key, `allowed` from the settings.
-    /// Command, args and env never leave the host.
+    /// installed overlay, one entry per config id, `allowed` from the
+    /// settings. Command, args and env never leave the host.
     pub fn list_agents(&self) -> Vec<AgentListing> {
         let settings = self.settings.get();
         self.registry.reload();
-        let allowed = |key: &str| settings.agents.get(key).copied().unwrap_or(true);
+        let listing = |agent_id: String, name: String| AgentListing {
+            allowed: settings.agents.get(&agent_id).copied().unwrap_or(true),
+            agent_id,
+            name,
+        };
         let mut agents: Vec<AgentListing> = self
             .registry
             .list()
             .into_iter()
-            .map(|known| {
-                let allowed = allowed(&known.agent_id);
-                AgentListing {
-                    agent_id: known.agent_id,
-                    name: known.name,
-                    allowed,
-                }
-            })
+            .map(|known| listing(known.agent_id, known.name))
             .collect();
         if let Some(installed) = &self.installed {
             for agent in installed.installed_agents() {
-                if agents.iter().any(|known| known.agent_id == agent.agent_id) {
-                    continue;
+                let key = format!("{REGISTRY_PREFIX}{}", agent.agent_id);
+                if !agents.iter().any(|known| known.agent_id == key) {
+                    agents.push(listing(key, agent.agent_id));
                 }
-                let listing_allowed = allowed(&agent.agent_id);
-                agents.push(AgentListing {
-                    agent_id: agent.agent_id.clone(),
-                    name: agent.agent_id,
-                    allowed: listing_allowed,
-                });
             }
         }
         agents.sort_by(|a, b| a.agent_id.cmp(&b.agent_id));
         agents
+    }
+
+    /// The listing key `agent` names: a bare catalog id the registry does
+    /// not know is the installed agent's `acp-registry:` config id.
+    fn canonical_agent(&self, agent: &str) -> String {
+        self.registry.reload();
+        let installed = self.installed.as_ref().is_some_and(|installed| {
+            installed
+                .installed_agents()
+                .iter()
+                .any(|known| known.agent_id == agent)
+        });
+        if installed && !self.registry.contains(agent) {
+            format!("{REGISTRY_PREFIX}{agent}")
+        } else {
+            agent.to_string()
+        }
     }
 
     /// The run the caller's session belongs to (the spawning run of a
@@ -128,12 +140,13 @@ impl OrchestratorEngine {
             return Ok(config);
         }
         if let Some(installed) = &self.installed {
+            let registry_id = agent.strip_prefix(REGISTRY_PREFIX).unwrap_or(agent);
             if let Some(config) = installed
                 .installed_agents()
                 .into_iter()
-                .find(|known| known.agent_id == agent)
+                .find(|known| known.agent_id == registry_id)
                 .map(|known| AgentConfig {
-                    config_id: Some(known.agent_id.clone()),
+                    config_id: Some(format!("{REGISTRY_PREFIX}{}", known.agent_id)),
                     name: known.agent_id,
                     command: known.command,
                     args: known.args,
@@ -181,6 +194,7 @@ impl OrchestratorEngine {
         if agent.is_empty() || agent.len() > crate::acp::subagents::MAX_ID_CHARS {
             return Err(StartError::InvalidInput("agent"));
         }
+        let agent = self.canonical_agent(agent);
         let task_chars = req.task.chars().count();
         if task_chars == 0 || task_chars > MAX_TASK_CHARS {
             return Err(StartError::InvalidInput("task"));
@@ -199,8 +213,8 @@ impl OrchestratorEngine {
         {
             return Err(StartError::InvalidInput("model"));
         }
-        if !settings.agents.get(agent).copied().unwrap_or(true) {
-            return Err(StartError::AgentNotAllowed(agent.to_string()));
+        if !settings.agents.get(&agent).copied().unwrap_or(true) {
+            return Err(StartError::AgentNotAllowed(agent));
         }
         let (root, parent_run, parent_agent, depth) = self.caller_context(caller);
         if depth > settings.max_depth {
@@ -208,7 +222,7 @@ impl OrchestratorEngine {
                 max: settings.max_depth,
             });
         }
-        let config = self.resolve_agent(agent)?;
+        let config = self.resolve_agent(&agent)?;
         Ok(StartChecks {
             root,
             parent_run,
