@@ -51,6 +51,8 @@ Open Settings with `Ctrl+,` (`Cmd+,` on macOS) and click **Agent chats**. The **
 
 Below it, **Agents they can use** lists the agents installed on this computer, each with a switch. Turn an agent off to keep chats from starting it as a subagent. Agents are allowed until you turn them off. When no agent is installed, the list says **No agents yet**.
 
+Each allowed agent has a **Default model** row below its switch. Pick the model a subagent of that agent starts with when the agent that starts it does not ask for one. **Default** leaves the choice to the agent. The list shows the models the agent reported the last time it ran in a chat, so an agent that never ran in a chat has no models to pick yet; the row then says "Run this agent once in a chat to list its models."
+
 The settings are kept on the computer that runs Troupe. In the browser version, the group shows and changes the server's settings.
 
 ## Tools the agent uses
@@ -59,8 +61,8 @@ Troupe gives every agent these tools. You don't call them yourself, but you may 
 
 | Tool | What it does |
 | --- | --- |
-| `subagent_list_agents` | Lists the agents the chat may start, and the limits from Settings. |
-| `subagent_start` | Starts an agent on a task, in a worktree or in the chat's folder. It can give the subagent a title and ask for a model, when the agent offers a choice. |
+| `subagent_list_agents` | Lists the agents the chat may start with each one's default model, and the limits from Settings. |
+| `subagent_start` | Starts an agent on a task, in a worktree or in the chat's folder. It can give the subagent a title and ask for a model, when the agent offers a choice. Without a model, the subagent starts with the agent's **Default model** from Settings. |
 | `subagent_wait` | Waits up to 4 minutes for a subagent to end, then returns its result. If it is still working, the agent can wait again. |
 | `subagent_status` | Reports the chat's subagents without waiting. |
 | `subagent_stop` | Stops a subagent. |
