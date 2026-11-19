@@ -41,6 +41,7 @@ import {
   sessionTurnBusy,
   waitForTurnClear
 } from '../../prompt-queue-orchestration'
+import { dropAgentPermissionsInSession } from '../child-approvals'
 import {
   latestModelPick,
   modelValuesPatch,
@@ -56,7 +57,6 @@ import {
   configIdForAgentId,
   currentSessionModel,
   dropElicitationsForSession,
-  dropPermissionsForSession,
   dropQuestionsForSession,
   dropRecordKey,
   finalizeStreaming,
@@ -1570,9 +1570,15 @@ export const createPromptSlice: StateCreator<AcpState, [], [], PromptSliceState>
       }
       const messages = finalizeStreaming(withSnapshot, e.sessionId)
       const session = s.sessions[e.sessionId]
-      // A finished turn abandons any unanswered permission for this session;
-      // the backend resolves it 'cancelled', so clear the stale store entry too.
-      const pendingPermissions = dropPermissionsForSession(s.pendingPermissions, e.sessionId)
+      // A finished turn abandons any unanswered permission its agent raised in
+      // this session; the backend resolves it 'cancelled', so clear the stale
+      // store entry too. An orchestrated subagent's approval is its own
+      // agent's and waits on its run (see child-approvals.ts).
+      const pendingPermissions = dropAgentPermissionsInSession(
+        s.pendingPermissions,
+        e.sessionId,
+        e.agentId
+      )
       const pendingQuestions = dropQuestionsForSession(s.pendingQuestions, e.sessionId)
       const pendingElicitations = dropElicitationsForSession(
         s.pendingElicitations ?? {},

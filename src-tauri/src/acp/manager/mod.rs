@@ -1711,7 +1711,7 @@ impl AcpManager {
             engine.chat_closed(&closed_session).await;
         }
         closed?;
-        self.release_session_tickets(&closed_session);
+        self.release_session_tickets(&closed_session, None);
         Ok(())
     }
 
@@ -1852,10 +1852,12 @@ impl AcpManager {
     /// Release the relay tickets of `session_id` after the driver resolved its
     /// parked approvals and questions as cancelled (turn cancel or session
     /// close). Tickets have no timer, so this frees the session's queue slot.
-    fn release_session_tickets(&self, session_id: &str) {
+    /// A turn cancel names `agent_id`: only that agent's approvals were
+    /// cancelled, and an orchestrated subagent's under the chat stay.
+    fn release_session_tickets(&self, session_id: &str, agent_id: Option<&AgentId>) {
         for sink in &self.sinks {
             if let Some(relay) = sink.as_ws_relay() {
-                relay.release_session_tickets(session_id);
+                relay.release_session_tickets(session_id, agent_id);
             }
         }
     }
@@ -1873,7 +1875,7 @@ impl AcpManager {
             send_command(&tx, |reply| AcpCommand::CancelPrompt { session_id, reply }).await;
         // The driver resolved every parked approval and question of the session
         // as cancelled before it replied, whatever the reply says.
-        self.release_session_tickets(&cancelled_session);
+        self.release_session_tickets(&cancelled_session, Some(agent_id));
         result
     }
 

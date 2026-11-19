@@ -11,11 +11,15 @@ use super::WsRelaySink;
 use crate::acp::AgentId;
 
 impl WsRelaySink {
-    /// Release every pending permission, question and elicitation of `session_id`.
-    pub fn release_session_tickets(&self, session_id: &str) {
-        let permissions = self
-            .rendezvous()
-            .map_or(0, |rendezvous| rendezvous.release_session(session_id));
+    /// Release every pending question and elicitation of `session_id`, and
+    /// its permissions: all of them, or with `agent_id` (a turn cancel) only
+    /// that agent's, so an orchestrated subagent's approval parked under the
+    /// chat outlives a stop of the chat's turn.
+    pub fn release_session_tickets(&self, session_id: &str, agent_id: Option<&AgentId>) {
+        let permissions = self.rendezvous().map_or(0, |rendezvous| match agent_id {
+            Some(agent_id) => rendezvous.release_agent_session(session_id, agent_id),
+            None => rendezvous.release_session(session_id),
+        });
         let questions = self
             .question_rendezvous()
             .map_or(0, |rendezvous| rendezvous.release_session(session_id));
@@ -23,7 +27,8 @@ impl WsRelaySink {
         let mcp_installs = self.mcp_installs.release_session(session_id);
         if permissions + questions + elicitations + mcp_installs > 0 {
             tracing::info!(
-                session_id,
+                session_id = %crate::logging::redact_session_id(session_id),
+                agent_scoped = agent_id.is_some(),
                 permissions,
                 questions,
                 elicitations,
@@ -34,14 +39,20 @@ impl WsRelaySink {
         }
     }
 
-    /// Release every pending permission, question and elicitation of
-    /// `session_id` whose turn `turn_id` ended. The permission side also
-    /// remembers the turn, so a request of it whose registration lands after
-    /// this release is dropped.
-    pub fn release_turn_tickets(&self, session_id: &str, turn_id: &str) {
-        let permissions = self
-            .rendezvous()
-            .map_or(0, |rendezvous| rendezvous.release_turn(session_id, turn_id));
+    /// Release every pending question and elicitation of `session_id` whose
+    /// turn `turn_id` ended, and the permissions of `agent_id`, the agent
+    /// whose turn it was (all of them when the turn end names none). The
+    /// permission side also remembers the turn, so a request of it whose
+    /// registration lands after this release is dropped.
+    pub fn release_turn_tickets(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        agent_id: Option<&AgentId>,
+    ) {
+        let permissions = self.rendezvous().map_or(0, |rendezvous| {
+            rendezvous.release_turn(session_id, turn_id, agent_id)
+        });
         let questions = self
             .question_rendezvous()
             .map_or(0, |rendezvous| rendezvous.release_session(session_id));
