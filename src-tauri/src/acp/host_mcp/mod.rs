@@ -95,13 +95,15 @@ with the `read_chat` tool. To run a task in a parallel chat, call `start_chat`, 
 `read_chat` and `send_to_chat`. To install an MCP server from a link, a registry name, or \
 JSON, read it with your own tools and call `mcp_install`. The user approves on a card in the chat.";
 
-/// Routes delegation through the orchestrator. The user sees and stops these
-/// runs in the chat, which a client's built-in subagents do not offer, so the
-/// built-in tool is the fallback when the orchestrator refuses.
-pub const DELEGATION_INSTRUCTIONS: &str = "Delegate through Troupe: to hand work to a subagent, \
-call `subagent_list_agents`, `subagent_start` an allowed agent (your own unless one is named) \
-with a self-contained `task`, then `subagent_wait`. Use your client's built-in subagent tool \
-only when Troupe sub-agents are disabled or none is allowed, or `subagent_start` refuses.";
+/// Splits delegation by cost. A long or parallel task, or one for a cheaper
+/// agent, goes through the orchestrator, where the user sees and stops it; a
+/// short lookup stays on the client's lighter built-in subagent, which is also
+/// the fallback when the orchestrator refuses.
+pub const DELEGATION_INSTRUCTIONS: &str = "Delegate long work through Troupe: for a long or \
+parallel task, or to use a cheaper agent, call `subagent_list_agents`, `subagent_start` \
+an allowed agent with a self-contained `task`, then `subagent_wait`. Use your client's built-in \
+subagent tool for short lookups, or when Troupe sub-agents are off, none is allowed, or \
+`subagent_start` refuses.";
 
 /// The context budget Claude Code gives a server's `instructions`: it keeps
 /// this many UTF-16 code units (`CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH`,
@@ -111,7 +113,7 @@ pub const CLAUDE_INSTRUCTIONS_BUDGET: usize = 4096;
 
 /// Markdown affordances of the chat renderer.
 pub const TERMUL_CHAT_INSTRUCTIONS: &str = "Troupe renders your markdown replies in a rich chat UI. \
-Embed images and videos (charts, screenshots, diagrams, screen recordings) inline with \
+Embed images and videos (charts, screenshots, recordings) inline with \
 `![alt](path)`: relative, absolute, `file://` and https paths render on desktop and web, and a \
 markdown link to an image or video also shows it inline. Reference files as `[label](path)` \
 links, which open in Troupe's editor (paths inside the session workspace roots; a `:line` \
