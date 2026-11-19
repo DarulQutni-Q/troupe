@@ -263,12 +263,12 @@ export function useSelectorPanelState(
     }
     if (showFavorites) {
       for (const id of favoriteIdsKey.split('\n')) {
-        const tab = tabById.get(id)
+        const tab = allTabs.find((candidate) => agentTabSelected(candidate, id))
         if (id && !sameConfig(id, effectiveId) && tab && isInstalledTab(tab)) ids.add(id)
       }
     }
     return ids.size > 0 ? [...ids] : NO_IDS
-  }, [searching, showFavorites, allTabs, tabById, effectiveId, favoriteIdsKey])
+  }, [searching, showFavorites, allTabs, effectiveId, favoriteIdsKey])
   const known = useKnownCatalogs(sw.workspace.cwd, lookupIds)
   const knownById = new Map(lookupIds.map((id, i) => [id, known[i] ?? null]))
 
@@ -446,7 +446,8 @@ export function useSelectorPanelState(
                 catalogOf,
                 (id) => {
                   // Uninstalled agents hide their favorites; reinstalling shows them again.
-                  const tab = tabById.get(id)
+                  // A favorite saved as opencode-v2 still belongs to the OpenCode tab.
+                  const tab = tabOf(id)
                   return tab ? isInstalledTab(tab) : false
                 },
                 optionsOf
