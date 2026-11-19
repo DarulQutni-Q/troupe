@@ -54,20 +54,18 @@ export const RailProjectItem = memo(function RailProjectItem(
 })
 
 /**
- * Needs-you chats the open list does not draw. A visible row already shows
- * its own dot. A folded chain member counts as that row. A picked worktree
- * lists only that copy, so a request in another copy stays on the project row.
+ * Needs-you chats the open list does not draw. A row reads live state for
+ * its own session only (`useChatLiveState`), so a folded chain member stays
+ * in this count. A picked worktree lists only that copy, so a request in
+ * another copy stays on the project row.
  */
 export function attentionOutsideRows(
   projectId: string,
   needsYouChats: ReadonlyMap<string, string>,
-  cards: readonly { entry: { id: string; chainIds?: readonly string[] } }[]
+  cards: readonly { entry: { id: string } }[]
 ): { count: number; sessionId: string | undefined } {
   const covered = new Set<string>()
-  for (const card of cards) {
-    covered.add(card.entry.id)
-    for (const id of card.entry.chainIds ?? []) covered.add(id)
-  }
+  for (const card of cards) covered.add(card.entry.id)
   let count = 0
   let sessionId: string | undefined
   for (const [id, owner] of needsYouChats) {

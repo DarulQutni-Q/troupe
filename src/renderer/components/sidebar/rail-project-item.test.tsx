@@ -98,7 +98,7 @@ beforeEach(() => {
 })
 
 describe('attentionOutsideRows', () => {
-  it('counts needs-you chats the rows do not show, and skips folded chain members', () => {
+  it('keeps a folded chain member whose row does not render that session', () => {
     const needsYou = new Map([
       ['here', 'p1'],
       ['old', 'p1'],
@@ -107,7 +107,7 @@ describe('attentionOutsideRows', () => {
     ])
     expect(
       attentionOutsideRows('p1', needsYou, [{ entry: { id: 'here', chainIds: ['here', 'old'] } }])
-    ).toEqual({ count: 1, sessionId: 'there' })
+    ).toEqual({ count: 2, sessionId: 'old' })
   })
 })
 
