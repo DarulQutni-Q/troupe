@@ -19,6 +19,7 @@ import { acpApi } from '@/lib/acp-api'
 import { resumeMissesSession } from '@/lib/acp-resume-policy'
 import { codexAccountsApi } from '@/lib/codex-accounts-api'
 import { logFrontendError } from '@/lib/log-api'
+import { agentReuseKey, reuseScopeFor } from '@/stores/acp-reuse-keys'
 import {
   type AcpState,
   BACKGROUND_COMMANDS_BLOCK_REASON,
@@ -31,6 +32,7 @@ import {
   switchBlockedReason,
   useAcpStore
 } from '@/stores/acp-store'
+import { readOwnCodexChatAccount } from '@/stores/acp-store/chat-reuse-scope'
 import { liveSiblingCount, reloadInFlight } from '@/stores/acp-store/reload-guard'
 import { useAgentChatLifetimeStore } from '@/stores/agent-chat-lifetime-store'
 import { isCodexAccountRestarting, setCodexAccountRestarting } from '@/stores/codex-account-restart'
@@ -125,12 +127,26 @@ function waitUntilIdle(sessionId: string, ignoreBackground: boolean): Promise<bo
   })
 }
 
+/** Move the live agent from one chat's reuse key to another's. */
+function moveChatAgentKey(from: string, to: string, cwd: string, projectId: string): void {
+  const fromKey = agentReuseKey(CODEX_AGENT_CONFIG_ID, cwd, projectId, from)
+  const toKey = agentReuseKey(CODEX_AGENT_CONFIG_ID, cwd, projectId, to)
+  useAcpStore.setState((s) => {
+    const agentId = s.configToLiveAgent[fromKey]
+    if (!agentId) return {}
+    const { [fromKey]: _moved, ...rest } = s.configToLiveAgent
+    return { configToLiveAgent: { ...rest, [toKey]: agentId } }
+  })
+}
+
 /**
  * The new Account has no copy of the session (on Windows its config directory
  * may not share `projects`): continue the chat in a new session that starts
  * from a summary, the same handoff as an agent switch (ADR-0004 fallback).
+ * The new session keeps the chat's own Account, and the agent that was
+ * already running that Account. Returns the new session id.
  */
-async function continueInNewSession(sessionId: string, resend: boolean): Promise<void> {
+async function continueInNewSession(sessionId: string, resend: boolean): Promise<string | null> {
   void logFrontendError({
     level: 'warn',
     source: 'codexAccountSwitch.handoff',
@@ -139,13 +155,36 @@ async function continueInNewSession(sessionId: string, resend: boolean): Promise
   toast.info('This account could not resume the chat', {
     description: 'The chat continues in a new session that starts from a summary.'
   })
-  const store = useAcpStore.getState()
-  const blocks = resend ? lastOwnUserPromptBlocks(store.messages[sessionId] ?? []) : null
-  await store.switchAgent(
-    sessionId,
-    CODEX_AGENT_CONFIG_ID,
-    blocks ? { wireBlocks: blocks, displayBlocks: blocks } : undefined
-  )
+  const old = useAcpStore.getState().sessions[sessionId]
+  const ownAccount = await readOwnCodexChatAccount(sessionId)
+  const blocks = resend
+    ? lastOwnUserPromptBlocks(useAcpStore.getState().messages[sessionId] ?? [])
+    : null
+  const newSessionId = await useAcpStore.getState().switchAgent(sessionId, CODEX_AGENT_CONFIG_ID, {
+    ...(blocks ? { wireBlocks: blocks, displayBlocks: blocks } : {}),
+    accountChatId: reuseScopeFor(sessionId, ownAccount)
+  })
+  if (!newSessionId) return null
+  const account = ownAccount === undefined ? await readOwnCodexChatAccount(sessionId) : ownAccount
+  if (!account || !old?.projectId) return newSessionId
+  const kept = await codexAccountsApi
+    .setChatAccount(old.projectId, newSessionId, account)
+    .catch((error) => (error instanceof Error ? error.message : String(error)))
+  if (kept !== true) {
+    void logFrontendError({
+      level: 'warn',
+      source: 'codexAccountSwitch.handoff',
+      message: `Chat ${newSessionId} could not keep account ${account}: ${kept === false ? 'the host did not apply it' : kept}`
+    })
+    return newSessionId
+  }
+  moveChatAgentKey(sessionId, newSessionId, old.cwd, old.projectId)
+  void logFrontendError({
+    level: 'info',
+    source: 'codexAccountSwitch.handoff',
+    message: `Chat ${newSessionId} keeps account ${account} and the agent of chat ${sessionId}`
+  })
+  return newSessionId
 }
 
 /** Chats with a restart already running or waiting, so a second switch does not stack. */
@@ -228,12 +267,14 @@ export async function restartCodexSession(
         .catch(() => undefined)
     }
     const resend = options.notice ? false : (options.resend ?? false)
+    let continuedId = sessionId
     try {
       await useAcpStore.getState().retryCrashedSession(sessionId, { resend })
     } catch (error) {
       const stopped = useAcpStore.getState().sessions[sessionId]?.status === 'closed'
       if (!stopped || !resumeMissesSession(error)) throw error
-      await continueInNewSession(sessionId, resend)
+      const created = await continueInNewSession(sessionId, resend)
+      if (created) continuedId = created
     }
     useAcpStore.setState((s) => {
       const usage = s.sessionUsage[sessionId]
@@ -241,13 +282,13 @@ export async function restartCodexSession(
       const { rateLimit: _cleared, ...rest } = usage
       return { sessionUsage: { ...s.sessionUsage, [sessionId]: rest } }
     })
-    const active = useAcpStore.getState().sessions[sessionId]?.status === 'active'
+    const active = useAcpStore.getState().sessions[continuedId]?.status === 'active'
     if (active && options.notice) {
       // Composer sends are refused while this flag is set. Drop it for the
       // notice, then put it back so the cleanup below still owns the restart.
       setCodexAccountRestarting(sessionId, false)
       try {
-        await useAcpStore.getState().sendPrompt(sessionId, options.notice)
+        await useAcpStore.getState().sendPrompt(continuedId, options.notice)
       } catch (error) {
         void logFrontendError({
           level: 'warn',
@@ -313,8 +354,12 @@ async function restartAfterReopen(sessionId: string, projectId: string): Promise
  * in the background when their turn ends. An unopened chat is not reopened.
  * The last prompt is not sent again.
  */
-/** `null` when the list could not be read. An empty set means no chat owns an account. */
-async function chatsWithOwnAccount(): Promise<Set<string> | null> {
+/**
+ * Chats that own an Account. An empty set means none do, or the list could
+ * not be read: a project change still restarts followers, because a missing
+ * list is not proof that every chat is pinned.
+ */
+async function chatsWithOwnAccount(): Promise<Set<string>> {
   try {
     const snapshot = await codexAccountsApi.list()
     return new Set(
@@ -326,9 +371,9 @@ async function chatsWithOwnAccount(): Promise<Set<string> | null> {
     void logFrontendError({
       level: 'warn',
       source: 'codexAccountSwitch.apply',
-      message: `Listing Codex accounts failed; left chats alone until the list can be read: ${error instanceof Error ? error.message : String(error)}`
+      message: `Listing Codex accounts failed; restarting every follower of the project: ${error instanceof Error ? error.message : String(error)}`
     })
-    return null
+    return new Set()
   }
 }
 
@@ -338,7 +383,6 @@ export async function applyProjectCodexAccount(
 ): Promise<void> {
   if (!options.credentialsRenewed) renewAgentCredentials(CODEX_AGENT_CONFIG_ID, projectId)
   const ownAccount = await chatsWithOwnAccount()
-  if (ownAccount === null) return
   const state = useAcpStore.getState()
   const openIds = openChatIds()
   const projectChats = Object.values(state.sessions).filter(

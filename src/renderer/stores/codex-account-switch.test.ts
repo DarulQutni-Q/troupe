@@ -26,7 +26,9 @@ import {
   switchProjectCodexAccount
 } from './codex-account-switch'
 
-const { api } = vi.hoisted(() => ({ api: { setProjectAccount: vi.fn(), list: vi.fn() } }))
+const { api } = vi.hoisted(() => ({
+  api: { setProjectAccount: vi.fn(), list: vi.fn(), setChatAccount: vi.fn() }
+}))
 vi.mock('@/lib/codex-accounts-api', () => ({ codexAccountsApi: api }))
 vi.mock('@/lib/log-api', () => ({ logFrontendError: vi.fn() }))
 vi.mock('@/lib/acp-api', async (importActual) => ({
@@ -102,6 +104,7 @@ beforeEach(() => {
     }))
   })
   api.setProjectAccount.mockResolvedValue(true)
+  api.setChatAccount.mockResolvedValue(true)
   api.list.mockResolvedValue({ accounts: [], chatAccounts: {}, projectAccounts: {} })
   useAcpStore.setState({
     ...FRESH,
@@ -172,11 +175,13 @@ describe('claude account switch', () => {
     expect(useAcpStore.getState().sessions.c1?.status).toBe('active')
   })
 
-  it('leaves every chat alone when the account list cannot be read', async () => {
+  it('still restarts followers when the account list cannot be read', async () => {
     api.list.mockRejectedValue(new Error('offline'))
+    useAcpStore.setState((s) => ({
+      sessions: { ...s.sessions, c2: { ...s.sessions.c2, activeTurn: false, openTurnId: null } }
+    }))
     await applyProjectCodexAccount('office')
-    expect(retryCrashedSession).not.toHaveBeenCalled()
-    expect(killAgent).not.toHaveBeenCalled()
+    expect(retryCrashedSession).toHaveBeenCalledWith('c1', { resend: false })
   })
 
   it('restarts an idle chat on a fresh process without resending, and clears the old limit', async () => {
@@ -511,6 +516,35 @@ describe('claude account switch when the new account cannot resume the session',
     expect(sessionId).toBe('s-new')
     expect(wire.slice(1)).toEqual([{ type: 'text', text: 'fix the login bug' }])
     expect(display).toEqual([{ type: 'text', text: 'fix the login bug' }])
+  })
+
+  describe('of a chat on its own account', () => {
+    const chatKey = (id: string) => agentReuseKey(CODEX_AGENT_CONFIG_ID, '/work', 'office', id)
+
+    beforeEach(() => {
+      api.list.mockResolvedValue({
+        accounts: [{ id: 'work', name: 'Work', builtin: false, signedIn: true }],
+        defaultAccountId: 'default',
+        projectAccounts: {},
+        chatAccounts: { c1: 'work' },
+        autoSwitch: true
+      })
+      useAcpStore.setState({
+        configToLiveAgent: { [chatKey('c1')]: 'agent-new' }
+      })
+      failReopenWith(new AcpTransportError('not_found', 'Resource not found: {"uri": "c1"}'))
+    })
+
+    it('continues on the agent of the chat account and keeps that account for the new session', async () => {
+      await restartCodexSession('c1')
+
+      expect(vi.mocked(acpApi.sendPrompt).mock.calls[0]?.slice(0, 2)).toEqual([
+        'agent-new',
+        's-new'
+      ])
+      expect(api.setChatAccount.mock.calls).toEqual([['office', 's-new', 'work']])
+      expect(useAcpStore.getState().configToLiveAgent[chatKey('s-new')]).toBe('agent-new')
+    })
   })
 
   it('keeps the chat stopped when the reopen fails for another reason', async () => {
