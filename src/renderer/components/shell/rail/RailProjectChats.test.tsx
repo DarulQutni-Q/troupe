@@ -133,6 +133,36 @@ describe('RailProjectChats', () => {
     expect(screen.queryByRole('list', { name: 'Chats in Alpha' })).not.toBeInTheDocument()
   })
 
+  it('names a multi-agent chat with the deduplicated agent count', () => {
+    useAcpStore.setState({
+      sessionIndex: [
+        mockSessionIndexEntry({
+          id: 'stack',
+          title: 'Chat stack',
+          cwd: '/repo',
+          projectId: 'p1',
+          status: 'active',
+          lastActivityAt: 3,
+          agents: ['cfg-a', 'cfg-a', 'cfg-b']
+        }),
+        entry('a', 2),
+        mockSessionIndexEntry({
+          id: 'solo',
+          title: 'Chat solo',
+          cwd: '/repo',
+          projectId: 'p1',
+          status: 'active',
+          lastActivityAt: 1,
+          agents: ['cfg-a']
+        })
+      ]
+    })
+    render(<RailProjectChats project={project} isOpenProject />)
+    expect(screen.getByRole('button', { name: 'Chat stack, 2 agents' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Chat a' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Chat solo' })).toBeInTheDocument()
+  })
+
   it('names each row with its status and shows it as a dot on the trail', () => {
     useAcpStore.setState({ sessionIndex: [entry('a', 2), entry('b', 1)] })
     seedChatActivity({ a: { needsYou: true } })

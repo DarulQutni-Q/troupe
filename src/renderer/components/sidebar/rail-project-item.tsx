@@ -1,5 +1,9 @@
 import { memo } from 'react'
+import { useAgentChatProjectSignals } from '@/hooks/use-agent-chat-attention'
+import { leaveQuickChatView } from '@/lib/no-project-chat'
+import { useAgentChatLifetimeStore } from '@/stores/agent-chat-lifetime-store'
 import { useProjectChatsHidden, useShellLayoutStore } from '@/stores/shell-layout-store'
+import { useWorkspaceStore } from '@/stores/workspace-store'
 import { useProjectDiffStat } from '../shell/ProjectDiffStat'
 import { useRailCollapsed } from '../shell/rail/rail-density'
 import {
@@ -9,7 +13,7 @@ import {
 } from '../shell/rail/worktree-switcher'
 import { railChatsListId } from '../shell/rail-layout'
 import { logRailEvent } from '../shell/shell-log'
-import { useProjectHasChats } from '../shell/use-project-chats'
+import { useProjectChats, useProjectHasChats } from '../shell/use-project-chats'
 import { ProjectIconItem } from './project-icon-item'
 import { ProjectItem, type ProjectItemProps } from './project-item'
 
@@ -50,29 +54,85 @@ export const RailProjectItem = memo(function RailProjectItem(
 })
 
 /**
+ * Needs-you chats the open list does not draw. A visible row already shows
+ * its own dot. A folded chain member counts as that row. A picked worktree
+ * lists only that copy, so a request in another copy stays on the project row.
+ */
+export function attentionOutsideRows(
+  projectId: string,
+  needsYouChats: ReadonlyMap<string, string>,
+  cards: readonly { entry: { id: string; chainIds?: readonly string[] } }[]
+): { count: number; sessionId: string | undefined } {
+  const covered = new Set<string>()
+  for (const card of cards) {
+    covered.add(card.entry.id)
+    for (const id of card.entry.chainIds ?? []) covered.add(id)
+  }
+  let count = 0
+  let sessionId: string | undefined
+  for (const [id, owner] of needsYouChats) {
+    if (owner !== projectId || covered.has(id)) continue
+    count += 1
+    sessionId ??= id
+  }
+  return { count, sessionId }
+}
+
+/**
+ * Opens a needs-you chat the list does not show. Same path as
+ * `useProjectRail`: the active project gets a tab; another project focuses
+ * the chat, then opens.
+ */
+function openOutsideNeedsYou(
+  projectId: string,
+  sessionId: string,
+  isActive: boolean,
+  openProject: () => void
+): void {
+  logRailEvent(`open needs-you ${sessionId} outside visible chats`)
+  if (isActive) {
+    leaveQuickChatView('project-rail.needs-you')
+    useWorkspaceStore.getState().addAgentChatTab(sessionId)
+    return
+  }
+  useAgentChatLifetimeStore.getState().requestFocus(projectId, sessionId)
+  openProject()
+}
+
+/**
  * A project's row with the chevron that collapses or expands its chat list
  * (only when it has chats). Every project keeps its own collapse state, so a
  * project switch leaves each list as the user left it. A click on the open
  * project's row also toggles it; a click on another project's row only opens
- * that project. While the chats show, each chat row carries its own
- * needs-you dot, so the row's needs-you count shows only when they are hidden.
+ * that project. While the chats show, each visible row carries its own
+ * needs-you dot. The row count then keeps only requests those rows do not
+ * show. A hidden list keeps the full project count.
  */
 function ChatsToggleRailProjectItem(props: ProjectItemProps): React.JSX.Element {
-  const { project, onClick, isActive, status } = props
+  const { project, onClick, isActive, status, onOpenNeedsYou } = props
   const hasChats = useProjectHasChats(project)
   const hidden = useProjectChatsHidden(project.id)
+  const { cards } = useProjectChats(project)
+  const needsYouChats = useAgentChatProjectSignals().needsYouChats
   if (!hasChats) return <ProjectItem {...props} />
   const toggle = (): void => {
     logRailEvent(`${hidden ? 'expand' : 'collapse'} chats ${project.id}`)
     useShellLayoutStore.getState().setProjectChatsHidden(project.id, !hidden)
   }
+  const outside = hidden ? null : attentionOutsideRows(project.id, needsYouChats, cards)
+  const outsideSessionId = outside?.sessionId
   return (
     <ProjectItem
       {...props}
-      status={hidden ? status : { ...status, attentionCount: 0 }}
+      status={outside === null ? status : { ...status, attentionCount: outside.count }}
       chatsExpanded={!hidden}
       chatsListId={railChatsListId(project.id)}
       onToggleChats={toggle}
+      onOpenNeedsYou={
+        outsideSessionId
+          ? () => openOutsideNeedsYou(project.id, outsideSessionId, isActive, onClick)
+          : onOpenNeedsYou
+      }
       onClick={
         isActive
           ? () => {

@@ -23,7 +23,7 @@ import { logRailEvent } from '../shell-log'
 import { useChatCardActions } from '../use-chat-card-actions'
 import { type ChatRowMenuActions, useChatRowMenuActions } from '../use-chat-row-menu-actions'
 import { isOpenChatCard, useChatLiveState, useProjectChats } from '../use-project-chats'
-import { RailChatAgents } from './rail-agent-stack'
+import { RailChatAgents, stackAgentIds } from './rail-agent-stack'
 import { RailChatMenu } from './rail-chat-menu'
 import {
   RailChatGroup,
@@ -101,6 +101,7 @@ function RailProjectChatRow({
   const dragEndedAt = useRef<number | null>(null)
   const time = formatRailRelativeTime(entry.lastActivityAt)
   const ago = time === 'now' || !time ? time : `${time} ago`
+  const agentCount = stackAgentIds(entry.agents).length
   return (
     <RailChatMenu
       entry={entry}
@@ -147,7 +148,14 @@ function RailProjectChatRow({
               event.preventDefault()
               openContextMenuFrom(event.currentTarget)
             }}
-            aria-label={[entry.title, entry.startedByLabel, statusWord].filter(Boolean).join(', ')}
+            aria-label={[
+              entry.title,
+              agentCount >= 2 ? `${agentCount} agents` : null,
+              entry.startedByLabel,
+              statusWord
+            ]
+              .filter(Boolean)
+              .join(', ')}
             {...props}
           >
             <RailChatIcon>

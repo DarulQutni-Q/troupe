@@ -1,6 +1,8 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { toggleRailVisibility } from '../use-rail-toggle'
 import {
+  allowNextRailMotion,
   RAIL_NESTED_ICON_TRAVEL_CLASS,
   RAIL_NESTED_ROW_TRAVEL_CLASS,
   RAIL_SETTLE_MS,
@@ -10,6 +12,8 @@ import {
   skipNextRailMotion,
   useRailMotion
 } from './rail-motion'
+
+vi.mock('@/lib/log-api', () => ({ logFrontendError: vi.fn() }))
 
 describe('useRailMotion', () => {
   beforeEach(() => {
@@ -82,6 +86,28 @@ describe('useRailMotion', () => {
     act(() => vi.advanceTimersByTime(1000))
     rerender({ expanded: true, reducedMotion: false })
     expect(result.current).toEqual({ phase: 'expanding', density: 'expanded' })
+  })
+
+  it('animates a pointer toggle inside the shortcut skip window', () => {
+    const { result, rerender } = setup(true)
+    skipNextRailMotion()
+    allowNextRailMotion()
+    rerender({ expanded: false, reducedMotion: false })
+    expect(result.current).toEqual({ phase: 'collapsing', density: 'expanded' })
+  })
+
+  it('a button toggle clears a shortcut skip; a shortcut keeps it', () => {
+    const update = async (): Promise<void> => {}
+    const button = setup(true)
+    skipNextRailMotion()
+    toggleRailVisibility(true, update, 'button')
+    button.rerender({ expanded: false, reducedMotion: false })
+    expect(button.result.current.phase).toBe('collapsing')
+
+    const shortcut = setup(true)
+    toggleRailVisibility(true, update, 'shortcut')
+    shortcut.rerender({ expanded: false, reducedMotion: false })
+    expect(shortcut.result.current.phase).toBe('idle')
   })
 })
 

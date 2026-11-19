@@ -47,9 +47,16 @@ let skipMotionUntil = 0
  * shortcut: keyboard actions must feel instant, so only a pointer toggle
  * animates. Idempotent across re-renders (a short window, not a one-shot
  * flag), so a StrictMode double render reads the same answer.
+ * A pointer toggle calls {@link allowNextRailMotion} so it does not inherit
+ * this window.
  */
 export function skipNextRailMotion(): void {
   skipMotionUntil = performance.now() + 400
+}
+
+/** A pointer toggle animates, including one that follows a shortcut inside the skip window. */
+export function allowNextRailMotion(): void {
+  skipMotionUntil = 0
 }
 
 function railMotionSkipped(): boolean {

@@ -75,7 +75,8 @@ export const ProjectItem = memo(function ProjectItem({
 }: ProjectItemProps): React.JSX.Element {
   const inputRef = useRef<HTMLInputElement>(null)
   const nameRef = useRef<HTMLSpanElement>(null)
-  useOverflowFade(nameRef, project.name)
+  // `isEditing` rebinds the observer: cancel keeps the name, but React mounts a new span.
+  useOverflowFade(nameRef, project.name, isEditing)
   // The active project keeps its "+" at rest; the others show it on hover.
   const showNewChatAtRest = isActive || isEditing
   // At rest the stat holds the right slot; hover or focus swaps it for the

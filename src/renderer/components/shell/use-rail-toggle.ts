@@ -2,7 +2,7 @@ import { useCallback } from 'react'
 import { toast } from 'sonner'
 import { useUpdatePanelVisibility } from '@/hooks/use-app-settings'
 import { useSidebarVisible } from '@/stores/sidebar-store'
-import { skipNextRailMotion } from './rail/rail-motion'
+import { allowNextRailMotion, skipNextRailMotion } from './rail/rail-motion'
 import { logRailEvent } from './shell-log'
 
 /** Accessible name of every control that expands or collapses the Rail. */
@@ -37,7 +37,10 @@ export function toggleRailVisibility(
 ): void {
   const next = !expanded
   // Keyboard actions must feel instant: only a pointer toggle animates.
+  // A pointer toggle clears a shortcut skip, so a click inside that window
+  // still animates.
   if (via === 'shortcut') skipNextRailMotion()
+  else allowNextRailMotion()
   logRailEvent(`${next ? 'expand' : 'collapse'} rail (${via})`)
   void updatePanelVisibility('sidebarVisible', next).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : 'Failed to update sidebar visibility'
