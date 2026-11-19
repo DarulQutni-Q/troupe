@@ -48,6 +48,11 @@ impl Supervisor {
         clock: Arc<TurnClock>,
         limited: Arc<LimitedAccounts>,
     ) -> Self {
+        // A resume loaded from disk was not held when it was scheduled. Hold
+        // it now so a reap after a client reopens the chat keeps the recipe.
+        for session_id in schedule.session_ids() {
+            acp.keep_launch_recipe(&session_id, true);
+        }
         Self {
             acp,
             relay,

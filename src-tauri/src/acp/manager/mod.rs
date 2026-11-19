@@ -2098,7 +2098,9 @@ impl AcpManager {
     }
 
     #[cfg(test)]
-    pub fn host_plan_server_for_tests(&self) -> Arc<crate::acp::host_mcp::parent::HostPlanServer> {
+    pub fn host_plan_server_for_tests(
+        &self,
+    ) -> Arc<crate::acp::host_mcp::parent::HostPlanServer> {
         Arc::clone(&self.host_plan_server)
     }
 
