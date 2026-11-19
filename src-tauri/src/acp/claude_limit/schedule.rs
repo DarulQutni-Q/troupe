@@ -96,6 +96,12 @@ impl Schedule {
         self.entries.values().map(|entry| entry.at).min()
     }
 
+    /// Session ids loaded from disk or inserted since. The supervisor holds
+    /// each one's launch recipe until the resume ends.
+    pub fn session_ids(&self) -> Vec<String> {
+        self.entries.keys().cloned().collect()
+    }
+
     /// Remove and return the earliest resume due at `now`. One at a time, so
     /// the entries still waiting stay visible while the first one acts.
     pub fn take_next_due(&mut self, now: i64) -> Option<ScheduledResume> {

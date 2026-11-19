@@ -349,8 +349,7 @@ impl ClaudeAccountStore {
             .filter(|(_, account)| account.as_str() == id)
             .map(|(chat, _)| chat.clone())
             .collect();
-        file.chat_profiles
-            .retain(|_, account| account.as_str() != id);
+        file.chat_profiles.retain(|_, account| account.as_str() != id);
         self.save(&file)?;
         if let Some(dir) = self.account_dir(id) {
             remove_account_dir(&dir);
