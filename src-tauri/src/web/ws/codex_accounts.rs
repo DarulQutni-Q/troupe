@@ -249,9 +249,21 @@ pub(super) async fn handle_set_codex_resume(
             "this host does not continue Codex chats at a reset".to_string(),
         );
     };
-    let at = parsed
-        .at
-        .map(|ms| std::time::UNIX_EPOCH + std::time::Duration::from_millis(ms));
+    let at = match parsed.at {
+        None => None,
+        Some(ms) => {
+            match std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_millis(ms)) {
+                Some(at) => Some(at),
+                None => {
+                    return WsReply::err(
+                        id,
+                        WsErrorCode::Unsupported,
+                        "that resume time is not a real clock time".to_string(),
+                    );
+                }
+            }
+        }
+    };
     match limit
         .set_resume(crate::acp::SessionId(parsed.session_id), at)
         .await

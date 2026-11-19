@@ -161,6 +161,9 @@ impl Supervisor {
             return;
         };
         let codex = self.acp.codex_agent();
+        // A prompt that starts during either read belongs to a newer turn.
+        // Moving the chat would cancel that turn, so the move is skipped.
+        let turn_mark = self.clock.now();
         let snapshot = match codex.profile_list().await {
             Ok(snapshot) => snapshot,
             Err(error) => {
@@ -192,6 +195,12 @@ impl Supervisor {
             &agent_account,
             resets_at.map_or(now + SHORTEST_WINDOW, epoch),
         );
+        if self.clock.started_since(&session_id.0, turn_mark) {
+            log::info!(
+                "[codex-limit] chat {chat} started a newer turn during the limit check; left alone"
+            );
+            return;
+        }
         let candidates =
             decide::rank_alternatives(&decide::candidates(&snapshot, &usage, Some(&agent_account)));
         let decision = decide::decide(&LimitContext {
@@ -228,6 +237,11 @@ impl Supervisor {
                         "[codex-limit] chat {chat} changed its account first; it continues there"
                     ),
                     Err(error) => {
+                        self.attempts.remove(&Attempt {
+                            session_id: session_id.0.clone(),
+                            resets_at,
+                            account_id: agent_account.clone(),
+                        });
                         log::warn!(
                             "[codex-limit] switching the account of chat {chat} failed: {}",
                             scrub(&error, &session_id)
@@ -273,21 +287,23 @@ impl Supervisor {
             Some(at) => {
                 let recipe = self
                     .acp
-                    .launch_recipe(session_id)
+                    .keep_present_launch_recipe(session_id)
                     .ok_or_else(|| "This chat is not open on the host.".to_string())?;
-                let CodexLaunchAuth::Account(account_id) = recipe.launch.codex else {
+                let CodexLaunchAuth::Account(account_id) = &recipe.launch.codex else {
+                    self.acp.keep_launch_recipe(&session_id.0, false);
                     return Err(
                         "This chat does not run on a Codex account Troupe manages.".to_string()
                     );
                 };
                 if recipe.launch.config.config_id.as_deref() != Some(CODEX_CONFIG_ID) {
+                    self.acp.keep_launch_recipe(&session_id.0, false);
                     return Err(
                         "This chat does not run on a Codex account Troupe manages.".to_string()
                     );
                 }
+                let account_id = account_id.clone();
                 let project_id = recipe.launch.project_id.clone().unwrap_or_default();
                 let at = epoch_secs(at);
-                self.hold_recipe(&session_id.0);
                 self.schedule.insert(ScheduledResume {
                     session_id: session_id.0.clone(),
                     project_id: project_id.clone(),
