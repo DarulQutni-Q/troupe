@@ -2,10 +2,20 @@
 import type { AppSettings, AppSettingsUpdate } from '@/types/settings'
 import { DEFAULT_APP_SETTINGS } from '@/types/settings'
 
+/**
+ * What the boot read of settings/app found. `missing` is a first run
+ * (KEY_NOT_FOUND); `failed` means the store holds defaults that are not the
+ * user's settings, and the host refuses writes to the key until a later read
+ * works.
+ */
+export type AppSettingsHostRead = 'pending' | 'found' | 'missing' | 'failed'
+
 interface AppSettingsState {
   settings: AppSettings
   isLoaded: boolean
-  setSettings: (settings: AppSettings) => void
+  hostRead: AppSettingsHostRead
+  /** `hostRead` comes only from the boot read; a synced change from another device leaves it. */
+  setSettings: (settings: AppSettings, hostRead?: Exclude<AppSettingsHostRead, 'pending'>) => void
   updateSetting: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void
   updateSettings: (updates: AppSettingsUpdate) => void
   resetToDefaults: () => void
@@ -14,8 +24,10 @@ interface AppSettingsState {
 export const useAppSettingsStore = create<AppSettingsState>((set) => ({
   settings: DEFAULT_APP_SETTINGS,
   isLoaded: false,
+  hostRead: 'pending',
 
-  setSettings: (settings) => set({ settings, isLoaded: true }),
+  setSettings: (settings, hostRead) =>
+    set(hostRead ? { settings, isLoaded: true, hostRead } : { settings, isLoaded: true }),
 
   updateSetting: (key, value) =>
     set((state) => ({
@@ -28,16 +40,24 @@ export const useAppSettingsStore = create<AppSettingsState>((set) => ({
     })),
 
   // Terminal profiles are the user's own launch entries, not preferences: a
-  // reset keeps them, as it keeps MCP servers and custom agents.
+  // reset keeps them, as it keeps MCP servers and custom agents. A reset is
+  // not a first run, so it keeps the onboarding completion too.
   resetToDefaults: () =>
     set((state) => ({
-      settings: { ...DEFAULT_APP_SETTINGS, terminalProfiles: state.settings.terminalProfiles }
+      settings: {
+        ...DEFAULT_APP_SETTINGS,
+        terminalProfiles: state.settings.terminalProfiles,
+        onboardingCompletedAt: state.settings.onboardingCompletedAt
+      }
     }))
 }))
 
 // Selectors
 export const useAppSettings = () => useAppSettingsStore((state) => state.settings)
 export const useAppSettingsLoaded = () => useAppSettingsStore((state) => state.isLoaded)
+export const useAppSettingsHostRead = () => useAppSettingsStore((state) => state.hostRead)
+export const useOnboardingCompletedAt = () =>
+  useAppSettingsStore((state) => state.settings.onboardingCompletedAt)
 export const useTerminalFontFamily = () =>
   useAppSettingsStore((state) => state.settings.terminalFontFamily)
 export const useTerminalFontSize = () =>

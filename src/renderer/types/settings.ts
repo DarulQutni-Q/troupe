@@ -116,6 +116,12 @@ export interface AppSettings {
   notifyOnAgentChatNeedsYou: boolean
   /** Saved shell + args + folder + env combinations, opened from the command palette. */
   terminalProfiles: TerminalProfile[]
+  /**
+   * When this host finished first-run onboarding (ISO 8601), or null. One
+   * value per host: the desktop, its shared-live browsers and phones agree.
+   * Reset Settings keeps it.
+   */
+  onboardingCompletedAt: string | null
 }
 
 /** Whole-UI zoom bounds â€” match the native View menu semantics (0.5xâ€“3.0x, 10% steps). */
@@ -292,7 +298,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   notifyOnTerminalIdle: true,
   notifyOnAgentChatTurnFinished: true,
   notifyOnAgentChatNeedsYou: true,
-  terminalProfiles: []
+  terminalProfiles: [],
+  onboardingCompletedAt: null
 }
 
 // Keyboard shortcut definition
