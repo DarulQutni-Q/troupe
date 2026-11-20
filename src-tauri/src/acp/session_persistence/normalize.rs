@@ -758,6 +758,7 @@ const TOOL_PILL_LABELS: &[(&str, &str)] = &[
     ("the browser tool", "Browser"),
     ("the canvas tools", "Canvas"),
     ("the automation tools", "Automations"),
+    ("the subagent tools", "Orchestrate"),
 ];
 
 /// How a tool pill's frame ends, current name first. 0.4.x hosts named their

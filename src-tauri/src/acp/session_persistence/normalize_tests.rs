@@ -77,6 +77,18 @@ fn a_tool_pill_mid_prompt_becomes_its_label() {
 }
 
 #[test]
+fn an_orchestrate_pill_titles_from_its_label() {
+    assert_eq!(
+        title_of("(Use the subagent tools from the troupe MCP server) review this diff"),
+        "Orchestrate review this diff"
+    );
+    assert_eq!(
+        title_of("(Use the subagent tools from the troupe MCP server)"),
+        "Orchestrate"
+    );
+}
+
+#[test]
 fn two_tool_pills_both_become_labels() {
     assert_eq!(
         title_of("(Use the browser tool from the troupe MCP server) open localhost and (Use the canvas tools from the troupe MCP server)"),
