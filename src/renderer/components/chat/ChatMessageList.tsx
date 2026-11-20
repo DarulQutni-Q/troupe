@@ -296,12 +296,15 @@ function VirtualizedTimeline({
     )
   }
 
-  // Fallback: when the viewport can't be measured (zero height — jsdom in tests,
-  // or the pre-measurement first paint), render all items in normal flow so
-  // content is always present. A real production viewport yields virtual items
-  // and the windowed path runs.
+  // Fallback: until the viewport has been measured (jsdom in tests, or the
+  // first paint), render all items in normal flow so content is present. A
+  // viewport that later collapses to zero height (a minimized window) keeps the
+  // windowed layout: swapping in the whole transcript moves scrollTop, and the
+  // restore clamps it to the end and caches row sizes at mid-restore widths.
   const virtualItems = virtualizer.getVirtualItems()
-  if (viewportEl === null || virtualItems.length === 0) {
+  const windowedRef = useRef(false)
+  if (virtualItems.length > 0) windowedRef.current = true
+  if (viewportEl === null || (virtualItems.length === 0 && !windowedRef.current)) {
     return (
       <MessageScrollerContent live={live} className="mx-auto w-full max-w-3xl py-4">
         {groupedItems.map((item, index) => (
