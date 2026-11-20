@@ -206,6 +206,11 @@ export interface SubagentSettingsAgentView {
   allowed: boolean
   /** The model a sub-agent of this agent starts with; `null` is the agent's own default. */
   model: string | null
+  /**
+   * The user's note on what this agent is good at, which
+   * `subagent_list_agents` hands to the calling agent; `null` is no note.
+   */
+  description: string | null
 }
 
 /**
@@ -222,9 +227,10 @@ export interface SubagentSettingsView {
 
 /**
  * A `subagent_settings_set` call: every field optional, an omitted field
- * keeps its value. `agents` carries allow toggles and `models` default
- * models (`null` clears), both keyed by `agentId`; an omitted agent keeps
- * its setting. The reply is the new full view.
+ * keeps its value. `agents` carries allow toggles, `models` default models
+ * (`null` clears) and `descriptions` notes of up to 1000 characters (`null`
+ * or blank clears), all keyed by `agentId`; an omitted agent keeps its
+ * setting. The reply is the new full view.
  */
 export interface SubagentSettingsInput {
   enabled?: boolean
@@ -232,6 +238,7 @@ export interface SubagentSettingsInput {
   maxDepth?: number
   agents?: Array<{ agentId: string; allowed: boolean }>
   models?: Array<{ agentId: string; model: string | null }>
+  descriptions?: Array<{ agentId: string; description: string | null }>
 }
 
 export interface AcpTransport {

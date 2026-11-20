@@ -98,9 +98,11 @@ pub const WAIT_MAX_MS: u64 = 240_000;
 
 pub const LIST_AGENTS_DESCRIPTION: &str = "List the installed agents you can start as \
 subagents, and the limits that apply. Returns JSON {agents: [{agentId, name, allowed, \
-defaultModel}], enabled, maxRunning, maxDepth}. Only agents with allowed true can be started, \
-and only while enabled is true; the user changes both in Preferences. defaultModel is the model \
-a start without `model` asks for (null: the agent's own default).";
+defaultModel, description}], enabled, maxRunning, maxDepth}. Only agents with allowed true can \
+be started, and only while enabled is true; the user changes both in Preferences. defaultModel \
+is the model a start without `model` asks for (null: the agent's own default). description is \
+the user's note on what that agent is good at (null: no note); start the allowed agent whose \
+description fits the task.";
 
 pub const START_DESCRIPTION: &str = "Start another installed agent (Codex, Gemini CLI, ...) as \
 a subagent on a task, in the background. `agent` is an agentId from subagent_list_agents; \

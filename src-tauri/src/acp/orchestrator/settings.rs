@@ -10,9 +10,10 @@ use serde::{Deserialize, Serialize};
 use crate::acp::atomic_file;
 
 pub const FILE_NAME: &str = "subagent-settings.json";
-/// 2 added `models`. The payload denies unknown fields, so a v1 host must
-/// read a v2 file as newer (read-only), not as corrupt.
-const SCHEMA_VERSION: u32 = 2;
+/// 2 added `models`, 3 added `descriptions`. The payload denies unknown
+/// fields, so an older host must read a newer file as newer (read-only), not
+/// as corrupt.
+const SCHEMA_VERSION: u32 = 3;
 pub const DEFAULT_MAX_RUNNING: u32 = 4;
 pub const DEFAULT_MAX_DEPTH: u8 = 2;
 
@@ -21,11 +22,15 @@ pub const MAX_RUNNING_BOUNDS: (u32, u32) = (1, 8);
 pub const MAX_DEPTH_BOUNDS: (u8, u8) = (1, 4);
 /// A model id's length bound, as `subagent_start` checks its `model`.
 pub const MAX_MODEL_CHARS: usize = 512;
+/// A description's length bound, so one note cannot flood the listing.
+pub const MAX_DESCRIPTION_CHARS: usize = 1000;
 
 /// The orchestrator settings. `agents` maps a launch key to whether it is
 /// allowed; an absent key is allowed. `models` maps a launch key to the
 /// model its sub-agents start with when the start names none; an absent
-/// key keeps the agent's own default.
+/// key keeps the agent's own default. `descriptions` maps a launch key to
+/// the user's note on what that agent is good at, which the listing hands
+/// to the calling agent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OrchestratorSettings {
@@ -37,6 +42,8 @@ pub struct OrchestratorSettings {
     pub agents: BTreeMap<String, bool>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub models: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub descriptions: BTreeMap<String, String>,
 }
 
 impl Default for OrchestratorSettings {
@@ -47,6 +54,7 @@ impl Default for OrchestratorSettings {
             max_depth: DEFAULT_MAX_DEPTH,
             agents: BTreeMap::new(),
             models: BTreeMap::new(),
+            descriptions: BTreeMap::new(),
         }
     }
 }
@@ -220,6 +228,16 @@ fn validate(input: OrchestratorSettings) -> Result<OrchestratorSettings, String>
             "a default model must be 1 to {MAX_MODEL_CHARS} characters"
         ));
     }
+    if input.descriptions.keys().any(|key| key.trim().is_empty()) {
+        return Err("an agent description key must not be blank".to_string());
+    }
+    if input.descriptions.values().any(|description| {
+        description.trim().is_empty() || description.trim().chars().count() > MAX_DESCRIPTION_CHARS
+    }) {
+        return Err(format!(
+            "a description must be 1 to {MAX_DESCRIPTION_CHARS} characters"
+        ));
+    }
     Ok(OrchestratorSettings {
         agents: input
             .agents
@@ -230,6 +248,11 @@ fn validate(input: OrchestratorSettings) -> Result<OrchestratorSettings, String>
             .models
             .into_iter()
             .map(|(key, model)| (key.trim().to_string(), model))
+            .collect(),
+        descriptions: input
+            .descriptions
+            .into_iter()
+            .map(|(key, description)| (key.trim().to_string(), description.trim().to_string()))
             .collect(),
         ..input
     })

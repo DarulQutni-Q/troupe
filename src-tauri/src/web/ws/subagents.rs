@@ -49,7 +49,7 @@ pub(super) async fn handle_stop_subagent(
 }
 
 /// The orchestrator's settings view: the gates plus every launchable agent
-/// with its allow switch and default model.
+/// with its allow switch, default model and description.
 fn settings_view(engine: &crate::acp::orchestrator::OrchestratorEngine) -> Value {
     let settings = engine.settings_view();
     let agents: Vec<Value> = engine
@@ -61,6 +61,7 @@ fn settings_view(engine: &crate::acp::orchestrator::OrchestratorEngine) -> Value
                 "name": agent.name,
                 "allowed": agent.allowed,
                 "model": agent.default_model,
+                "description": agent.description,
             })
         })
         .collect();
@@ -104,6 +105,15 @@ pub(super) struct AgentModelPayload {
     model: Option<String>,
 }
 
+/// One description of a `subagent_settings_set` call; `null` or a blank
+/// string clears it.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct AgentDescriptionPayload {
+    agent_id: String,
+    description: Option<String>,
+}
+
 /// `subagent_settings_set`: a partial of the view; an omitted field keeps
 /// its value.
 #[derive(Debug, Deserialize)]
@@ -119,6 +129,8 @@ pub(super) struct SubagentSettingsPayload {
     agents: Option<Vec<AgentAllowPayload>>,
     #[serde(default)]
     models: Option<Vec<AgentModelPayload>>,
+    #[serde(default)]
+    descriptions: Option<Vec<AgentDescriptionPayload>>,
 }
 
 /// Apply the payload's fields over `settings`.
@@ -147,6 +159,15 @@ fn merge_settings(
             None => settings.models.remove(&key),
         };
     }
+    for agent in patch.descriptions.unwrap_or_default() {
+        let key = agent.agent_id.trim().to_string();
+        match agent.description.as_deref().map(str::trim) {
+            Some(description) if !description.is_empty() => {
+                settings.descriptions.insert(key, description.to_string())
+            }
+            _ => settings.descriptions.remove(&key),
+        };
+    }
 }
 
 /// Merge `patch` into the settings, each agent under the key the listing
@@ -159,6 +180,9 @@ fn apply_settings_patch(
         agent.agent_id = engine.canonical_agent(agent.agent_id.trim());
     }
     for agent in patch.models.iter_mut().flatten() {
+        agent.agent_id = engine.canonical_agent(agent.agent_id.trim());
+    }
+    for agent in patch.descriptions.iter_mut().flatten() {
         agent.agent_id = engine.canonical_agent(agent.agent_id.trim());
     }
     engine.update_settings(|settings| merge_settings(settings, patch))

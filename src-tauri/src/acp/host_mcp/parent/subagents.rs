@@ -175,6 +175,7 @@ fn list_agents(engine: &OrchestratorEngine) -> FrameReply {
                 "name": agent.name,
                 "allowed": agent.allowed,
                 "defaultModel": agent.default_model,
+                "description": agent.description,
             })
         })
         .collect();

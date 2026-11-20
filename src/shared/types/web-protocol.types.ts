@@ -277,7 +277,7 @@ export const WS_REQUEST_TYPES = [
   'set_default_project',
   // Orchestrated sub-agents (acp-subagent-orchestrator): `get` reads the
   // settings view `{ enabled, maxRunning, maxDepth, agents: [{ agentId,
-  // name, allowed }] }`; `set` writes a partial of it (an omitted field keeps
+  // name, allowed, model, description }] }`; `set` writes a partial of it (an omitted field keeps
   // its value) and answers the new view. One host engine serves every chat.
   'subagent_settings_get',
   'subagent_settings_set',

@@ -28,6 +28,41 @@ fn every_start_refusal_has_its_contract_code() {
     }
 }
 
+#[tokio::test]
+async fn the_agent_listing_carries_the_users_description() {
+    let (engine, _data) =
+        crate::acp::orchestrator::engine_with_installed(&[], &["codex", "opencode"]).await;
+    engine
+        .update_settings(|settings| {
+            settings.descriptions.insert(
+                "acp-registry:opencode".to_string(),
+                "Good at long refactors.".to_string(),
+            );
+        })
+        .unwrap();
+    let reply = list_agents(&engine);
+    assert!(reply.ok);
+    assert_eq!(
+        reply.result.unwrap()["agents"],
+        json!([
+            {
+                "agentId": "acp-registry:codex",
+                "name": "codex",
+                "allowed": true,
+                "defaultModel": null,
+                "description": null,
+            },
+            {
+                "agentId": "acp-registry:opencode",
+                "name": "opencode",
+                "allowed": true,
+                "defaultModel": null,
+                "description": "Good at long refactors.",
+            },
+        ])
+    );
+}
+
 #[test]
 fn a_settled_worktree_run_serializes_to_the_contract_shape() {
     let summary = RunSummary {
