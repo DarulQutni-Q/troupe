@@ -89,4 +89,30 @@ describe('saved model lists after a page load', () => {
 
     expect(useAcpStore.getState().agentOptionsCache.warm).toEqual(live)
   })
+
+  it('drops a saved list whose agent config changed command while it was read', async () => {
+    sharedFake.seed(PersistenceKeys.acpAgents, [config('edited')])
+    sharedFake.seed(PersistenceKeys.agentModelCatalog('edited'), SAVED)
+    const read = sharedFake.api.read.getMockImplementation()
+    let release = (): void => {}
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    sharedFake.api.read.mockImplementation(async (key: string) => {
+      if (key === PersistenceKeys.agentModelCatalog('edited')) await held
+      return read?.(key)
+    })
+
+    await useAcpStore.getState().loadAgentConfigs()
+    useAcpStore.setState((s) => ({
+      agentConfigs: s.agentConfigs.map((c) =>
+        c.id === 'edited' ? { ...c, command: 'other-agent' } : c
+      )
+    }))
+    release()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    sharedFake.api.read.mockImplementation(read as never)
+
+    expect(useAcpStore.getState().agentOptionsCache.edited).toBeUndefined()
+  })
 })
