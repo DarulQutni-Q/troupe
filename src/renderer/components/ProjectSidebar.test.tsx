@@ -1058,7 +1058,7 @@ describe('ProjectSidebar: Mono-style alignment and groups', () => {
 
   it('confirms an imported project with a sonner toast', async () => {
     mockSelectDirectory.mockResolvedValue({ success: true, data: '/repo/imported' })
-    const addProject = vi.fn().mockResolvedValue({ id: 'imported' })
+    const addProject = vi.fn().mockResolvedValue({ id: 'imported', name: 'imported' })
     useProjectStore.setState({ groups: [group(true)], addProject })
     renderWithRouter({ projects: railProjects.slice(0, 3) })
 
@@ -1069,7 +1069,33 @@ describe('ProjectSidebar: Mono-style alignment and groups', () => {
         description: 'Created project "imported" and added to group.'
       })
     )
-    expect(addProject).toHaveBeenCalledWith('imported', 'blue', '/repo/imported')
+    expect(addProject).toHaveBeenCalledWith(
+      'imported',
+      'blue',
+      '/repo/imported',
+      undefined,
+      undefined
+    )
+  })
+
+  it('moves the existing project into the group when its folder is imported again', async () => {
+    mockSelectDirectory.mockResolvedValue({ success: true, data: '/repo/rail-3/' })
+    const addProject = vi.fn()
+    const projects = railProjects.slice(0, 3).map((p) => ({ ...p, path: `/repo/rail-${p.id}` }))
+    const selectProject = vi.fn()
+    useProjectStore.setState({ groups: [group(true)], addProject, selectProject, projects })
+    renderWithRouter({ projects })
+
+    importProjectIntoGroup()
+
+    await waitFor(() =>
+      expect(toastMock).toHaveBeenCalledWith('Project moved', {
+        description: '"Rail Project 3" was already a project. Moved it to the group.'
+      })
+    )
+    expect(addProject).not.toHaveBeenCalled()
+    expect(selectProject).toHaveBeenCalledWith('3')
+    expect(useProjectStore.getState().groups[0]?.projectIds).toContain('3')
   })
 
   it('reports a failed project import with a sonner error toast', async () => {
