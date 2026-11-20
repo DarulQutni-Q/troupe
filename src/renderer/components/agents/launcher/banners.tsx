@@ -6,17 +6,13 @@ import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 import type { AuthenticateInput, AuthMethod } from '@/lib/acp-api'
 import type { PrepareChatError } from '@/lib/agents/acp-spawn-errors'
+import { RUNTIME_HELP_URLS } from '@/lib/agents/agent-setup'
 import type {
   SupportedAcpAgentEntry,
   SupportedAcpAgentManualInstall
 } from '@/lib/agents/supported-acp-agents'
 import { openerApi } from '@/lib/api'
 import { ApiKeyForm } from './ApiKeyForm'
-
-const RUNTIME_HELP_URLS = {
-  npx: 'https://nodejs.org/en/download',
-  uvx: 'https://docs.astral.sh/uv/getting-started/installation/'
-} as const
 
 /** Zed-style auth callout: visible without opening the model picker popover. */
 export function AuthRequiredBanner({

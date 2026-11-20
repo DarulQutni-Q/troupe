@@ -3687,3 +3687,16 @@ describe('Orchestrated sub-agents parity', () => {
     expect(read('acp', 'manager', 'mod.rs')).toMatch(/stop_from_ui\(/)
   })
 })
+
+describe('First-run onboarding parity (desktop, web, shared-live browser, phone)', () => {
+  it('WorkspaceLayout mounts the gate after the token screen and before both shells', () => {
+    const layout = readFileSync(join(LIB_DIR, '..', 'layouts', 'WorkspaceLayout.tsx'), 'utf-8')
+    expect(layout).toMatch(/const onboarding = useOnboardingGate\(\)/)
+    const tokenScreen = layout.lastIndexOf("webAuthGate.status === 'unauthorized'")
+    const onboarding = layout.indexOf('<Onboarding onClose={onboarding.close} />')
+    expect(tokenScreen).toBeGreaterThan(-1)
+    expect(onboarding).toBeGreaterThan(tokenScreen)
+    expect(onboarding).toBeLessThan(layout.indexOf('<MobileWorkspaceShell'))
+    expect(onboarding).toBeLessThan(layout.indexOf('<ShellFrame'))
+  })
+})

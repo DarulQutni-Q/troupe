@@ -130,6 +130,10 @@ vi.mock('@/stores/terminal-store', () => ({
   cleanupProjectTerminals: vi.fn()
 }))
 
+vi.mock('@/components/onboarding/onboarding-gate', () => ({
+  useOnboardingGate: () => ({ state: 'skip', close: () => {} })
+}))
+
 vi.mock('@/stores/app-settings-store', () => ({
   useAppSettingsStore: vi.fn(
     (selector?: (state: { settings: { remoteBindMode: 'localhost' } }) => unknown) => {

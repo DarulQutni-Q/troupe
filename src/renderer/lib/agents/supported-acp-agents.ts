@@ -525,9 +525,10 @@ function customAgentEntriesFromPersisted(
 }
 
 export async function resolveSupportedAcpAgents(
-  persistedConfigs: readonly StoredAgentConfig[]
+  persistedConfigs: readonly StoredAgentConfig[],
+  options: { refresh?: boolean } = {}
 ): Promise<SupportedAcpAgentEntry[]> {
-  const result = await acpCatalogApi.listCatalog()
+  const result = await acpCatalogApi.listCatalog(options.refresh ?? false)
   if (!result.success) {
     // Catalog unavailable — still surface persisted custom agents so users can
     // manage/export them without a live catalog fetch (CAP-5).

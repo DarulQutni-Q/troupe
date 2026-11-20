@@ -111,7 +111,8 @@ import { useMobileWebShell } from '@/hooks/use-mobile-web-shell'
 import { useOskViewport } from '@/hooks/use-osk-viewport'
 import { useResolvedSupportedAcpAgents } from '@/hooks/use-resolved-supported-acp-agents'
 import { useServerAdmitsRemoteWrites } from '@/hooks/use-server-admits-remote-writes'
-import { acpApi, type ContentBlock } from '@/lib/acp-api'
+import type { ContentBlock } from '@/lib/acp-api'
+import { installSupportedAgent, isInstallable } from '@/lib/agents/agent-setup'
 import { deriveAgentUpdates, deriveSpawnBasis } from '@/lib/agents/agent-update-utils'
 import {
   cachedLastSelectedAgentId,
@@ -122,7 +123,6 @@ import {
 import {
   entryServesConfigId,
   findEntryForSavedId,
-  installedBinaryConfig,
   manualBinaryConfig,
   pickDefaultConfiguredAgent,
   pickDefaultSupportedAgent,
@@ -1092,23 +1092,12 @@ export function AgentLauncher({ paneId, className }: AgentLauncherProps): React.
 
   const handleInstallAgent = useCallback(
     async (entry: SupportedAcpAgentEntry) => {
-      if (!entry.install || installingConfigId) return
+      if (!isInstallable(entry) || installingConfigId) return
       setSelectedConfigId(entry.configId)
       rememberLastSelectedAgent(entry.configId)
       setInstallingConfigId(entry.configId)
       try {
-        // CAP-6 / Story 9: host-owned verified-atomic install. The request is
-        // `{ agentId }` only; the host resolves everything (archive URL, cmd,
-        // args, sha256) from the trusted catalog. The outcome's
-        // `{ command, args }` flows through `installedBinaryConfig` →
-        // `saveAgentConfig` unchanged.
-        const installed = await acpApi.installAcpAgent(entry.agent.id)
-        const config = installedBinaryConfig(
-          entry.agent,
-          installed,
-          entry.install.kind === 'archive' ? { env: entry.install.env } : {}
-        )
-        await saveAgentConfig(config)
+        const config = await installSupportedAgent(entry)
         setSelectedConfigId(config.id)
         rememberLastSelectedAgent(config.id)
         toast.success(`${entry.agent.name} installed`)
@@ -1125,7 +1114,7 @@ export function AgentLauncher({ paneId, className }: AgentLauncherProps): React.
         setInstallingConfigId(null)
       }
     },
-    [installingConfigId, saveAgentConfig]
+    [installingConfigId]
   )
 
   const handleBrowseManualPath = useCallback(async () => {

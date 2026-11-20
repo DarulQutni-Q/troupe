@@ -57,6 +57,7 @@ export type NewChatReason =
   | 'quick-chats-header'
   | 'command-palette-quick'
   | 'mobile-drawer-quick'
+  | 'onboarding'
 
 export interface OpenNewChatRequest {
   /** The pane the launcher opens in; absent means the focused pane. */

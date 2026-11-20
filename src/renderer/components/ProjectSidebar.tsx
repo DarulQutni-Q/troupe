@@ -3,7 +3,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { OlderChatsGroup } from '@/components/shell/OlderChatsGroup'
 import { QuickChatsGroup } from '@/components/shell/QuickChatsGroup'
-import { dialogApi, shellApi } from '@/lib/api'
+import { shellApi } from '@/lib/api'
+import { pickFolderAsProject } from '@/lib/project-folder'
 import { cn } from '@/lib/utils'
 import { useProjectActions, useProjectStore } from '@/stores/project-store'
 import type { Project, ProjectColor, ProjectGroup } from '@/types/project'
@@ -51,7 +52,6 @@ export function ProjectSidebar({
 }: ProjectSidebarProps): React.JSX.Element {
   const collapsed = useRailCollapsed()
   const {
-    addProject,
     addGroup,
     removeGroup,
     renameGroup,
@@ -158,16 +158,17 @@ export function ProjectSidebar({
   const handleAddNewProjectToGroup = useCallback(
     async (groupId: string) => {
       try {
-        const result = await dialogApi.selectDirectory()
-        if (result.success && result.data) {
-          const projectPath = result.data
-          const folderName = projectPath.split(/[\\/]/).pop() || 'New Project'
-          const newProject = await addProject(folderName, 'blue', projectPath)
-          moveProjectToGroup(newProject.id, groupId)
-          toast('Project created', {
-            description: `Created project "${folderName}" and added to group.`
-          })
-        }
+        const result = await pickFolderAsProject()
+        if (result.kind === 'cancelled' || result.kind === 'restore-failed') return
+        moveProjectToGroup(result.project.id, groupId)
+        toast(
+          result.kind === 'added' ? 'Project created' : 'Project moved',
+          result.kind === 'added'
+            ? { description: `Created project "${result.project.name}" and added to group.` }
+            : {
+                description: `"${result.project.name}" was already a project. Moved it to the group.`
+              }
+        )
       } catch (err) {
         console.error('Failed to create project:', err)
         toast.error('Error', {
@@ -175,7 +176,7 @@ export function ProjectSidebar({
         })
       }
     },
-    [addProject, moveProjectToGroup]
+    [moveProjectToGroup]
   )
 
   // Shared by project and group rows.

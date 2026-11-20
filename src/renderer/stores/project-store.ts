@@ -62,7 +62,8 @@ export interface ProjectState {
   deleteProject: (id: string, options?: CascadeOptions) => Promise<void>
   /** Like `deleteProject`, for archiving. */
   archiveProject: (id: string, options?: CascadeOptions) => Promise<void>
-  restoreProject: (id: string) => Promise<void>
+  /** Resolves false when the host refused; the user has been told. */
+  restoreProject: (id: string) => Promise<boolean>
   reorderProjects: (activeProjectIds: string[]) => void
   /** The projects-watch feed only: replaces the whole list. */
   setProjects: (projects: Project[], activeProjectId?: string, groups?: ProjectGroup[]) => void
@@ -273,11 +274,13 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     }
   },
 
-  restoreProject: async (id: string): Promise<void> => {
+  restoreProject: async (id: string): Promise<boolean> => {
     try {
       await projectRegistryApi.restore(id)
+      return true
     } catch (error) {
       toast.error(`Could not restore the project: ${describe(error)}`)
+      return false
     }
   },
 
