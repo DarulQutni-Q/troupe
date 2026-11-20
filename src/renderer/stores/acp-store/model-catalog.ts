@@ -1,8 +1,11 @@
 import { type PersistedModelCatalog, PersistenceKeys } from '@shared/types/persistence.types'
-import { catalogModels } from '@/components/chat/agent-model-selector/selector-model'
+import {
+  catalogModels,
+  optionsFromPersisted
+} from '@/components/chat/agent-model-selector/selector-model'
 import { persistenceApi } from '@/lib/api'
 import { logFrontendError } from '@/lib/log-api'
-import type { AgentOptionsCacheEntry } from './types'
+import type { AcpSet, AgentOptionsCacheEntry } from './types'
 
 const MODEL_CATEGORY = 'model'
 
@@ -96,4 +99,24 @@ export async function readModelCatalog(configId: string): Promise<PersistedModel
     })
     return null
   }
+}
+
+const hydrated = new Set<string>()
+
+/**
+ * Fill an agent's options cache from its saved model list, once per app run,
+ * so the launcher and the pickers list its models before the agent runs. An
+ * entry already in memory (a live session wrote it) is newer and stays.
+ */
+export function hydrateOptionsCacheFromCatalog(set: AcpSet, configId: string): void {
+  if (hydrated.has(configId)) return
+  hydrated.add(configId)
+  void readModelCatalog(configId).then((saved) => {
+    if (!saved) return
+    set((s) => {
+      if (s.agentOptionsCache[configId]) return s
+      const entry = { ...optionsFromPersisted(saved), modes: null, updatedAt: saved.updatedAt }
+      return { agentOptionsCache: { ...s.agentOptionsCache, [configId]: entry } }
+    })
+  })
 }

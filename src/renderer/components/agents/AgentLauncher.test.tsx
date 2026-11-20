@@ -35,6 +35,7 @@ import { mockAcpSession } from '@/lib/test-utils/acp'
 import { READ_ONLY_SERVER_REASON } from '@/lib/write-gate'
 import { agentReuseKey } from '@/stores/acp-reuse-keys'
 import type { AcpSession } from '@/stores/acp-store'
+import { hydrateOptionsCacheFromCatalog } from '@/stores/acp-store/model-catalog'
 import { useLoginTerminalSignInStore } from '@/stores/login-terminal-sign-in-store'
 import { useSettingsModalStore } from '@/stores/settings-modal-store'
 import { useShellLayoutStore } from '@/stores/shell-layout-store'
@@ -2670,6 +2671,49 @@ describe('AgentLauncher ACP new thread', () => {
     fireEvent.click(modelChip)
     clickMenuOption('Cached Two')
     expect(screen.getByTestId('agent-model-selector-trigger')).toHaveAccessibleName(/Cached Two/)
+  })
+
+  it('lists the saved models after a page load while the agent starts', async () => {
+    seedDefaultAgentConfigured()
+    const { configId } = defaultReadyAgent()
+    acpStateRef.current.preparingChatKeys = { [`${configId}\0/work\0`]: true }
+    mockPersistRead.mockImplementation(async (key: string) =>
+      key === `agents/model-catalog/${configId}`
+        ? {
+            success: true,
+            data: {
+              models: null,
+              modelOption: {
+                id: 'model',
+                name: 'Model',
+                currentValue: 'saved-m1',
+                options: [
+                  { value: 'saved-m1', name: 'Saved Model', description: null },
+                  { value: 'saved-m2', name: 'Saved Two', description: null }
+                ]
+              },
+              updatedAt: 1
+            }
+          }
+        : { success: true, data: undefined }
+    )
+    hydrateOptionsCacheFromCatalog((fn) => {
+      Object.assign(acpStateRef.current, fn(acpStateRef.current as never))
+    }, configId)
+    await waitFor(() => expect(acpStateRef.current.agentOptionsCache[configId]).toBeDefined())
+    renderLauncher()
+
+    const modelChip = await screen.findByRole('button', { name: /Saved Model/ })
+    expect(screen.queryByRole('button', { name: /Loading model/ })).not.toBeInTheDocument()
+    fireEvent.click(modelChip)
+    clickMenuOption('Saved Two')
+    expect(screen.getByTestId('agent-model-selector-trigger')).toHaveAccessibleName(/Saved Two/)
+    await waitFor(() =>
+      expect(mockPersistComposerOptions).toHaveBeenCalledWith(configId, {
+        modelId: 'saved-m2',
+        configValues: { model: 'saved-m2' }
+      })
+    )
   })
 
   it('still shows Loading model when cache has modes only (no model options)', async () => {

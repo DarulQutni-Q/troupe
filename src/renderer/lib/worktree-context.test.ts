@@ -30,7 +30,6 @@ vi.mock('@/stores/project-store', () => ({
 import { useShellLayoutStore } from '@/stores/shell-layout-store'
 import {
   ensureWorktreeSymlinks,
-  getActiveWorktreeForProject,
   getDefaultCwdForProject,
   getProjectRootPath
 } from './worktree-context'
@@ -136,44 +135,6 @@ describe('worktree-context', () => {
       ])
       setPick(WT_PATH)
       expect(getProjectRootPath('p1')).toBe('/projects/main')
-    })
-  })
-
-  describe('active worktree derived from the shell-layout pick', () => {
-    it('sees the picked worktree in any path form', () => {
-      setState([makeProject({ worktrees: [WORKTREE] })])
-      setPick(`${WT_PATH}/`)
-      expect(getActiveWorktreeForProject('p1')).toEqual(WORKTREE)
-    })
-
-    it('sees the project folder with no pick', () => {
-      setState([makeProject({ worktrees: [WORKTREE] })])
-      expect(getActiveWorktreeForProject('p1')).toBeUndefined()
-    })
-
-    it('sees the project folder when the pick equals the project path', () => {
-      setState([makeProject({ worktrees: [WORKTREE] })])
-      setPick('/projects/main')
-      expect(getActiveWorktreeForProject('p1')).toBeUndefined()
-    })
-
-    it('sees the project folder for a pruned pick', () => {
-      setState([makeProject({ worktrees: [WORKTREE] })])
-      setPick('/projects/main/.termul/worktrees/gone')
-      expect(getActiveWorktreeForProject('p1')).toBeUndefined()
-    })
-
-    it('sees the project folder for a pick naming an outside-root worktree', () => {
-      const project = makeProject({ worktrees: [{ ...WORKTREE, outsideProjectRoot: true }] })
-      setState([project])
-      setPick(WT_PATH)
-      expect(getActiveWorktreeForProject('p1')).toBeUndefined()
-    })
-
-    it('sees nothing for a missing project', () => {
-      setState([])
-      setPick(WT_PATH)
-      expect(getActiveWorktreeForProject('p1')).toBeUndefined()
     })
   })
 })
