@@ -48,11 +48,11 @@ export function useProviderSignIn(): ProviderSignIn {
   const of = (agentId: string): AgentSignIn | null => {
     if (agentId === 'claude-acp') {
       if (claude.loading && !claude.snapshot) return 'checking'
-      return claudeDefault ? accountReadiness(claudeDefault, undefined) : null
+      return claudeDefault && !claude.error ? accountReadiness(claudeDefault, undefined) : null
     }
     if (agentId === 'codex-acp') {
       if (codex.loading && !codex.snapshot) return 'checking'
-      return codexDefault ? codexAccountReadiness(codexDefault) : null
+      return codexDefault && !codex.error ? codexAccountReadiness(codexDefault) : null
     }
     return null
   }

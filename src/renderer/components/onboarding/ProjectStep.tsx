@@ -84,6 +84,8 @@ export function ProjectStep({
 }: ProjectStepProps): React.JSX.Element {
   const [opening, setOpening] = useState(false)
   const [creating, setCreating] = useState(false)
+  const [registering, setRegistering] = useState(false)
+  const busy = landing || opening || registering
   const picked = useProjectStore((s) =>
     projectId ? s.projects.some((p) => p.id === projectId) : false
   )
@@ -92,7 +94,7 @@ export function ProjectStep({
     setOpening(true)
     try {
       const result = await pickFolderAsProject()
-      if (result.kind === 'cancelled') return
+      if (result.kind === 'cancelled' || result.kind === 'restore-failed') return
       log('info', `Project picked (${result.kind})`)
       onPicked(result.project.id)
     } catch (err) {
@@ -109,14 +111,14 @@ export function ProjectStep({
     <StepFrame
       step="project"
       title="Where should agents work?"
-      body="Pick a folder. Agents read and change files only inside it, and every chat shows what changed."
+      body="Pick a folder. Agents start in it, and every chat shows what changed."
       footer={
         <>
           <Button
             variant="ghost"
             size="sm"
             className={TOUCH_TARGET_CLASS}
-            disabled={landing}
+            disabled={busy}
             onClick={onBack}
           >
             <ArrowLeft size={14} className="mr-1.5" />
@@ -127,7 +129,7 @@ export function ProjectStep({
               size="sm"
               variant="ghost"
               className={TOUCH_TARGET_CLASS}
-              disabled={landing}
+              disabled={busy}
               onClick={() => onFinish(null)}
             >
               {hasAgent ? 'Skip, chat without a project' : 'Skip for now'}
@@ -135,7 +137,7 @@ export function ProjectStep({
             <Button
               size="sm"
               className={TOUCH_TARGET_CLASS}
-              disabled={!picked || landing}
+              disabled={!picked || busy}
               onClick={() => projectId && onFinish(projectId)}
             >
               Continue
@@ -195,15 +197,21 @@ export function ProjectStep({
         onClose={() => setCreating(false)}
         onCreateProject={async (name, color, path, defaultShell, envVars) => {
           // The modal closes before its work finishes, so the pick is taken here.
-          const result = await addFolderAsProject(path ?? '', {
-            name,
-            color,
-            defaultShell,
-            envVars
-          })
-          log('info', `Project created (${result.kind})`)
-          onPicked(result.project.id)
-          return result.project
+          setRegistering(true)
+          try {
+            const result = await addFolderAsProject(path ?? '', {
+              name,
+              color,
+              defaultShell,
+              envVars
+            })
+            log('info', `Project created (${result.kind})`)
+            if (result.kind === 'restore-failed') return undefined
+            onPicked(result.project.id)
+            return result.project
+          } finally {
+            setRegistering(false)
+          }
         }}
       />
     </StepFrame>

@@ -159,7 +159,7 @@ export function ProjectSidebar({
     async (groupId: string) => {
       try {
         const result = await pickFolderAsProject()
-        if (result.kind === 'cancelled') return
+        if (result.kind === 'cancelled' || result.kind === 'restore-failed') return
         moveProjectToGroup(result.project.id, groupId)
         toast(
           result.kind === 'added' ? 'Project created' : 'Project moved',

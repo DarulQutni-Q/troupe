@@ -407,7 +407,7 @@ describe('project-store', () => {
 
   describe('restoreProject', () => {
     it('asks the host to restore the project', async () => {
-      await useProjectStore.getState().restoreProject('1')
+      expect(await useProjectStore.getState().restoreProject('1')).toBe(true)
 
       expect(registry.restore).toHaveBeenCalledWith('1')
     })
@@ -415,7 +415,7 @@ describe('project-store', () => {
     it('tells the user when the host refuses', async () => {
       registry.restore.mockRejectedValueOnce(new Error('gone'))
 
-      await useProjectStore.getState().restoreProject('1')
+      expect(await useProjectStore.getState().restoreProject('1')).toBe(false)
 
       expect(toastError).toHaveBeenCalledWith('Could not restore the project: gone')
     })

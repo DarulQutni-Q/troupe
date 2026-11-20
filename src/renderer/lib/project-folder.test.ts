@@ -27,7 +27,7 @@ beforeEach(() => {
     color,
     path
   }))
-  restoreProject.mockResolvedValue(undefined)
+  restoreProject.mockResolvedValue(true)
   useProjectStore.setState({ projects: [app], addProject, selectProject, restoreProject })
   useAppSettingsStore.setState({
     settings: { ...DEFAULT_APP_SETTINGS, defaultProjectColor: 'purple' }
@@ -35,6 +35,28 @@ beforeEach(() => {
 })
 
 describe('addFolderAsProject', () => {
+  it('joins a registration of the same folder that is still running', async () => {
+    let finish: (project: Project) => void = () => {}
+    addProject.mockImplementationOnce(() => new Promise<Project>((resolve) => (finish = resolve)))
+
+    const first = addFolderAsProject('/home/u/code/new-app')
+    const second = addFolderAsProject('/home/u/code/new-app/')
+    finish({ id: 'p-new', name: 'new-app', color: 'purple', path: '/home/u/code/new-app' })
+
+    expect(await second).toEqual(await first)
+    expect(addProject).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops when the host refuses to restore the archived project', async () => {
+    useProjectStore.setState({ projects: [{ ...app, isArchived: true }] })
+    restoreProject.mockResolvedValueOnce(false)
+
+    const result = await addFolderAsProject('/home/u/code/my-app')
+
+    expect(result).toEqual({ kind: 'restore-failed' })
+    expect(selectProject).not.toHaveBeenCalled()
+  })
+
   it('registers a new folder in the default project color and starts git detection', async () => {
     const result = await addFolderAsProject('/home/u/code/new-app/')
 
