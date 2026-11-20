@@ -141,6 +141,16 @@ vi.mock('@/stores/terminal-store', () => ({
   cleanupProjectTerminals: vi.fn()
 }))
 
+const { onboardingGateRef } = vi.hoisted(() => ({
+  onboardingGateRef: { current: 'skip' as 'pending' | 'show' | 'skip' }
+}))
+vi.mock('@/components/onboarding/onboarding-gate', () => ({
+  useOnboardingGate: () => ({ state: onboardingGateRef.current, close: () => {} })
+}))
+vi.mock('@/components/onboarding/Onboarding', () => ({
+  Onboarding: () => <div>Welcome to Troupe</div>
+}))
+
 vi.mock('@/stores/app-settings-store', () => ({
   useAppSettingsStore: vi.fn((selector?: (state: Record<string, unknown>) => unknown) => {
     const state = {
@@ -639,6 +649,26 @@ describe('WorkspaceLayout - Empty States', () => {
       mockUseProjects.mockReturnValue([])
       mockUseActiveProject.mockReturnValue(null)
       mockUseActiveProjectId.mockReturnValue('')
+    })
+
+    afterEach(() => {
+      onboardingGateRef.current = 'skip'
+    })
+
+    it('shows first run instead of the shell when the gate shows it', () => {
+      onboardingGateRef.current = 'show'
+      renderWithRouter()
+
+      expect(screen.getByText('Welcome to Troupe')).toBeInTheDocument()
+      expect(screen.queryByText('No Projects Yet')).not.toBeInTheDocument()
+    })
+
+    it('shows the loading screen while the gate waits for its facts', () => {
+      onboardingGateRef.current = 'pending'
+      renderWithRouter()
+
+      expect(screen.getByText('Loading...')).toBeInTheDocument()
+      expect(screen.queryByText('No Projects Yet')).not.toBeInTheDocument()
     })
 
     it('should render no projects empty state when projects array is empty', () => {

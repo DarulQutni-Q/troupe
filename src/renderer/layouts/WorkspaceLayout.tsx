@@ -2,6 +2,8 @@ import type { ShellInfo } from '@shared/types/ipc.types'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { CanvasMountLayer } from '@/components/canvas/CanvasMountLayer'
+import { Onboarding } from '@/components/onboarding/Onboarding'
+import { useOnboardingGate } from '@/components/onboarding/onboarding-gate'
 import { ShellFrame } from '@/components/shell/ShellFrame'
 import { WebTokenGateScreen } from '@/components/WebTokenGateScreen'
 import { type NewTabActions, NewTabActionsProvider } from '@/components/workspace/new-tab-actions'
@@ -66,6 +68,7 @@ export default function WorkspaceLayout(): React.JSX.Element {
   const isLoaded = useProjectsLoaded()
 
   const webAuthGate = useWebAuthGate()
+  const onboarding = useOnboardingGate()
 
   const projects = useProjects()
   const activeProject = useActiveProject()
@@ -281,6 +284,16 @@ export default function WorkspaceLayout(): React.JSX.Element {
         <CanvasMountLayer key="canvas-mount-layer" />
       </>
     )
+  }
+
+  // First run replaces the shell on every surface, after the token screen and
+  // before the phone branch. It mounts no canvas layer: with no projects
+  // there is no canvas to keep alive.
+  if (onboarding.state === 'pending') {
+    return <WorkspaceLoadingScreen isMobileWebShell={isMobileWebShell} />
+  }
+  if (onboarding.state === 'show') {
+    return <Onboarding onClose={onboarding.close} />
   }
 
   if (isMobileWebShell) {

@@ -254,6 +254,10 @@ vi.mock('@/stores/keyboard-shortcuts-store', () => ({
   matchesShortcut: () => false
 }))
 
+vi.mock('@/components/onboarding/onboarding-gate', () => ({
+  useOnboardingGate: () => ({ state: 'skip', close: () => {} })
+}))
+
 vi.mock('@/stores/app-settings-store', () => ({
   useAppSettingsStore: (selector: (state: Record<string, unknown>) => unknown) =>
     selector({ settings: { shellLayout: 'classic' }, isLoaded: true }),
