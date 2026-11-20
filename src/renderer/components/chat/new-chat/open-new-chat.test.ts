@@ -123,6 +123,31 @@ describe('openNewChat', () => {
     expect(start).not.toHaveBeenCalled()
   })
 
+  it('puts focus in the launcher composer once it can take typing', async () => {
+    useQuickChatStore.setState({ view: { mode: 'closed' } })
+    const button = document.createElement('button')
+    const paneEl = document.createElement('div')
+    paneEl.dataset.paneContent = 'pane-1'
+    const editor = document.createElement('div')
+    editor.setAttribute('aria-label', 'Agent prompt')
+    editor.setAttribute('contenteditable', 'false')
+    editor.tabIndex = -1
+    paneEl.append(editor)
+    document.body.append(button, paneEl)
+    button.focus()
+    try {
+      await openNewChat({ reason: 'rail' })
+      await new Promise((resolve) => requestAnimationFrame(resolve))
+      expect(document.activeElement).toBe(button)
+
+      editor.setAttribute('contenteditable', 'true')
+      await vi.waitFor(() => expect(document.activeElement).toBe(editor))
+    } finally {
+      button.remove()
+      paneEl.remove()
+    }
+  })
+
   it("opens the launcher in the project row's project once its switch lands", async () => {
     useProjectStore.setState({
       activeProjectId: 'p2',
