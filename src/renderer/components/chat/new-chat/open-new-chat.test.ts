@@ -29,6 +29,7 @@ vi.mock('@/stores/acp-store/composer-options', async (importOriginal) => ({
   readComposerOptions
 }))
 
+import { useProjectSwitchStatus } from '@/lib/project-switch/status-store'
 import { useAcpStore } from '@/stores/acp-store'
 import { useProjectStore } from '@/stores/project-store'
 import { useQuickChatStore } from '@/stores/quick-chat-store'
@@ -54,7 +55,8 @@ function pane(tabs: unknown[] = [], activeTabId: string | null = null): void {
   useWorkspaceStore.setState({
     root: { type: 'leaf', id: 'pane-1', tabs, activeTabId },
     activePaneId: 'pane-1',
-    agentLauncherPaneId: null
+    agentLauncherPaneId: null,
+    activeProjectId: ''
   } as never)
 }
 
@@ -96,11 +98,52 @@ beforeEach(() => {
   }))
 })
 
+const { createLaunchPlaceholder, startChat } = useAcpStore.getState()
+
 afterEach(() => {
   vi.restoreAllMocks()
+  useAcpStore.setState({ createLaunchPlaceholder, startChat })
 })
 
 describe('openNewChat', () => {
+  it('opens the launcher in the pane and starts no session', async () => {
+    useQuickChatStore.setState({ view: { mode: 'closed' } })
+    const placeholder = vi.fn(() => 'launch-x')
+    const start = vi.fn(async () => 'sess-x')
+    useAcpStore.setState({ createLaunchPlaceholder: placeholder, startChat: start } as never)
+
+    expect(await openNewChat({ reason: 'rail' })).toEqual({ kind: 'launcher' })
+
+    expect(useWorkspaceStore.getState().agentLauncherPaneId).toBe('pane-1')
+    expect(useAcpStore.getState().sessions).toEqual({})
+    expect(placeholder).not.toHaveBeenCalled()
+    expect(start).not.toHaveBeenCalled()
+    expect(launchChat).not.toHaveBeenCalled()
+  })
+
+  it("opens the launcher in the project row's project once its switch lands", async () => {
+    useProjectStore.setState({
+      activeProjectId: 'p2',
+      projects: [
+        { id: 'p1', name: 'termul', path: '/work', isGitRepo: true },
+        { id: 'p2', name: 'other', path: '/other', isGitRepo: true }
+      ]
+    } as never)
+    useWorkspaceStore.setState({ activeProjectId: 'p1' } as never)
+    useProjectSwitchStatus.getState().apply({ kind: 'pending', projectId: 'p2' })
+
+    const run = openNewChat({ projectId: 'p2', reason: 'project-row' })
+    useWorkspaceStore.setState({
+      activeProjectId: 'p2',
+      root: { type: 'leaf', id: 'pane-2', tabs: [], activeTabId: null },
+      activePaneId: 'pane-2'
+    } as never)
+    useProjectSwitchStatus.getState().apply({ kind: 'idle' })
+
+    expect(await run).toEqual({ kind: 'launcher' })
+    expect(useWorkspaceStore.getState().agentLauncherPaneId).toBe('pane-2')
+  })
+
   it('opens an empty chat on the last picked agent with its saved options', async () => {
     readComposerOptions.mockResolvedValue({ modelId: 'm2', modeId: 'plan' })
     useAcpStore.setState({
