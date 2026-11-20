@@ -2,11 +2,8 @@ import { useCallback, useState } from 'react'
 import { toast } from 'sonner'
 import { useResolvedSupportedAcpAgents } from '@/hooks/use-resolved-supported-acp-agents'
 import type { StoredAgentConfig } from '@/lib/acp-agents-persistence'
-import { acpApi } from '@/lib/acp-api'
-import {
-  installedBinaryConfig,
-  type SupportedAcpAgentEntry
-} from '@/lib/agents/supported-acp-agents'
+import { installSupportedAgent, isInstallable } from '@/lib/agents/agent-setup'
+import type { SupportedAcpAgentEntry } from '@/lib/agents/supported-acp-agents'
 import { logFrontendError } from '@/lib/log-api'
 import { type AcpState, useAcpStore } from '@/stores/acp-store'
 import {
@@ -153,7 +150,6 @@ export function useAgentSwitch(sessionId: string): {
   install: (entry: SupportedAcpAgentEntry) => void
 } {
   const agentConfigs = useAcpStore((s) => s.agentConfigs ?? EMPTY_CONFIGS)
-  const saveAgentConfig = useAcpStore((s) => s.saveAgentConfig)
   const armedConfigId = useAcpStore((s) => s.sessions?.[sessionId]?.switching?.toConfigId ?? null)
   const currentConfigId = useCurrentAgentConfigId(sessionId)
   const entries = useResolvedSupportedAcpAgents(agentConfigs)
@@ -202,37 +198,20 @@ export function useAgentSwitch(sessionId: string): {
     [armWithModel, sessionId]
   )
 
-  // Install driver (the launcher's handleInstallAgent recipe): host install →
-  // installedBinaryConfig → saveAgentConfig. The entries then re-resolve as
-  // ready and the tab loads that agent's models.
+  // The entries re-resolve as ready after the install, and the tab loads
+  // that agent's models.
   const install = useCallback(
     (entry: SupportedAcpAgentEntry) => {
-      const spec = entry.install
-      if (!spec || installingConfigId) return
+      if (!isInstallable(entry) || installingConfigId) return
       setInstallingConfigId(entry.configId)
-      void (async () => {
-        try {
-          const installed = await acpApi.installAcpAgent(entry.agent.id)
-          const config = installedBinaryConfig(
-            entry.agent,
-            installed,
-            spec.kind === 'archive' ? { env: spec.env } : {}
-          )
-          await saveAgentConfig(config)
-          toast.success(`${entry.agent.name} installed`)
-        } catch (err) {
-          void logFrontendError({
-            level: 'warn',
-            source: 'composer.selector.install',
-            message: `Install of ${entry.agent.id} failed: ${String(err)}`
-          })
+      void installSupportedAgent(entry)
+        .then(() => toast.success(`${entry.agent.name} installed`))
+        .catch((err: unknown) =>
           toast.error(`Failed to install ${entry.agent.name}: ${String(err)}`)
-        } finally {
-          setInstallingConfigId(null)
-        }
-      })()
+        )
+        .finally(() => setInstallingConfigId(null))
     },
-    [installingConfigId, saveAgentConfig]
+    [installingConfigId]
   )
 
   return {
