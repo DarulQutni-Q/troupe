@@ -1,6 +1,7 @@
 import { UNASSIGNED_PROJECT_ID } from '@shared/types/web-projects.types'
 import { toast } from 'sonner'
 import { UNTITLED_HOST_TITLE } from '@/lib/acp-history-persistence'
+import { focusComposerWhenReady } from '@/lib/focus-composer'
 import { logFrontendError } from '@/lib/log-api'
 import { isChatRouteCurrent, navigateToChatSession } from '@/lib/router-navigate'
 import type { AcpState } from '@/stores/acp-store'
@@ -109,29 +110,13 @@ export function leaveQuickChatView(source: string): void {
   })
 }
 
-/** Frames {@link focusQuickChatComposer} waits for the composer to mount. */
-const FOCUS_COMPOSER_MAX_FRAMES = 30
-
 /**
- * Put focus in the open quick chat's composer. It waits a few frames for a
- * new chat's composer to mount. The composer focuses itself only on mount
- * in some layouts, so `+` (a new chat, or the empty one already on screen)
- * needs this.
+ * Put focus in the open quick chat's composer. The composer focuses itself
+ * only on mount in some layouts, so `+` (a new chat, or the empty one already
+ * on screen) needs this.
  */
 export function focusQuickChatComposer(): void {
-  let frames = 0
-  const tryFocus = (): void => {
-    const editor = document.querySelector<HTMLElement>(
-      '[data-testid="quick-chat-main"] [contenteditable="true"]'
-    )
-    if (editor) {
-      editor.focus()
-      return
-    }
-    frames += 1
-    if (frames < FOCUS_COMPOSER_MAX_FRAMES) requestAnimationFrame(tryFocus)
-  }
-  requestAnimationFrame(tryFocus)
+  focusComposerWhenReady('[data-testid="quick-chat-main"] [contenteditable="true"]')
 }
 
 /** The open quick chat's title (live, then index), or `undefined` when none is open. */

@@ -209,14 +209,25 @@ export function catalogFromSessionState(
   return null
 }
 
+/** The session options a saved model list stands for: its models and its model option. */
+export function optionsFromPersisted(saved: PersistedModelCatalog): {
+  models: SessionModelState | null
+  configOptions: SessionConfigOption[]
+} {
+  return {
+    models: saved.models,
+    configOptions: saved.modelOption
+      ? [{ ...saved.modelOption, category: 'model', type: 'select' }]
+      : []
+  }
+}
+
 export function catalogFromPersisted(
   saved: PersistedModelCatalog | null | undefined
 ): ModelCatalog | null {
   if (!saved) return null
-  return catalogFromSessionState(
-    saved.models,
-    saved.modelOption ? [{ ...saved.modelOption, category: 'model', type: 'select' }] : []
-  )
+  const { models, configOptions } = optionsFromPersisted(saved)
+  return catalogFromSessionState(models, configOptions)
 }
 
 /**

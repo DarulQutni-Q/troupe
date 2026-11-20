@@ -1,7 +1,5 @@
-import { PersistenceKeys } from '@shared/types/persistence.types'
 import { UNASSIGNED_PROJECT_ID } from '@shared/types/web-projects.types'
 import { toast } from 'sonner'
-import { type LaunchCheckout, launchChat } from '@/components/agents/launcher/launch-chat'
 import {
   emptyPendingLauncherOptions,
   hasPendingLauncherOptions,
@@ -16,7 +14,7 @@ import {
 } from '@/components/chat/agent-model-selector/use-agent-switch'
 import { newChatKind } from '@/components/shell/open-new-chat'
 import type { SessionId } from '@/lib/acp-api'
-import { persistenceApi } from '@/lib/api'
+import { focusComposerWhenReady } from '@/lib/focus-composer'
 import { logFrontendError } from '@/lib/log-api'
 import {
   adoptQuickChat,
@@ -25,11 +23,10 @@ import {
   showNoProjectChat
 } from '@/lib/no-project-chat'
 import { committedPaneProject } from '@/lib/pane-target'
-import { getActiveWorktreeForProject, getDefaultCwdForProject } from '@/lib/worktree-context'
+import { whenProjectSwitchSettled } from '@/lib/project-switch/status-store'
 import {
   type AgentOptionsCacheEntry,
   ChatLaunchCancelledError,
-  isAuthRetriableSessionError,
   useAcpStore
 } from '@/stores/acp-store'
 import {
@@ -40,7 +37,7 @@ import {
 import { useChatStartPickStore } from '@/stores/chat-start-pick-store'
 import { useProjectStore } from '@/stores/project-store'
 import { useQuickChatStore } from '@/stores/quick-chat-store'
-import { agentChatTabId, findPaneById, useWorkspaceStore } from '@/stores/workspace-store'
+import { useWorkspaceStore } from '@/stores/workspace-store'
 import { chatNotStarted } from './chat-not-started'
 import { rememberNewChatAgent, resolveNewChatAgent } from './new-chat-agent'
 
@@ -62,7 +59,7 @@ export type NewChatReason =
   | 'mobile-drawer-quick'
 
 export interface OpenNewChatRequest {
-  /** The pane the chat opens in; absent means the focused pane. */
+  /** The pane the launcher opens in; absent means the focused pane. */
   paneId?: string | null
   /** The project the chat belongs to; absent means the active project. */
   projectId?: string | null
@@ -70,11 +67,11 @@ export interface OpenNewChatRequest {
 }
 
 export type OpenNewChatResult =
-  /** The pane already showed an empty chat of this project; it is focused. */
+  /** The quick chat view already showed an empty quick chat; it is focused. */
   | { kind: 'focused'; sessionId: SessionId }
-  /** A new empty chat opened (its id is the launch placeholder's). */
+  /** A new empty quick chat opened (its id is the launch placeholder's). */
   | { kind: 'opened'; sessionId: SessionId }
-  /** No agent can start without a choice: the launcher opened instead. */
+  /** The launcher opened in the project's pane. */
   | { kind: 'launcher' }
   | { kind: 'skipped' }
 
@@ -91,45 +88,14 @@ export function isEmptyStartChat(sessionId: SessionId): boolean {
   return chatNotStarted(useAcpStore.getState(), sessionId)
 }
 
-/** The text of the messages waiting in a chat's queue. */
-function queuedText(sessionId: SessionId): string {
-  return (useAcpStore.getState().promptQueues[sessionId] ?? [])
-    .map((item) =>
-      (item.displayBlocks ?? item.blocks)
-        .map((block) => (block.type === 'text' ? (block.text ?? '') : ''))
-        .join('')
-        .trim()
-    )
-    .filter(Boolean)
-    .join('\n\n')
-}
-
-/** The empty chat of `projectId` the pane shows now, if any. */
-function emptyChatInPane(paneId: string, projectId: string): SessionId | null {
-  const pane = findPaneById(useWorkspaceStore.getState().root, paneId)
-  if (pane?.type !== 'leaf') return null
-  const tab = pane.tabs.find((t) => t.id === pane.activeTabId)
-  if (tab?.type !== 'agent-chat') return null
-  const session = useAcpStore.getState().sessions[tab.sessionId]
-  return session?.projectId === projectId && isEmptyStartChat(tab.sessionId) ? tab.sessionId : null
-}
-
 /**
- * True when `paneId` is still a pane of the tree on screen and that tree is
+ * True when `paneId` is a pane of the tree on screen and that tree is
  * `projectId`'s (not the previous project's tree during a slow switch). Logs
  * the skip otherwise.
  */
-function paneStillTargets(
-  paneId: string,
-  projectId: string,
-  reason: NewChatReason,
-  what: 'chat' | 'launcher'
-): boolean {
+function paneStillTargets(paneId: string, projectId: string, reason: NewChatReason): boolean {
   if (committedPaneProject(paneId) === projectId) return true
-  log(
-    'info',
-    `New chat (reason=${reason}) skipped the ${what}: its pane or project changed while it started`
-  )
+  log('info', `New chat (reason=${reason}) skipped the launcher: its pane or project changed`)
   return false
 }
 
@@ -200,36 +166,13 @@ export function newChatPlaceholderOptions(
   return overlayPendingLauncherOptions({ ...cached, configOptions, pending: picks })
 }
 
-/** The checkout of the Workspace-switcher pick, else the project root. */
-function pickedCheckout(projectId: string): LaunchCheckout | null {
-  const root = getDefaultCwdForProject(projectId)
-  if (!root) return null
-  const worktree = getActiveWorktreeForProject(projectId)
-  return worktree
-    ? { launchCwd: worktree.path, worktreePath: worktree.path, worktreeBranch: worktree.branch }
-    : { launchCwd: root }
-}
-
-const inFlight = new Map<string, Promise<OpenNewChatResult>>()
+let quickStart: Promise<OpenNewChatResult> | null = null
 
 /**
- * The one way to start a chat: a new EMPTY chat in the pane, on the last
- * picked agent with its saved options (model, mode, option values), in the
- * Workspace-switcher pick (else the project root). The chat tab opens at once
- * on a launch placeholder (`launchChat`); the session starts behind it, and a
- * start failure shows in the chat with Retry. A message typed before the
- * session is ready waits in the chat's queue.
- *
- * When the pane already shows an empty chat of the project, that chat is
- * focused instead. The launcher opens only for states a chat cannot show: no
- * agent can start without a choice (none configured or installed; on web an
- * agent nobody configured never spawns, #840), or the agent needs a sign-in.
- */
-/**
- * A new quick chat: the same empty chat as a project New chat (last agent and
- * its saved model), persisted as a quick chat. The host owns the folder. This
- * path does not open the agent launcher. The Quick chats `+` and the palette
- * call it directly; New chat calls it only when no project exists.
+ * A new quick chat: an empty chat on the last picked agent and its saved
+ * model, persisted as a quick chat. The host owns the folder. This path does
+ * not open the agent launcher. The Quick chats `+` and the palette call it
+ * directly; New chat calls it only when no project exists.
  */
 export function openNewQuickChat(reason: NewChatReason): Promise<OpenNewChatResult> {
   const view = useQuickChatStore.getState().view
@@ -241,11 +184,10 @@ export function openNewQuickChat(reason: NewChatReason): Promise<OpenNewChatResu
       return Promise.resolve({ kind: 'focused', sessionId: view.sessionId })
     }
   }
-  const pending = inFlight.get('quick')
-  if (pending) return pending
-  const run = startQuick(reason).finally(() => inFlight.delete('quick'))
-  inFlight.set('quick', run)
-  return run
+  quickStart ??= startQuick(reason).finally(() => {
+    quickStart = null
+  })
+  return quickStart
 }
 
 async function startQuick(reason: NewChatReason): Promise<OpenNewChatResult> {
@@ -310,131 +252,39 @@ async function startQuick(reason: NewChatReason): Promise<OpenNewChatResult> {
   return { kind: 'opened', sessionId: placeholderId }
 }
 
-export function openNewChat(request: OpenNewChatRequest): Promise<OpenNewChatResult> {
-  const workspace = useWorkspaceStore.getState()
-  const paneId = request.paneId ?? workspace.activePaneId
-  const explicitProject = request.projectId !== undefined
-  const projectId = explicitProject ? request.projectId : useProjectStore.getState().activeProjectId
-  if (newChatKind(projectId ?? '') === 'quick') {
-    return openNewQuickChat(request.reason)
-  }
-  if (!paneId || !projectId) {
-    log('warn', `New chat (reason=${request.reason}) skipped: no pane or no active project`)
-    return Promise.resolve({ kind: 'skipped' })
-  }
-  // The project chat (or the launcher) goes in the project tree. A quick chat
-  // on top of it would hide the result.
-  leaveQuickChatView(SOURCE)
-  const existing = emptyChatInPane(paneId, projectId)
-  if (existing) {
-    if (workspace.agentLauncherPaneId === paneId) workspace.hideAgentLauncher()
-    workspace.addAgentChatTab(existing, paneId)
-    log('info', `New chat (reason=${request.reason}) focused the empty chat ${existing}`)
-    return Promise.resolve({ kind: 'focused', sessionId: existing })
-  }
-  const key = `${paneId}:${projectId}`
-  const pending = inFlight.get(key)
-  if (pending) return pending
-  const run = start(paneId, projectId, request.reason).finally(() => inFlight.delete(key))
-  inFlight.set(key, run)
-  return run
-}
-
-async function start(
-  paneId: string,
-  projectId: string,
-  reason: NewChatReason
-): Promise<OpenNewChatResult> {
-  const agent = await resolveNewChatAgent()
-  if (agent.kind === 'none') {
-    // The await can outlive the pane or the project the user was in: a
-    // launcher for a pane that is no longer on screen would only block
-    // shortcuts that check for an open launcher.
-    if (!paneStillTargets(paneId, projectId, reason, 'launcher')) return { kind: 'skipped' }
-    useWorkspaceStore.getState().showAgentLauncher(paneId)
-    log('info', `New chat (reason=${reason}) opened the launcher: ${agent.reason}`)
-    return { kind: 'launcher' }
-  }
-  const checkout = pickedCheckout(projectId)
-  if (!checkout) {
-    toast.error('Could not start a chat: the project has no folder')
-    log('warn', `New chat (reason=${reason}) skipped: project ${projectId} has no folder`)
+/**
+ * New chat for a project: the launcher in the pane, its composer at once. No
+ * session starts here: the launcher warms one in the background and Send
+ * claims it. A chat with no project is a quick chat (`openNewQuickChat`).
+ */
+export async function openNewChat(request: OpenNewChatRequest): Promise<OpenNewChatResult> {
+  const { reason } = request
+  const projectId =
+    request.projectId !== undefined ? request.projectId : useProjectStore.getState().activeProjectId
+  if (newChatKind(projectId ?? '') === 'quick') return openNewQuickChat(reason)
+  if (!projectId) {
+    log('warn', `New chat (reason=${reason}) skipped: no active project`)
     return { kind: 'skipped' }
   }
-  if (agent.configToSave) {
-    try {
-      await useAcpStore.getState().saveAgentConfig(agent.configToSave)
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      toast.error(`Could not set up ${agent.name}: ${message}`)
-      log('warn', `New chat (reason=${reason}) could not save ${agent.configId}: ${message}`)
-      if (!paneStillTargets(paneId, projectId, reason, 'launcher')) return { kind: 'skipped' }
-      useWorkspaceStore.getState().showAgentLauncher(paneId)
-      return { kind: 'launcher' }
-    }
+  // The launcher goes in the project tree. A quick chat on top of it would hide it.
+  leaveQuickChatView(SOURCE)
+  // A project row's New chat switches project first: its pane is in the tree
+  // that the switch puts on screen.
+  await whenProjectSwitchSettled(projectId)
+  const paneId = request.paneId ?? useWorkspaceStore.getState().activePaneId
+  if (!paneId) {
+    log('warn', `New chat (reason=${reason}) skipped: no pane`)
+    return { kind: 'skipped' }
   }
-  rememberNewChatAgent(agent.configId)
-
-  const picks = await savedPicks(agent.configId)
-  // The awaits above can outlive the pane or the project the user was in.
-  if (!paneStillTargets(paneId, projectId, reason, 'chat')) return { kind: 'skipped' }
-  const cache = useAcpStore.getState().agentOptionsCache[agent.configId]
-  const shown = newChatPlaceholderOptions(cache, picks)
-  const dropped = (cache?.configOptions.length ?? 0) - shown.configOptions.length
-  if (dropped > 0) {
-    log(
-      'info',
-      `New chat on ${agent.configId}: ${dropped} cached option(s) of another model hidden until the session starts`
-    )
-  }
-  const workspace = useWorkspaceStore.getState()
-  if (workspace.agentLauncherPaneId === paneId) workspace.hideAgentLauncher()
-  const { placeholderId, started } = launchChat({
-    configId: agent.configId,
-    projectId,
-    paneId,
-    checkout,
-    placeholder: shown,
-    beforeStart: async () => ({ pending: hasPendingLauncherOptions(picks) ? picks : null })
-  })
-  log(
-    'info',
-    `New chat ${placeholderId} (reason=${reason}) opened on ${agent.configId} in the ${checkout.worktreePath ? 'picked worktree' : 'project folder'}`
+  if (!paneStillTargets(paneId, projectId, reason)) return { kind: 'skipped' }
+  useWorkspaceStore.getState().showAgentLauncher(paneId)
+  // The launcher of a pane with no tabs is already mounted, and an overlay
+  // mounts read-only until its agent resolves: its own autofocus misses both.
+  focusComposerWhenReady(
+    `[data-pane-content="${paneId}"] [aria-label="Agent prompt"][contenteditable="true"]`
   )
-  void started
-    .then((sessionId) => log('info', `New chat ${placeholderId} started as ${sessionId}`))
-    .catch((err: unknown) => {
-      if (err instanceof ChatLaunchCancelledError) return
-      if (!isAuthRetriableSessionError(err)) return // the chat shows the error and Retry
-      // A sign-in has no home in the chat: the launcher shows the agent's
-      // sign-in methods. The failed empty chat goes away under it; a message
-      // that waited in its queue moves to the launcher's draft.
-      const waiting = queuedText(placeholderId)
-      // The launcher reads its draft when it mounts: write it first.
-      const keepDraft = waiting
-        ? persistenceApi
-            .write(PersistenceKeys.lastLaunchDraft(projectId), waiting)
-            .then(() => undefined)
-            .catch((writeErr: unknown) =>
-              log(
-                'warn',
-                `New chat ${placeholderId}: could not keep the queued message: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`
-              )
-            )
-        : Promise.resolve()
-      return keepDraft.then(() => {
-        log(
-          'info',
-          `New chat ${placeholderId} needs a sign-in to ${agent.configId}: opened the launcher${waiting ? ' with the queued message as its draft' : ''}`
-        )
-        useWorkspaceStore.getState().removeTab(agentChatTabId(placeholderId))
-        void discardEmptyChat(placeholderId)
-        if (paneStillTargets(paneId, projectId, reason, 'launcher')) {
-          useWorkspaceStore.getState().showAgentLauncher(paneId)
-        }
-      })
-    })
-  return { kind: 'opened', sessionId: placeholderId }
+  log('info', `New chat (reason=${reason}) opened the launcher in pane ${paneId} of ${projectId}`)
+  return { kind: 'launcher' }
 }
 
 /**

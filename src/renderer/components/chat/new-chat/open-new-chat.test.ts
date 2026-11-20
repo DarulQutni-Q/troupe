@@ -1,16 +1,13 @@
 import { PersistenceKeys } from '@shared/types/persistence.types'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { read, write, resolveEntries, tauriRef, launchChat, readComposerOptions } = vi.hoisted(
-  () => ({
-    read: vi.fn(),
-    write: vi.fn(async () => ({ success: true, data: undefined })),
-    resolveEntries: vi.fn(),
-    tauriRef: { current: true },
-    launchChat: vi.fn(),
-    readComposerOptions: vi.fn()
-  })
-)
+const { read, write, resolveEntries, tauriRef, readComposerOptions } = vi.hoisted(() => ({
+  read: vi.fn(),
+  write: vi.fn(async () => ({ success: true, data: undefined })),
+  resolveEntries: vi.fn(),
+  tauriRef: { current: true },
+  readComposerOptions: vi.fn()
+}))
 
 vi.mock('@/lib/api', () => ({ persistenceApi: { read, write } }))
 vi.mock('@/lib/log-api', () => ({ logFrontendError: vi.fn(async () => {}) }))
@@ -23,12 +20,12 @@ vi.mock('@/lib/agents/supported-acp-agents', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/agents/supported-acp-agents')>()),
   resolveSupportedAcpAgents: resolveEntries
 }))
-vi.mock('@/components/agents/launcher/launch-chat', () => ({ launchChat }))
 vi.mock('@/stores/acp-store/composer-options', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/stores/acp-store/composer-options')>()),
   readComposerOptions
 }))
 
+import { useProjectSwitchStatus } from '@/lib/project-switch/status-store'
 import { useAcpStore } from '@/stores/acp-store'
 import { useProjectStore } from '@/stores/project-store'
 import { useQuickChatStore } from '@/stores/quick-chat-store'
@@ -54,7 +51,8 @@ function pane(tabs: unknown[] = [], activeTabId: string | null = null): void {
   useWorkspaceStore.setState({
     root: { type: 'leaf', id: 'pane-1', tabs, activeTabId },
     activePaneId: 'pane-1',
-    agentLauncherPaneId: null
+    agentLauncherPaneId: null,
+    activeProjectId: ''
   } as never)
 }
 
@@ -65,8 +63,6 @@ function lastSelected(agentId: string | null): void {
       : { success: false, error: 'missing', code: 'KEY_NOT_FOUND' }
   )
 }
-
-let started: { resolve: (id: string) => void; reject: (err: unknown) => void }
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -88,136 +84,119 @@ beforeEach(() => {
   readComposerOptions.mockResolvedValue(null)
   lastSelected('cfg-b')
   pane()
-  launchChat.mockImplementation(() => ({
-    placeholderId: 'launch-1',
-    started: new Promise<string>((resolve, reject) => {
-      started = { resolve, reject }
-    })
-  }))
 })
+
+const { createLaunchPlaceholder, finalizeChatLaunch, saveAgentConfig, startChat } =
+  useAcpStore.getState()
 
 afterEach(() => {
   vi.restoreAllMocks()
+  useAcpStore.setState({ createLaunchPlaceholder, finalizeChatLaunch, saveAgentConfig, startChat })
 })
 
+/** Stub the quick chat's launch; returns the stubs to read what they got. */
+function stubQuickLaunch(): {
+  createLaunchPlaceholder: ReturnType<typeof vi.fn>
+  finalizeChatLaunch: ReturnType<typeof vi.fn>
+} {
+  useQuickChatStore.setState({ view: { mode: 'closed' } })
+  const stubs = {
+    createLaunchPlaceholder: vi.fn(() => 'launch-q'),
+    finalizeChatLaunch: vi.fn(async () => 'sess-q')
+  }
+  useAcpStore.setState(stubs as never)
+  return stubs
+}
+
 describe('openNewChat', () => {
-  it('opens an empty chat on the last picked agent with its saved options', async () => {
-    readComposerOptions.mockResolvedValue({ modelId: 'm2', modeId: 'plan' })
-    useAcpStore.setState({
-      agentOptionsCache: {
-        'cfg-b': {
-          models: {
-            currentModelId: 'm1',
-            availableModels: [
-              { modelId: 'm1', name: 'M1' },
-              { modelId: 'm2', name: 'M2' }
-            ]
-          },
-          modes: {
-            currentModeId: 'code',
-            availableModes: [
-              { id: 'code', name: 'Code' },
-              { id: 'plan', name: 'Plan' }
-            ]
-          },
-          configOptions: [],
-          updatedAt: 1
-        }
-      }
-    } as never)
+  it('opens the launcher in the pane and starts no session', async () => {
+    useQuickChatStore.setState({ view: { mode: 'closed' } })
+    const placeholder = vi.fn(() => 'launch-x')
+    const start = vi.fn(async () => 'sess-x')
+    useAcpStore.setState({ createLaunchPlaceholder: placeholder, startChat: start } as never)
 
-    const result = await openNewChat({ reason: 'rail' })
+    expect(await openNewChat({ reason: 'rail' })).toEqual({ kind: 'launcher' })
 
-    expect(result).toEqual({ kind: 'opened', sessionId: 'launch-1' })
-    const request = launchChat.mock.calls[0]?.[0]
-    expect(request).toMatchObject({
-      configId: 'cfg-b',
-      projectId: 'p1',
-      paneId: 'pane-1',
-      checkout: { launchCwd: '/work' }
-    })
-    expect(request.newWorktree).toBeUndefined()
-    // The placeholder paints the saved picks; the session gets them on start.
-    expect(request.placeholder.models.currentModelId).toBe('m2')
-    expect(request.placeholder.modes.currentModeId).toBe('plan')
-    await expect(request.beforeStart()).resolves.toEqual({
-      pending: expect.objectContaining({ modelId: 'm2', modeId: 'plan' })
-    })
-    expect(useAcpStore.getState().selectedAgentConfigId).toBe('cfg-b')
+    expect(useWorkspaceStore.getState().agentLauncherPaneId).toBe('pane-1')
+    expect(useAcpStore.getState().sessions).toEqual({})
+    expect(placeholder).not.toHaveBeenCalled()
+    expect(start).not.toHaveBeenCalled()
   })
 
-  it('starts in the worktree the Workspace switcher picked', async () => {
+  it('puts focus in the launcher composer once it can take typing', async () => {
+    useQuickChatStore.setState({ view: { mode: 'closed' } })
+    const button = document.createElement('button')
+    const paneEl = document.createElement('div')
+    paneEl.dataset.paneContent = 'pane-1'
+    const editor = document.createElement('div')
+    editor.setAttribute('aria-label', 'Agent prompt')
+    editor.setAttribute('contenteditable', 'false')
+    editor.tabIndex = -1
+    paneEl.append(editor)
+    document.body.append(button, paneEl)
+    button.focus()
+    try {
+      await openNewChat({ reason: 'rail' })
+      await new Promise((resolve) => requestAnimationFrame(resolve))
+      expect(document.activeElement).toBe(button)
+
+      editor.setAttribute('contenteditable', 'true')
+      await vi.waitFor(() => expect(document.activeElement).toBe(editor))
+    } finally {
+      button.remove()
+      paneEl.remove()
+    }
+  })
+
+  it("opens the launcher in the project row's project once its switch lands", async () => {
     useProjectStore.setState({
+      activeProjectId: 'p2',
       projects: [
-        {
-          id: 'p1',
-          name: 'termul',
-          path: '/work',
-          isGitRepo: true,
-          worktrees: [
-            {
-              id: 'w1',
-              name: 'feat',
-              branch: 'feat/x',
-              path: '/work/.termul/worktrees/feat',
-              createdAt: '2026-01-01T00:00:00.000Z'
-            }
-          ]
-        }
+        { id: 'p1', name: 'termul', path: '/work', isGitRepo: true },
+        { id: 'p2', name: 'other', path: '/other', isGitRepo: true }
       ]
     } as never)
-    useShellLayoutStore.setState({
-      worktreePickByProject: { p1: '/work/.termul/worktrees/feat' }
+    useWorkspaceStore.setState({ activeProjectId: 'p1' } as never)
+    useProjectSwitchStatus.getState().apply({ kind: 'pending', projectId: 'p2' })
+
+    const run = openNewChat({ projectId: 'p2', reason: 'project-row' })
+    useWorkspaceStore.setState({
+      activeProjectId: 'p2',
+      root: { type: 'leaf', id: 'pane-2', tabs: [], activeTabId: null },
+      activePaneId: 'pane-2'
+    } as never)
+    useProjectSwitchStatus.getState().apply({ kind: 'idle' })
+
+    expect(await run).toEqual({ kind: 'launcher' })
+    expect(useWorkspaceStore.getState().agentLauncherPaneId).toBe('pane-2')
+  })
+
+  it("opens no launcher for the selected project in the previous project's pane (slow switch)", async () => {
+    // p2 is selected, but p1's tree (with pane-1) is still the one on screen.
+    useWorkspaceStore.setState({ activeProjectId: 'p1' } as never)
+    useProjectStore.setState({
+      activeProjectId: 'p2',
+      projects: [
+        { id: 'p1', name: 'termul', path: '/work', isGitRepo: true },
+        { id: 'p2', name: 'other', path: '/other', isGitRepo: true }
+      ]
     } as never)
 
-    await openNewChat({ reason: 'shortcut' })
-
-    expect(launchChat.mock.calls[0]?.[0].checkout).toEqual({
-      launchCwd: '/work/.termul/worktrees/feat',
-      worktreePath: '/work/.termul/worktrees/feat',
-      worktreeBranch: 'feat/x'
+    expect(await openNewChat({ paneId: 'pane-1', reason: 'new-tab-menu' })).toEqual({
+      kind: 'skipped'
     })
+    expect(useWorkspaceStore.getState().agentLauncherPaneId).toBeNull()
   })
 
-  it('focuses the empty chat the pane already shows instead of making another', async () => {
-    const tabId = agentChatTabId('s-empty')
-    pane([{ type: 'agent-chat', id: tabId, sessionId: 's-empty' }], tabId)
-    useAcpStore.setState({
-      sessions: { 's-empty': { id: 's-empty', projectId: 'p1', status: 'active' } },
-      messages: { 's-empty': [] }
-    } as never)
-
-    const result = await openNewChat({ reason: 'rail' })
-
-    expect(result).toEqual({ kind: 'focused', sessionId: 's-empty' })
-    expect(launchChat).not.toHaveBeenCalled()
-    expect(resolveEntries).not.toHaveBeenCalled()
-  })
-
-  it('opens another chat when the shown chat already has messages', async () => {
-    const tabId = agentChatTabId('s-used')
-    pane([{ type: 'agent-chat', id: tabId, sessionId: 's-used' }], tabId)
-    useAcpStore.setState({
-      sessions: { 's-used': { id: 's-used', projectId: 'p1', status: 'active' } },
-      messages: { 's-used': [{ id: 'm', role: 'user', blocks: [] }] }
-    } as never)
-
-    expect((await openNewChat({ reason: 'rail' })).kind).toBe('opened')
-  })
-
-  it('opens one chat for a double press while the first is starting', async () => {
-    const [first, second] = await Promise.all([
-      openNewChat({ reason: 'rail' }),
-      openNewChat({ reason: 'rail' })
-    ])
-    expect(first).toEqual(second)
-    expect(launchChat).toHaveBeenCalledTimes(1)
+  it('closes the open quick chat so the launcher of a project New chat is visible', async () => {
+    useQuickChatStore.setState({ view: { mode: 'chat', sessionId: 'quick-1' } })
+    expect(await openNewChat({ reason: 'shortcut' })).toEqual({ kind: 'launcher' })
+    expect(useQuickChatStore.getState().view).toEqual({ mode: 'closed' })
   })
 
   it('opens an empty quick chat when no project is active, and does not open the launcher', async () => {
     useQuickChatStore.setState({ view: { mode: 'closed' } })
     useProjectStore.setState({ activeProjectId: '', projects: [] } as never)
-    const store = useAcpStore.getState()
     const createLaunchPlaceholder = vi.fn(() => 'launch-q')
     const finalizeChatLaunch = vi.fn(async () => 'sess-q')
     useAcpStore.setState({ createLaunchPlaceholder, finalizeChatLaunch } as never)
@@ -226,7 +205,6 @@ describe('openNewChat', () => {
     const result = await openNewChat({ reason: 'rail' })
 
     expect(result).toEqual({ kind: 'opened', sessionId: 'launch-q' })
-    expect(launchChat).not.toHaveBeenCalled()
     expect(showAgentLauncher).not.toHaveBeenCalled()
     expect(createLaunchPlaceholder).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -245,22 +223,10 @@ describe('openNewChat', () => {
       })
     )
     expect(useQuickChatStore.getState().view).toEqual({ mode: 'chat', sessionId: 'launch-q' })
-    useAcpStore.setState({
-      createLaunchPlaceholder: store.createLaunchPlaceholder,
-      finalizeChatLaunch: store.finalizeChatLaunch
-    } as never)
-  })
-
-  it('closes the open quick chat so a project New chat is visible', async () => {
-    useQuickChatStore.setState({ view: { mode: 'chat', sessionId: 'quick-1' } })
-    expect((await openNewChat({ reason: 'shortcut' })).kind).toBe('opened')
-    expect(launchChat).toHaveBeenCalledTimes(1)
-    expect(useQuickChatStore.getState().view).toEqual({ mode: 'closed' })
   })
 
   it('starts a quick chat from the Quick chats + while a project is active', async () => {
     useQuickChatStore.setState({ view: { mode: 'closed' } })
-    const store = useAcpStore.getState()
     const createLaunchPlaceholder = vi.fn(() => 'launch-q2')
     const finalizeChatLaunch = vi.fn(async () => 'sess-q2')
     useAcpStore.setState({ createLaunchPlaceholder, finalizeChatLaunch } as never)
@@ -268,15 +234,10 @@ describe('openNewChat', () => {
     const result = await openNewQuickChat('quick-chats-header')
 
     expect(result).toEqual({ kind: 'opened', sessionId: 'launch-q2' })
-    expect(launchChat).not.toHaveBeenCalled()
     expect(createLaunchPlaceholder).toHaveBeenCalledWith(
       expect.objectContaining({ projectId: '__unassigned__', kind: 'quick' })
     )
     expect(useQuickChatStore.getState().view).toEqual({ mode: 'chat', sessionId: 'launch-q2' })
-    useAcpStore.setState({
-      createLaunchPlaceholder: store.createLaunchPlaceholder,
-      finalizeChatLaunch: store.finalizeChatLaunch
-    } as never)
   })
 
   it('does not open the launcher when no project is active and no agent can start', async () => {
@@ -287,17 +248,51 @@ describe('openNewChat', () => {
 
     expect(await openNewChat({ reason: 'rail' })).toEqual({ kind: 'skipped' })
     expect(showAgentLauncher).not.toHaveBeenCalled()
-    expect(launchChat).not.toHaveBeenCalled()
     expect(useQuickChatStore.getState().view.mode).toBe('closed')
   })
+})
 
-  it('opens the launcher when the last picked agent needs an install (desktop)', async () => {
-    resolveEntries.mockResolvedValue([entry('cfg-a'), entry('cfg-b', 'install-required')])
-    const showAgentLauncher = vi.spyOn(useWorkspaceStore.getState(), 'showAgentLauncher')
+describe('openNewQuickChat', () => {
+  it('opens one chat for a double press while the first is starting', async () => {
+    const stubs = stubQuickLaunch()
+    const [first, second] = await Promise.all([
+      openNewQuickChat('quick-chats-header'),
+      openNewQuickChat('quick-chats-header')
+    ])
+    expect(first).toEqual(second)
+    expect(stubs.createLaunchPlaceholder).toHaveBeenCalledTimes(1)
+  })
 
-    expect(await openNewChat({ reason: 'rail' })).toEqual({ kind: 'launcher' })
-    expect(showAgentLauncher).toHaveBeenCalledWith('pane-1')
-    expect(launchChat).not.toHaveBeenCalled()
+  it('focuses the empty quick chat the view already shows', async () => {
+    const stubs = stubQuickLaunch()
+    useQuickChatStore.setState({ view: { mode: 'chat', sessionId: 'q-empty' } })
+    useAcpStore.setState({
+      sessions: { 'q-empty': { id: 'q-empty', kind: 'quick', status: 'active' } },
+      messages: { 'q-empty': [] }
+    } as never)
+
+    expect(await openNewQuickChat('quick-chats-header')).toEqual({
+      kind: 'focused',
+      sessionId: 'q-empty'
+    })
+    expect(stubs.createLaunchPlaceholder).not.toHaveBeenCalled()
+  })
+
+  it('a quick chat with a queued message is not an empty chat to focus', async () => {
+    stubQuickLaunch()
+    useQuickChatStore.setState({ view: { mode: 'chat', sessionId: 'q-queued' } })
+    useAcpStore.setState({
+      sessions: { 'q-queued': { id: 'q-queued', kind: 'quick', status: 'active' } },
+      messages: { 'q-queued': [] },
+      promptQueues: {
+        'q-queued': [{ id: 'q', blocks: [{ type: 'text', text: 'hi' }], createdAt: 1 }]
+      }
+    } as never)
+
+    expect(await openNewQuickChat('quick-chats-header')).toEqual({
+      kind: 'opened',
+      sessionId: 'launch-q'
+    })
   })
 
   it('on web never spawns a catalog agent nobody configured (#840)', async () => {
@@ -305,163 +300,43 @@ describe('openNewChat', () => {
     useAcpStore.setState({ agentConfigs: [] } as never)
     resolveEntries.mockResolvedValue([entry('acp-registry:codex')])
     lastSelected('acp-registry:codex')
-    const showAgentLauncher = vi.spyOn(useWorkspaceStore.getState(), 'showAgentLauncher')
+    const stubs = stubQuickLaunch()
 
-    expect(await openNewChat({ reason: 'rail' })).toEqual({ kind: 'launcher' })
-    expect(showAgentLauncher).toHaveBeenCalledWith('pane-1')
-    expect(launchChat).not.toHaveBeenCalled()
+    expect(await openNewQuickChat('quick-chats-header')).toEqual({ kind: 'skipped' })
+    expect(stubs.createLaunchPlaceholder).not.toHaveBeenCalled()
   })
 
   it('on web starts the last picked agent once it is configured', async () => {
     tauriRef.current = false
-    await openNewChat({ reason: 'rail' })
-    expect(launchChat.mock.calls[0]?.[0].configId).toBe('cfg-b')
+    const stubs = stubQuickLaunch()
+    await openNewQuickChat('quick-chats-header')
+    expect(stubs.createLaunchPlaceholder.mock.calls[0]?.[0].configId).toBe('cfg-b')
   })
 
   it('on web falls back to a configured default when the last pick is not configured', async () => {
     tauriRef.current = false
     useAcpStore.setState({ agentConfigs: [config('cfg-a')] } as never)
-    await openNewChat({ reason: 'rail' })
-    expect(launchChat.mock.calls[0]?.[0].configId).toBe('cfg-a')
+    const stubs = stubQuickLaunch()
+    await openNewQuickChat('quick-chats-header')
+    expect(stubs.createLaunchPlaceholder.mock.calls[0]?.[0].configId).toBe('cfg-a')
   })
 
   it('on desktop saves a catalog default before it starts', async () => {
     useAcpStore.setState({ agentConfigs: [] } as never)
     lastSelected(null)
     resolveEntries.mockResolvedValue([entry('acp-registry:codex')])
-    const saveAgentConfig = vi.fn(async () => {})
-    useAcpStore.setState({ saveAgentConfig } as never)
+    const save = vi.fn(async () => {})
+    useAcpStore.setState({ saveAgentConfig: save } as never)
+    const stubs = stubQuickLaunch()
 
-    await openNewChat({ reason: 'rail' })
+    await openNewQuickChat('quick-chats-header')
 
-    expect(saveAgentConfig).toHaveBeenCalledWith(config('acp-registry:codex'))
-    expect(launchChat.mock.calls[0]?.[0].configId).toBe('acp-registry:codex')
+    expect(save).toHaveBeenCalledWith(config('acp-registry:codex'))
+    expect(stubs.createLaunchPlaceholder.mock.calls[0]?.[0].configId).toBe('acp-registry:codex')
     expect(write).toHaveBeenCalledWith(PersistenceKeys.lastSelectedAgent, {
       agentId: 'acp-registry:codex',
       mode: 'acp'
     })
-  })
-
-  it('opens the launcher for a sign-in when the start fails on auth', async () => {
-    const removeTab = vi.spyOn(useWorkspaceStore.getState(), 'removeTab')
-    const showAgentLauncher = vi.spyOn(useWorkspaceStore.getState(), 'showAgentLauncher')
-    const deleteHistorySession = vi.fn(async () => {})
-    useAcpStore.setState({ deleteHistorySession, closeSession: vi.fn(async () => {}) } as never)
-
-    await openNewChat({ reason: 'rail' })
-    started.reject(new Error('ACP_AUTH_REQUIRED: sign in'))
-    await vi.waitFor(() => expect(showAgentLauncher).toHaveBeenCalledWith('pane-1'))
-    expect(removeTab).toHaveBeenCalledWith(agentChatTabId('launch-1'))
-    await vi.waitFor(() => expect(deleteHistorySession).toHaveBeenCalledWith('launch-1'))
-  })
-
-  it('moves a message that waited in the queue into the launcher draft before it opens', async () => {
-    const showAgentLauncher = vi.spyOn(useWorkspaceStore.getState(), 'showAgentLauncher')
-    useAcpStore.setState({
-      deleteHistorySession: vi.fn(async () => {}),
-      closeSession: vi.fn(async () => {})
-    } as never)
-
-    await openNewChat({ reason: 'rail' })
-    useAcpStore.setState({
-      promptQueues: {
-        'launch-1': [{ id: 'q', blocks: [{ type: 'text', text: 'fix the build' }], createdAt: 1 }]
-      }
-    } as never)
-    started.reject(new Error('ACP_AUTH_REQUIRED: sign in'))
-
-    await vi.waitFor(() => expect(showAgentLauncher).toHaveBeenCalledWith('pane-1'))
-    expect(write).toHaveBeenCalledWith(PersistenceKeys.lastLaunchDraft('p1'), 'fix the build')
-    expect(write.mock.invocationCallOrder.at(-1)).toBeLessThan(
-      showAgentLauncher.mock.invocationCallOrder[0]
-    )
-  })
-
-  it('a chat with a queued message is not an empty chat to focus', async () => {
-    const tabId = agentChatTabId('s-queued')
-    pane([{ type: 'agent-chat', id: tabId, sessionId: 's-queued' }], tabId)
-    useAcpStore.setState({
-      sessions: { 's-queued': { id: 's-queued', projectId: 'p1', status: 'active' } },
-      messages: { 's-queued': [] },
-      promptQueues: {
-        's-queued': [{ id: 'q', blocks: [{ type: 'text', text: 'hi' }], createdAt: 1 }]
-      }
-    } as never)
-
-    expect((await openNewChat({ reason: 'rail' })).kind).toBe('opened')
-  })
-
-  it('starts nothing when its pane closed while it resolved the agent', async () => {
-    let finish: (value: unknown) => void = () => undefined
-    resolveEntries.mockReturnValue(
-      new Promise((resolve) => {
-        finish = resolve
-      })
-    )
-    const run = openNewChat({ reason: 'rail' })
-    useWorkspaceStore.setState({
-      root: { type: 'leaf', id: 'pane-2', tabs: [], activeTabId: null }
-    } as never)
-    finish([entry('cfg-a'), entry('cfg-b')])
-
-    expect(await run).toEqual({ kind: 'skipped' })
-    expect(launchChat).not.toHaveBeenCalled()
-  })
-
-  it("starts no chat for the selected project in the previous project's pane (slow switch)", async () => {
-    // p2 is selected, but p1's tree (with pane-1) is still the one on screen.
-    useWorkspaceStore.setState({ activeProjectId: 'p1' } as never)
-    useProjectStore.setState({
-      activeProjectId: 'p2',
-      projects: [
-        { id: 'p1', name: 'termul', path: '/work', isGitRepo: true },
-        { id: 'p2', name: 'other', path: '/other', isGitRepo: true }
-      ]
-    } as never)
-
-    expect(await openNewChat({ paneId: 'pane-1', reason: 'new-tab-menu' })).toEqual({
-      kind: 'skipped'
-    })
-    expect(launchChat).not.toHaveBeenCalled()
-    useWorkspaceStore.setState({ activeProjectId: '' } as never)
-  })
-
-  it('opens no launcher for a pane the user switched away from while the agent resolved', async () => {
-    useWorkspaceStore.setState({ activeProjectId: 'p1' } as never)
-    let finish: (value: unknown) => void = () => undefined
-    resolveEntries.mockReturnValue(
-      new Promise((resolve) => {
-        finish = resolve
-      })
-    )
-    const showAgentLauncher = vi.spyOn(useWorkspaceStore.getState(), 'showAgentLauncher')
-    const run = openNewChat({ reason: 'rail' })
-    useProjectStore.setState({ activeProjectId: 'p2' } as never)
-    finish([entry('cfg-b', 'install-required')])
-
-    expect(await run).toEqual({ kind: 'skipped' })
-    expect(showAgentLauncher).not.toHaveBeenCalled()
-    useWorkspaceStore.setState({ activeProjectId: '' } as never)
-  })
-
-  it('keeps one start per pane and project, not per pane', async () => {
-    useProjectStore.setState({
-      projects: [
-        { id: 'p1', name: 'termul', path: '/work', isGitRepo: true },
-        { id: 'p2', name: 'other', path: '/other', isGitRepo: true }
-      ]
-    } as never)
-    const first = openNewChat({ reason: 'rail', projectId: 'p1' })
-    const second = openNewChat({ reason: 'rail', projectId: 'p2' })
-    expect(second).not.toBe(first)
-  })
-
-  it('leaves other start failures to the chat (error and Retry)', async () => {
-    const showAgentLauncher = vi.spyOn(useWorkspaceStore.getState(), 'showAgentLauncher')
-    await openNewChat({ reason: 'rail' })
-    started.reject(new Error('spawn failed'))
-    await new Promise((r) => setTimeout(r, 0))
-    expect(showAgentLauncher).not.toHaveBeenCalled()
   })
 })
 
@@ -519,20 +394,19 @@ describe('newChatPlaceholderOptions (the effort a new chat shows before it start
     expect(shown.configOptions.find((o) => o.id === 'effort')?.currentValue).toBe('high')
   })
 
-  it('openNewChat paints no stale effort on the placeholder and sends none', async () => {
+  it('a new quick chat paints no stale effort and sends none', async () => {
     readComposerOptions.mockResolvedValue({ modelId: 'haiku', modelValues: {} })
     useAcpStore.setState({
       agentOptionsCache: { 'cfg-b': { ...cache, updatedAt: 1 } }
     } as never)
+    const stubs = stubQuickLaunch()
 
-    await openNewChat({ reason: 'rail' })
+    await openNewQuickChat('quick-chats-header')
 
-    const request = launchChat.mock.calls[0]?.[0]
-    expect(request.placeholder.models.currentModelId).toBe('haiku')
-    expect(
-      request.placeholder.configOptions.find((o: { id: string }) => o.id === 'effort')
-    ).toBeUndefined()
-    const { pending } = await request.beforeStart()
+    const shown = stubs.createLaunchPlaceholder.mock.calls[0]?.[0]
+    expect(shown.models.currentModelId).toBe('haiku')
+    expect(shown.configOptions.find((o: { id: string }) => o.id === 'effort')).toBeUndefined()
+    const { pending } = stubs.finalizeChatLaunch.mock.calls[0][0]
     expect(pending.modelId).toBe('haiku')
     expect(pending.configValues.effort).toBeUndefined()
   })
