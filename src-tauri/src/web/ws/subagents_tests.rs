@@ -45,6 +45,7 @@ fn a_settings_patch_keeps_every_omitted_field() {
         max_depth: 2,
         agents: [("codex".to_string(), false)].into_iter().collect(),
         models: Default::default(),
+        descriptions: Default::default(),
     };
     merge_settings(
         &mut merged,

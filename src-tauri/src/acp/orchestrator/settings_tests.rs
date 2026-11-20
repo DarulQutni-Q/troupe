@@ -18,6 +18,7 @@ fn a_missing_file_loads_the_defaults() {
             max_depth: DEFAULT_MAX_DEPTH,
             agents: Default::default(),
             models: Default::default(),
+            descriptions: Default::default(),
         }
     );
 }
@@ -33,16 +34,32 @@ fn a_saved_settings_file_round_trips() {
             max_depth: 3,
             agents: [("codex".to_string(), false)].into(),
             models: [("codex".to_string(), "gpt-5.1-mini".to_string())].into(),
+            descriptions: [(
+                " codex ".to_string(),
+                "  Fast at UI tweaks; weak at Rust.\n".to_string(),
+            )]
+            .into(),
         })
         .expect("saved");
+    assert_eq!(
+        saved.descriptions,
+        BTreeMap::from([(
+            "codex".to_string(),
+            "Fast at UI tweaks; weak at Rust.".to_string()
+        )])
+    );
     assert!(!saved.enabled);
     let reloaded = SettingsStore::open(dir.path()).get();
     assert_eq!(reloaded, saved);
     let file: serde_json::Value =
         serde_json::from_slice(&std::fs::read(dir.path().join(FILE_NAME)).expect("file"))
             .expect("json");
-    assert_eq!(file["schema_version"], 2);
+    assert_eq!(file["schema_version"], 3);
     assert_eq!(file["models"]["codex"], "gpt-5.1-mini");
+    assert_eq!(
+        file["descriptions"]["codex"],
+        "Fast at UI tweaks; weak at Rust."
+    );
 }
 
 #[test]
@@ -62,6 +79,7 @@ fn a_version_1_file_still_loads() {
             max_depth: 1,
             agents: [("acp-registry:cursor".to_string(), false)].into(),
             models: Default::default(),
+            descriptions: Default::default(),
         }
     );
     store
@@ -98,7 +116,7 @@ fn corrupt_backups(dir: &Path) -> Vec<PathBuf> {
 fn a_newer_file_loads_the_defaults_and_is_never_overwritten() {
     let dir = dir();
     let path = dir.path().join(FILE_NAME);
-    let newer = br#"{"schema_version":3,"futureField":true}"#;
+    let newer = br#"{"schema_version":4,"futureField":true}"#;
     std::fs::write(&path, newer).expect("write");
     let store = SettingsStore::open(dir.path());
     assert_eq!(store.get(), OrchestratorSettings::default());
@@ -167,6 +185,7 @@ fn an_in_memory_store_never_writes() {
             max_depth: 4,
             agents: Default::default(),
             models: Default::default(),
+            descriptions: Default::default(),
         })
         .expect("saved");
     assert_eq!(store.get().max_running, 8);
@@ -216,5 +235,21 @@ fn set_validates_the_bounds() {
         })
         .expect_err("blank model key");
     assert!(error.contains("blank"), "{error}");
+    for description in ["  \n".to_string(), "d".repeat(MAX_DESCRIPTION_CHARS + 1)] {
+        let error = store
+            .set(OrchestratorSettings {
+                descriptions: [("codex".to_string(), description)].into(),
+                ..OrchestratorSettings::default()
+            })
+            .expect_err("bad description");
+        assert_eq!(error, "a description must be 1 to 1000 characters");
+    }
+    let error = store
+        .set(OrchestratorSettings {
+            descriptions: [(" ".to_string(), "Good at docs.".to_string())].into(),
+            ..OrchestratorSettings::default()
+        })
+        .expect_err("blank description key");
+    assert_eq!(error, "an agent description key must not be blank");
     assert_eq!(store.get(), OrchestratorSettings::default());
 }
