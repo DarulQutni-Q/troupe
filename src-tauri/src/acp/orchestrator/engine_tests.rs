@@ -517,12 +517,23 @@ async fn the_listing_names_the_registry_agent_and_its_allowance() {
             name: "Mock Sub".to_string(),
             allowed: true,
             default_model: None,
+            description: None,
         }]
     );
     let mut disallowed = OrchestratorSettings::default();
     disallowed.agents.insert("mock-sub".to_string(), false);
     engine.set_settings(disallowed).expect("settings");
     assert!(!engine.list_agents()[0].allowed);
+
+    let mut described = OrchestratorSettings::default();
+    described
+        .descriptions
+        .insert("mock-sub".to_string(), "Fast at UI tweaks".to_string());
+    engine.set_settings(described).expect("settings");
+    assert_eq!(
+        engine.list_agents()[0].description.as_deref(),
+        Some("Fast at UI tweaks")
+    );
 }
 
 /// Seed a start in flight for `CHAT`, as `reserve` records one.
@@ -866,6 +877,7 @@ async fn an_installed_agent_the_registry_knows_is_listed_once() {
             name: "Cursor".to_string(),
             allowed: true,
             default_model: None,
+            description: None,
         }]
     );
 }
@@ -880,6 +892,7 @@ async fn an_installed_agent_the_registry_lacks_is_listed_under_its_config_id() {
             name: "opencode".to_string(),
             allowed: true,
             default_model: None,
+            description: None,
         }]
     );
     let config = engine
@@ -901,6 +914,7 @@ async fn a_block_saved_under_an_installed_agents_bare_id_still_holds() {
         name: "opencode".to_string(),
         allowed: false,
         default_model: None,
+        description: None,
     }];
     assert_eq!(engine.list_agents(), blocked);
 
@@ -983,6 +997,7 @@ async fn a_bare_block_holds_while_the_registry_cannot_be_read() {
             name: "cursor".to_string(),
             allowed: false,
             default_model: None,
+            description: None,
         }]
     );
     let caller = crate::acp::orchestrator::CallerRef {
@@ -1018,6 +1033,7 @@ async fn a_bare_block_does_not_apply_to_an_agent_the_registry_knows() {
             name: "Cursor".to_string(),
             allowed: true,
             default_model: None,
+            description: None,
         }]
     );
     assert_eq!(engine.settings_view().agents, Default::default());

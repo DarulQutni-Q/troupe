@@ -98,15 +98,16 @@ impl OrchestratorEngine {
     }
 
     /// The launchable agents: the known-agents registry merged with the
-    /// installed overlay, one entry per config id, `allowed` and
-    /// `default_model` from the settings. Command, args and env never leave
-    /// the host.
+    /// installed overlay, one entry per config id, `allowed`,
+    /// `default_model` and `description` from the settings. Command, args
+    /// and env never leave the host.
     pub fn list_agents(&self) -> Vec<AgentListing> {
         let settings = self.settings.get();
         self.registry.reload();
         let listing = |agent_id: String, name: String| AgentListing {
             allowed: self.allowed(&settings, &agent_id),
             default_model: settings.models.get(&agent_id).cloned(),
+            description: settings.descriptions.get(&agent_id).cloned(),
             agent_id,
             name,
         };

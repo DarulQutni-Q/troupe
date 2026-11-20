@@ -381,6 +381,8 @@ pub struct AgentListing {
     pub(crate) allowed: bool,
     /// The model a start that names none asks for.
     pub(crate) default_model: Option<String>,
+    /// The user's note on what this agent is good at.
+    pub(crate) description: Option<String>,
 }
 
 /// The caller of an engine operation, from the frame's session auth.
