@@ -400,6 +400,10 @@ export function ChatComposerEditor({
   // `editor.view.focus()` is synchronous (ProseMirror), so — unlike Tiptap's
   // `setTimeout(0)` autofocus — it establishes focus inside the `act`-flushed
   // effect phase, before the test's first popover click. Non-critical on error.
+  // A composer mounted read-only (its agent still resolving) cannot take focus
+  // yet: it takes it when it first turns editable, unless the user is typing
+  // in another field by then.
+  const focusWhenEditableRef = useRef(autoFocus && disabled)
   useEffect(() => {
     if (!autoFocus || !editor || editor.isDestroyed) return
     try {
@@ -503,6 +507,14 @@ export function ChatComposerEditor({
   useEffect(() => {
     if (!editor) return
     editor.setEditable(!disabled)
+    if (disabled || !focusWhenEditableRef.current || editor.isDestroyed) return
+    focusWhenEditableRef.current = false
+    const active = document.activeElement
+    const typingElsewhere =
+      active instanceof HTMLInputElement ||
+      active instanceof HTMLTextAreaElement ||
+      (active instanceof HTMLElement && active.isContentEditable)
+    if (!typingElsewhere) editor.view.focus()
   }, [editor, disabled])
 
   return (

@@ -2697,9 +2697,10 @@ describe('AgentLauncher ACP new thread', () => {
           }
         : { success: true, data: undefined }
     )
+    const [savedConfig] = acpStateRef.current.agentConfigs
     hydrateOptionsCacheFromCatalog((fn) => {
       Object.assign(acpStateRef.current, fn(acpStateRef.current as never))
-    }, configId)
+    }, savedConfig)
     await waitFor(() => expect(acpStateRef.current.agentOptionsCache[configId]).toBeDefined())
     renderLauncher()
 

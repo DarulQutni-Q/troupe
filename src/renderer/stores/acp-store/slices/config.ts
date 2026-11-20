@@ -163,7 +163,7 @@ export const createConfigSlice: StateCreator<AcpState, [], [], ConfigSliceState>
       })
     }
     startSharedConfigSync(set, get)
-    for (const config of get().agentConfigs) hydrateOptionsCacheFromCatalog(set, config.id)
+    for (const config of get().agentConfigs) hydrateOptionsCacheFromCatalog(set, config)
     // The remembered auth-method map (spec-acp-persistent-auth-reuse) rides the
     // same init boundary so `authenticateBeforeSession` can auto-authenticate a
     // multi-method agent on demand. Its failure must not fail the config load —
