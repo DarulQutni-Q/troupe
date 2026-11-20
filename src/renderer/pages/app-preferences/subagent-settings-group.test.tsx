@@ -37,9 +37,27 @@ const VIEW: SubagentSettingsView = {
   maxRunning: 4,
   maxDepth: 2,
   agents: [
-    { agentId: 'acp-registry:claude-acp', name: 'Claude Code', allowed: true, model: 'opus-4' },
-    { agentId: 'acp-registry:codex-acp', name: 'Codex', allowed: true, model: null },
-    { agentId: 'acp-registry:opencode', name: 'OpenCode', allowed: false, model: null }
+    {
+      agentId: 'acp-registry:claude-acp',
+      name: 'Claude Code',
+      allowed: true,
+      model: 'opus-4',
+      description: 'Deep refactors.'
+    },
+    {
+      agentId: 'acp-registry:codex-acp',
+      name: 'Codex',
+      allowed: true,
+      model: null,
+      description: null
+    },
+    {
+      agentId: 'acp-registry:opencode',
+      name: 'OpenCode',
+      allowed: false,
+      model: null,
+      description: null
+    }
   ]
 }
 
@@ -170,6 +188,58 @@ describe('SubagentSettingsGroup', () => {
         models: [{ agentId: 'acp-registry:codex-acp', model: null }]
       })
     )
+  })
+
+  it('shows each allowed agent its saved description', async () => {
+    render(<SubagentSettingsGroup />)
+    await waitFor(() => screen.getByRole('switch', { name: 'Codex' }))
+
+    const notes = screen.getAllByRole('textbox', { name: 'When to use' })
+    expect(notes.map((note) => (note as HTMLTextAreaElement).value)).toEqual([
+      'Deep refactors.',
+      ''
+    ])
+    expect(notes[1]).toHaveAccessibleDescription(
+      'Tells the calling agent what this agent is good at.'
+    )
+    expect(notes[1]).toHaveAttribute('maxlength', '1000')
+  })
+
+  it('saves the trimmed description on blur, and a blank one clears it', async () => {
+    const withCodexNote = (description: string | null) =>
+      view({
+        agents: VIEW.agents.map((a) =>
+          a.agentId === 'acp-registry:codex-acp' ? { ...a, description } : a
+        )
+      })
+    setSettings
+      .mockResolvedValueOnce(withCodexNote('Fast at UI tweaks.'))
+      .mockResolvedValueOnce(withCodexNote(null))
+    render(<SubagentSettingsGroup />)
+    await waitFor(() => screen.getByRole('switch', { name: 'Codex' }))
+    const codex = () =>
+      screen.getAllByRole('textbox', { name: 'When to use' })[1] as HTMLTextAreaElement
+
+    fireEvent.change(codex(), { target: { value: '  Fast at UI tweaks.\n' } })
+    fireEvent.blur(codex())
+    await waitFor(() =>
+      expect(setSettings).toHaveBeenCalledWith({
+        descriptions: [{ agentId: 'acp-registry:codex-acp', description: 'Fast at UI tweaks.' }]
+      })
+    )
+    await waitFor(() => expect(codex().value).toBe('Fast at UI tweaks.'))
+
+    fireEvent.blur(codex())
+    expect(setSettings).toHaveBeenCalledTimes(1)
+
+    fireEvent.change(codex(), { target: { value: '   ' } })
+    fireEvent.blur(codex())
+    await waitFor(() =>
+      expect(setSettings).toHaveBeenLastCalledWith({
+        descriptions: [{ agentId: 'acp-registry:codex-acp', description: null }]
+      })
+    )
+    await waitFor(() => expect(codex().value).toBe(''))
   })
 
   it('shows one notice when the settings cannot be read, and keeps chats working', async () => {

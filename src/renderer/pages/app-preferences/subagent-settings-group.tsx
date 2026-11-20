@@ -8,6 +8,7 @@ import { SettingsSelect } from '@/components/settings/SettingsSelect'
 import { SettingsStepper } from '@/components/settings/SettingsStepper'
 import { SettingsSwitchRow } from '@/components/settings/SettingsSwitchRow'
 import { Switch } from '@/components/ui/switch'
+import { Textarea } from '@/components/ui/textarea'
 import type { SubagentSettingsAgentView, SubagentSettingsView } from '@/lib/acp-api'
 import { findBundledIconByKey } from '@/lib/agents/agent-icon-catalog'
 import { sanitizeInlineAgentSvg } from '@/lib/agents/sanitize-agent-icon'
@@ -21,6 +22,8 @@ const MIN_DEPTH = 1
 const MAX_DEPTH = 4
 /** Radix Select needs a non-empty value; this one means "no model saved". */
 const DEFAULT_MODEL = '\u0000default'
+/** The host's `MAX_DESCRIPTION_CHARS`. */
+const MAX_DESCRIPTION_CHARS = 1000
 
 /**
  * The launchable agent's glyph: its persisted config's custom icon, else the
@@ -95,6 +98,51 @@ function DefaultModelRow({
   )
 }
 
+/**
+ * The user's note on what `agent` is good at, which `subagent_list_agents`
+ * hands to the calling agent. Saved on blur; a blank note clears it.
+ */
+function DescriptionRow({
+  agent,
+  onSave
+}: {
+  agent: SubagentSettingsAgentView
+  onSave: (description: string | null) => void
+}): React.JSX.Element {
+  const saved = agent.description ?? ''
+  const [draft, setDraft] = useState(saved)
+  const [syncedTo, setSyncedTo] = useState(saved)
+  if (syncedTo !== saved) {
+    setSyncedTo(saved)
+    setDraft(saved)
+  }
+  const id = `subagent-description-${agent.agentId}`
+  return (
+    <SettingsRow
+      id={`${id}-row`}
+      htmlFor={id}
+      label="When to use"
+      description="Tells the calling agent what this agent is good at."
+      layout="stacked"
+      indent
+    >
+      <Textarea
+        id={id}
+        aria-describedby={settingsDescriptionId(id)}
+        rows={3}
+        maxLength={MAX_DESCRIPTION_CHARS}
+        placeholder="e.g. Fast at UI tweaks and CSS; weak at Rust."
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={() => {
+          const trimmed = draft.trim()
+          if (trimmed !== saved) onSave(trimmed || null)
+        }}
+      />
+    </SettingsRow>
+  )
+}
+
 function AllowedAgentRow({
   agent,
   onToggle
@@ -128,9 +176,9 @@ function AllowedAgentRow({
 /**
  * The "Sub-agents" and "Agents they can use" groups of the Agent chats
  * preferences: the orchestrator's enable switch, its caps, and the per-agent
- * allow list with each allowed agent's default model, all through the host's
- * one settings view. A write applies the view the host answers with, so the
- * host stays the single source of truth.
+ * allow list with each allowed agent's default model and description, all
+ * through the host's one settings view. A write applies the view the host
+ * answers with, so the host stays the single source of truth.
  */
 export function SubagentSettingsGroup(): React.JSX.Element {
   const [view, setView] = useState<SubagentSettingsView | null>(null)
@@ -252,10 +300,18 @@ export function SubagentSettingsGroup(): React.JSX.Element {
                   onToggle={(allowed) => write({ agents: [{ agentId: agent.agentId, allowed }] })}
                 />
                 {agent.allowed && (
-                  <DefaultModelRow
-                    agent={agent}
-                    onChange={(model) => write({ models: [{ agentId: agent.agentId, model }] })}
-                  />
+                  <>
+                    <DefaultModelRow
+                      agent={agent}
+                      onChange={(model) => write({ models: [{ agentId: agent.agentId, model }] })}
+                    />
+                    <DescriptionRow
+                      agent={agent}
+                      onSave={(description) =>
+                        write({ descriptions: [{ agentId: agent.agentId, description }] })
+                      }
+                    />
+                  </>
                 )}
               </Fragment>
             ))
