@@ -3,6 +3,8 @@ import type { StoredAgentConfig } from '@/lib/acp-agents-persistence'
 import type { SupportedAcpAgentEntry } from '@/lib/agents/supported-acp-agents'
 import { useAcpStore } from '@/stores/acp-store'
 import {
+  agentSetupStatus,
+  featuredAgents,
   type InstallableAgentEntry,
   installSupportedAgent,
   isInstallable,
@@ -170,5 +172,84 @@ describe('saveSupportedAgentConfig', () => {
       'acp-registry:gemini'
     )
     expect(saveAgentConfig).not.toHaveBeenCalled()
+  })
+})
+
+describe('agentSetupStatus', () => {
+  it.each<
+    [string, Partial<SupportedAcpAgentEntry>, Parameters<typeof agentSetupStatus>[1], unknown]
+  >([
+    ['ready, not checked', { status: 'ready' }, null, { kind: 'ready' }],
+    ['ready and signed in', { status: 'ready' }, 'ready', { kind: 'ready' }],
+    ['ready, login unreadable', { status: 'ready' }, 'unconfirmed', { kind: 'ready' }],
+    ['ready but signed out', { status: 'ready' }, 'signed-out', { kind: 'needs-sign-in' }],
+    ['ready, sign-in loading', { status: 'ready' }, 'checking', { kind: 'checking-sign-in' }],
+    ['install with a spec', {}, null, { kind: 'installable' }],
+    ['install with no spec', { install: null }, null, { kind: 'manual-install' }],
+    [
+      'manual install',
+      { status: 'manual-install', install: null },
+      null,
+      { kind: 'manual-install' }
+    ],
+    [
+      'needs uv',
+      { status: 'needs-runtime', runtimeLauncher: 'uvx' },
+      null,
+      { kind: 'needs-runtime', runtime: 'uvx' }
+    ],
+    [
+      'managed npm agent without Node.js',
+      { status: 'needs-runtime', runtimeLauncher: null },
+      null,
+      { kind: 'needs-runtime', runtime: 'npx' }
+    ],
+    ['unavailable', { status: 'unavailable' }, 'ready', { kind: 'unavailable' }]
+  ])('%s', (_name, overrides, signIn, expected) => {
+    expect(agentSetupStatus(entry(overrides), signIn)).toEqual(expected)
+  })
+})
+
+describe('featuredAgents', () => {
+  const named = (id: string, overrides: Partial<SupportedAcpAgentEntry> = {}) =>
+    entry({
+      id,
+      configId: `acp-registry:${id}`,
+      agent: { id, name: id, version: '1', description: '', distribution: {} },
+      status: 'ready',
+      install: null,
+      ...overrides
+    })
+
+  it('lists preferred agents in order, then other agents ready on a config the user owns', () => {
+    const amp = named('amp', { installedVersion: '0.3.0' })
+    const goose = named('goose', {
+      config: { ...savedGemini, id: 'acp-registry:goose', templateId: 'goose' }
+    })
+    const devin = named('devin')
+    const custom = named('mine', { config: { ...savedGemini, id: 'custom-1a2b3c4d' } })
+    const entries = [
+      devin,
+      amp,
+      named('claude-acp'),
+      goose,
+      custom,
+      named('gemini', { status: 'install-required' }),
+      named('codex-acp')
+    ]
+
+    const { featured, rest } = featuredAgents(entries, [
+      { ...savedGemini, id: 'acp-registry:goose' }
+    ])
+
+    expect(featured.map((e) => e.id)).toEqual([
+      'codex-acp',
+      'claude-acp',
+      'gemini',
+      'amp',
+      'goose',
+      'mine'
+    ])
+    expect(rest.map((e) => e.id)).toEqual(['devin'])
   })
 })

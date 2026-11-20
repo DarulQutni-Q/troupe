@@ -2,12 +2,82 @@ import type { StoredAgentConfig } from '@/lib/acp-agents-persistence'
 import { acpApi } from '@/lib/acp-api'
 import {
   installedBinaryConfig,
+  isCustomAgentEntry,
+  PREFERRED_DEFAULT_ACP_AGENT_IDS,
   type SupportedAcpAgentEntry,
   type SupportedAcpAgentInstall,
   type SupportedAcpAgentManagedInstall
 } from '@/lib/agents/supported-acp-agents'
 import { logFrontendError } from '@/lib/log-api'
 import { useAcpStore } from '@/stores/acp-store'
+
+/**
+ * Sign-in of the agent's default account, for the agents whose login is
+ * readable without spawning them (Claude, Codex). Other agents report none.
+ */
+export type AgentSignIn = 'checking' | 'ready' | 'signed-out' | 'unconfirmed'
+
+/** What an agent still needs before a chat can start on it. Only `ready` can be picked. */
+export type AgentSetupStatus =
+  | { kind: 'ready' }
+  | { kind: 'checking-sign-in' }
+  | { kind: 'needs-sign-in' }
+  /** The host can install it: the Install action works. */
+  | { kind: 'installable' }
+  /** The user installs it from the vendor. */
+  | { kind: 'manual-install' }
+  | { kind: 'needs-runtime'; runtime: 'npx' | 'uvx' }
+  | { kind: 'unavailable' }
+
+export type AgentSetupKind = AgentSetupStatus['kind']
+
+/**
+ * The host status plus the sign-in read. `unconfirmed` counts as ready: the
+ * host could not read the login, and the launcher reports a real auth
+ * failure at first send.
+ */
+export function agentSetupStatus(
+  entry: SupportedAcpAgentEntry,
+  signIn: AgentSignIn | null
+): AgentSetupStatus {
+  switch (entry.status) {
+    case 'ready':
+      if (signIn === 'signed-out') return { kind: 'needs-sign-in' }
+      if (signIn === 'checking') return { kind: 'checking-sign-in' }
+      return { kind: 'ready' }
+    case 'install-required':
+      return isInstallable(entry) ? { kind: 'installable' } : { kind: 'manual-install' }
+    case 'manual-install':
+      return { kind: 'manual-install' }
+    case 'needs-runtime':
+      // A managed npm agent such as Claude reports no launcher and needs Node.js.
+      return { kind: 'needs-runtime', runtime: entry.runtimeLauncher ?? 'npx' }
+    case 'unavailable':
+      return { kind: 'unavailable' }
+  }
+}
+
+/**
+ * The short list a first-time picker shows, and the rest behind "Show all":
+ * the preferred agents in their order, then any other agent that is ready on
+ * a config the user owns (saved, host installed or custom).
+ */
+export function featuredAgents(
+  entries: readonly SupportedAcpAgentEntry[],
+  savedConfigs: readonly StoredAgentConfig[]
+): { featured: SupportedAcpAgentEntry[]; rest: SupportedAcpAgentEntry[] } {
+  const saved = new Set(savedConfigs.map((config) => config.id))
+  const owned = (entry: SupportedAcpAgentEntry): boolean =>
+    entry.status === 'ready' &&
+    (isCustomAgentEntry(entry) ||
+      entry.installedVersion !== undefined ||
+      (entry.config !== null && saved.has(entry.config.id)))
+  const preferred = PREFERRED_DEFAULT_ACP_AGENT_IDS.flatMap((id) =>
+    entries.filter((entry) => entry.id === id)
+  )
+  const featured = [...preferred, ...entries.filter((e) => !preferred.includes(e) && owned(e))]
+  return { featured, rest: entries.filter((entry) => !featured.includes(entry)) }
+}
 
 /** Where to get the runtime a `needs-runtime` agent is missing. */
 export const RUNTIME_HELP_URLS = {
