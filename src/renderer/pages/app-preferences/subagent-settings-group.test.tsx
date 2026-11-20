@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SubagentSettingsView } from '@/lib/acp-api'
 import { SubagentSettingsGroup } from './subagent-settings-group'
@@ -240,6 +240,34 @@ describe('SubagentSettingsGroup', () => {
       })
     )
     await waitFor(() => expect(codex().value).toBe(''))
+  })
+
+  it('keeps text typed while a description save is in flight', async () => {
+    let answer: (next: ReturnType<typeof view>) => void = () => {}
+    setSettings.mockReturnValueOnce(
+      new Promise((resolve) => {
+        answer = resolve
+      })
+    )
+    render(<SubagentSettingsGroup />)
+    await waitFor(() => screen.getByRole('switch', { name: 'Codex' }))
+    const codex = () =>
+      screen.getAllByRole('textbox', { name: 'When to use' })[1] as HTMLTextAreaElement
+
+    fireEvent.change(codex(), { target: { value: 'Fast at UI.' } })
+    fireEvent.blur(codex())
+    fireEvent.change(codex(), { target: { value: 'Fast at UI. Weak at Rust.' } })
+    answer(
+      view({
+        agents: VIEW.agents.map((a) =>
+          a.agentId === 'acp-registry:codex-acp' ? { ...a, description: 'Fast at UI.' } : a
+        )
+      })
+    )
+
+    await waitFor(() => expect(setSettings).toHaveBeenCalledTimes(1))
+    await act(async () => {})
+    expect(codex().value).toBe('Fast at UI. Weak at Rust.')
   })
 
   it('shows one notice when the settings cannot be read, and keeps chats working', async () => {

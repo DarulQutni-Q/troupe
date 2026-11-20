@@ -114,7 +114,8 @@ function DescriptionRow({
   const [syncedTo, setSyncedTo] = useState(saved)
   if (syncedTo !== saved) {
     setSyncedTo(saved)
-    setDraft(saved)
+    // Text typed after the save went out is newer than the reply.
+    if (draft === syncedTo || draft.trim() === saved) setDraft(saved)
   }
   const id = `subagent-description-${agent.agentId}`
   return (
