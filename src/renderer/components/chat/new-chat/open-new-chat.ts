@@ -14,6 +14,7 @@ import {
 } from '@/components/chat/agent-model-selector/use-agent-switch'
 import { newChatKind } from '@/components/shell/open-new-chat'
 import type { SessionId } from '@/lib/acp-api'
+import { focusComposerWhenReady } from '@/lib/focus-composer'
 import { logFrontendError } from '@/lib/log-api'
 import {
   adoptQuickChat,
@@ -277,6 +278,11 @@ export async function openNewChat(request: OpenNewChatRequest): Promise<OpenNewC
   }
   if (!paneStillTargets(paneId, projectId, reason)) return { kind: 'skipped' }
   useWorkspaceStore.getState().showAgentLauncher(paneId)
+  // The launcher of a pane with no tabs is already mounted, and an overlay
+  // mounts read-only until its agent resolves: its own autofocus misses both.
+  focusComposerWhenReady(
+    `[data-pane-content="${paneId}"] [aria-label="Agent prompt"][contenteditable="true"]`
+  )
   log('info', `New chat (reason=${reason}) opened the launcher in pane ${paneId} of ${projectId}`)
   return { kind: 'launcher' }
 }
