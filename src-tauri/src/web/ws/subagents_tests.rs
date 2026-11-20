@@ -125,6 +125,7 @@ async fn a_default_model_set_over_the_wire_reads_back_in_the_view() {
             "name": "Codex",
             "allowed": true,
             "model": "gpt-5.1-mini",
+            "description": null,
         }])
     );
 
@@ -154,6 +155,47 @@ async fn a_padded_agent_key_updates_and_clears_the_saved_default_model() {
 }
 
 #[tokio::test]
+async fn a_description_set_over_the_wire_reads_back_trimmed_and_clears() {
+    let data = tempfile::tempdir().unwrap();
+    let engine = codex_engine(data.path());
+    let set = |payload: Value| {
+        engine.update_settings(|settings| merge_settings(settings, settings_patch(payload)))
+    };
+    let description = |engine: &crate::acp::orchestrator::OrchestratorEngine| {
+        settings_view(engine)["agents"][0]["description"].clone()
+    };
+
+    set(json!({ "descriptions": [{
+        "agentId": " acp-registry:codex-acp ",
+        "description": "  Fast at UI tweaks; weak at Rust.\n",
+    }] }))
+    .unwrap();
+    assert_eq!(
+        description(&engine),
+        json!("Fast at UI tweaks; weak at Rust.")
+    );
+
+    set(json!({ "descriptions": [{ "agentId": "acp-registry:codex-acp", "description": "  " }] }))
+        .unwrap();
+    assert_eq!(description(&engine), Value::Null);
+
+    set(
+        json!({ "descriptions": [{ "agentId": "acp-registry:codex-acp", "description": "Docs" }] }),
+    )
+    .unwrap();
+    set(json!({ "descriptions": [{ "agentId": "acp-registry:codex-acp", "description": null }] }))
+        .unwrap();
+    assert_eq!(description(&engine), Value::Null);
+
+    let error = set(json!({ "descriptions": [{
+        "agentId": "acp-registry:codex-acp",
+        "description": "d".repeat(1001),
+    }] }))
+    .unwrap_err();
+    assert_eq!(error, "a description must be 1 to 1000 characters");
+}
+
+#[tokio::test]
 async fn a_bare_installed_id_saves_under_the_listed_key() {
     let (engine, _data) =
         crate::acp::orchestrator::engine_with_installed(&[], &["opencode"]).await;
@@ -162,6 +204,7 @@ async fn a_bare_installed_id_saves_under_the_listed_key() {
         settings_patch(json!({
             "agents": [{ "agentId": "opencode", "allowed": false }],
             "models": [{ "agentId": " opencode ", "model": "big" }],
+            "descriptions": [{ "agentId": "opencode", "description": "Good at long refactors." }],
         })),
     )
     .unwrap();
@@ -172,6 +215,7 @@ async fn a_bare_installed_id_saves_under_the_listed_key() {
             "name": "opencode",
             "allowed": false,
             "model": "big",
+            "description": "Good at long refactors.",
         }])
     );
 }
