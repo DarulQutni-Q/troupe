@@ -5,7 +5,7 @@
 //   bun tools/ci-audit/biome-to-oxlint.ts extras                 bun lint rules that are off and find nothing in this tree
 //   bun tools/ci-audit/biome-to-oxlint.ts suppressions [--write] rewrites biome-ignore comments for mapped rules
 // BUN_LINT names a bun binary that has `bun lint` (default: bun).
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 
@@ -164,12 +164,18 @@ function examples(docs: string): Example[] {
   }))
 }
 
+// One private directory per run: fixed names in the shared temp dir could be
+// pre-created by another user.
+let work: string | undefined
+function workDir(): string {
+  work ??= mkdtempSync(join(tmpdir(), 'biome-to-oxlint-'))
+  return work
+}
+
 async function biomeCatalog(): Promise<Map<string, BiomeRule>> {
-  const cache = join(tmpdir(), 'biome-rules-metadata.json')
-  const file = Bun.file(cache)
-  if (!(await file.exists())) writeFileSync(cache, await (await fetch(METADATA_URL)).text())
-  const languages: Record<string, Record<string, Record<string, any>>> = (await file.json()).lints
-    .languages
+  const languages: Record<string, Record<string, Record<string, any>>> = (
+    await (await fetch(METADATA_URL)).json()
+  ).lints.languages
   const catalog = new Map<string, BiomeRule>()
   for (const [language, groups] of Object.entries(languages)) {
     for (const [group, rules] of Object.entries(groups)) {
@@ -357,7 +363,7 @@ function buildConfig(biomeConfig: any, mappings: Mapping[]): LintConfig {
 async function analyze() {
   const biomeConfig = JSON.parse(readFileSync(join(ROOT, 'biome.json'), 'utf8'))
   const catalog = await biomeCatalog()
-  const dir = join(tmpdir(), 'biome-to-oxlint-seed')
+  const dir = join(workDir(), 'seed')
   const cases = seedCases(catalog.values())
   writeSeeds(dir, cases, biomeConfig)
   const seedBiome = biomeHits(dir)
@@ -437,7 +443,7 @@ function extras() {
       !r.deprecated &&
       !(configName(r) in config.rules)
   )
-  const probe = join(tmpdir(), 'oxlintrc-extras.json')
+  const probe = join(workDir(), 'oxlintrc-extras.json')
   writeFileSync(
     probe,
     JSON.stringify({
