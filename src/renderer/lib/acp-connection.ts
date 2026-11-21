@@ -14,7 +14,8 @@ export interface AcpConnectionCoordinatorOptions {
    * session is rejected.
    */
   recoveryGeneration?: (sessionId: SessionId) => number
-  pendingPermissionSessions: () => SessionId[]
+  /** Sessions a reconnect resubscribes before it reports the channel live. */
+  reconnectPrioritySessions: () => SessionId[]
   /** Install the host's still-pending approvals, questions and elicitations of a (re)subscribed session. */
   installPendingPrompts?: PendingPromptsHandler
   setReconnecting: (reconnecting: boolean, recovered?: boolean) => void
@@ -32,7 +33,7 @@ export class AcpConnectionCoordinator {
 
   attach(): void {
     this.transport.setReconnectListener?.(this.options.setReconnecting)
-    this.transport.setReconnectPriorityProvider?.(this.options.pendingPermissionSessions)
+    this.transport.setReconnectPriorityProvider?.(this.options.reconnectPrioritySessions)
     this.transport.setRecoveryHandler?.(this.options.installRecovery)
     if (this.options.recoveryGeneration) {
       this.transport.setRecoveryGenerationProvider?.(this.options.recoveryGeneration)

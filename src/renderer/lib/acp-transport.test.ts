@@ -3789,6 +3789,7 @@ describe('WsAcpTransport visibility-triggered reconnect (web idle persist)', () 
     })
     await transport.connect()
     await transport.subscribeSession('sess-A')
+    transport.setReconnectPriorityProvider(() => ['sess-A'])
     const internals = transport as unknown as TransportInternals
     internals.socket.close()
     await vi.advanceTimersByTimeAsync(600) // reconnect: auth ok, resubscribe in flight
@@ -4175,6 +4176,155 @@ describe('WsAcpTransport half-open socket during the resubscribe pass', () => {
     // Ping answered → healthy socket: not torn down.
     expect(kept.readyState).toBe(FakeWebSocket.OPEN)
     expect(internals.socket).toBe(kept)
+    transport.dispose()
+  })
+})
+
+describe('WsAcpTransport reconnect resubscribes the priority sessions first', () => {
+  /** From the second socket on (the reconnects), subscribes wait for `answer`. */
+  class HeldSubscribeSocket extends FakeWebSocket {
+    static instances: HeldSubscribeSocket[] = []
+    held: Array<{ id: string; sessionId: string }> = []
+
+    constructor(url: string) {
+      super(url)
+      HeldSubscribeSocket.instances.push(this)
+    }
+
+    send(data: string): void {
+      const req = JSON.parse(data) as { id: string; type: string; payload: { sessionId: string } }
+      if (req.type === 'subscribe' && HeldSubscribeSocket.instances.length > 1) {
+        this.sent.push(data)
+        this.held.push({ id: req.id, sessionId: req.payload.sessionId })
+        return
+      }
+      super.send(data)
+    }
+
+    subscribedIds(): string[] {
+      return this.sent
+        .map((raw) => JSON.parse(raw) as { type: string; payload: { sessionId: string } })
+        .filter((req) => req.type === 'subscribe')
+        .map((req) => req.payload.sessionId)
+    }
+
+    answer(sessionId: string, errCode?: string): void {
+      const req = this.held.find((h) => h.sessionId === sessionId)
+      if (!req) throw new Error(`no held subscribe for ${sessionId}`)
+      this.held = this.held.filter((h) => h !== req)
+      this.emit(
+        errCode
+          ? { id: req.id, ok: false, err: { code: errCode, message: errCode } }
+          : {
+              id: req.id,
+              ok: true,
+              payload: { sessionId, replayed: 0, logEpoch: 'epoch-A', headSeq: 0 }
+            }
+      )
+    }
+  }
+
+  async function reconnectWithVisibleLast() {
+    vi.useFakeTimers()
+    HeldSubscribeSocket.instances = []
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: HeldSubscribeSocket as unknown as typeof WebSocket
+    })
+    await transport.connect()
+    for (const sid of ['sess-a', 'sess-b', 'sess-visible']) await transport.subscribeSession(sid)
+    transport.setReconnectPriorityProvider(() => ['sess-visible'])
+    const reconnectStates: boolean[] = []
+    transport.setReconnectListener((reconnecting) => reconnectStates.push(reconnecting))
+    const internals = transport as unknown as TransportInternals
+    internals.socket.close()
+    await vi.advanceTimersByTimeAsync(600)
+    const socket = HeldSubscribeSocket.instances[1]
+    return { transport, internals, socket, reconnectStates }
+  }
+
+  afterEach(() => {
+    _resetAcpTransportForTests(null)
+    vi.useRealTimers()
+  })
+
+  it('reports the reconnect done once the visible chat resubscribed, then resubscribes the rest', async () => {
+    const { transport, socket, reconnectStates } = await reconnectWithVisibleLast()
+    expect(socket.subscribedIds()).toEqual(['sess-visible'])
+    expect(reconnectStates).toEqual([true])
+    expect(transport.getConnectionState()).toBe('reconnecting')
+
+    socket.answer('sess-visible')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(reconnectStates).toEqual([true, false])
+    expect(transport.getConnectionState()).toBe('connected')
+    expect(socket.subscribedIds()).toEqual(['sess-visible', 'sess-a'])
+
+    socket.answer('sess-a')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(socket.subscribedIds()).toEqual(['sess-visible', 'sess-a', 'sess-b'])
+    socket.answer('sess-b')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(socket.held).toEqual([])
+    expect(reconnectStates).toEqual([true, false])
+    transport.dispose()
+  })
+
+  it('drops a background session the host no longer knows', async () => {
+    const { transport, internals, socket } = await reconnectWithVisibleLast()
+    socket.answer('sess-visible')
+    await vi.advanceTimersByTimeAsync(0)
+    socket.answer('sess-a', 'not_found')
+    await vi.advanceTimersByTimeAsync(0)
+    socket.answer('sess-b')
+    await vi.advanceTimersByTimeAsync(0)
+    expect([...internals.subscribed]).toEqual(['sess-b', 'sess-visible'])
+    expect(vi.mocked(logFrontendError)).toHaveBeenCalledWith({
+      level: 'warn',
+      source: 'WsAcpTransport.reconnect',
+      message: 'Dropped obsolete ACP subscription session ids: sess-a'
+    })
+    transport.dispose()
+  })
+
+  it('stops the background pass when its socket dies, leaving the sessions to the next reconnect', async () => {
+    const { transport, internals, socket } = await reconnectWithVisibleLast()
+    socket.answer('sess-visible')
+    await vi.advanceTimersByTimeAsync(0)
+    // The reply lands and the socket dies before the pass moves on.
+    socket.answer('sess-a')
+    socket.close()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(HeldSubscribeSocket.instances).toHaveLength(2)
+    expect(socket.subscribedIds()).toEqual(['sess-visible', 'sess-a'])
+
+    await vi.advanceTimersByTimeAsync(1_100)
+    const next = HeldSubscribeSocket.instances[2]
+    expect(internals.socket).toBe(next)
+    expect(next.subscribedIds()).toEqual(['sess-visible'])
+    next.answer('sess-visible')
+    await vi.advanceTimersByTimeAsync(0)
+    next.answer('sess-a')
+    await vi.advanceTimersByTimeAsync(0)
+    next.answer('sess-b')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(next.subscribedIds()).toEqual(['sess-visible', 'sess-a', 'sess-b'])
+    expect(HeldSubscribeSocket.instances).toHaveLength(3)
+    transport.dispose()
+  })
+
+  it('skips a background session that the user subscribed again on the new socket', async () => {
+    const { transport, socket } = await reconnectWithVisibleLast()
+    socket.answer('sess-visible')
+    await vi.advanceTimersByTimeAsync(0)
+    const reopened = transport.subscribeSession('sess-b', 0, true)
+    await vi.advanceTimersByTimeAsync(0)
+    socket.answer('sess-b')
+    await reopened
+    socket.answer('sess-a')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(socket.subscribedIds()).toEqual(['sess-visible', 'sess-a', 'sess-b'])
+    expect(socket.held).toEqual([])
     transport.dispose()
   })
 })

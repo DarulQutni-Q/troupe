@@ -86,7 +86,12 @@ import type { McpInstallRequestEvent, McpInstallResolvedEvent } from '@/lib/mcp-
 import { foldRecoveredPlan, markPlanTool } from '@/lib/plan-session'
 import { wireBlocksToDisplay } from '@/lib/skills-wire-reverse'
 import { useChatStartPickStore } from '@/stores/chat-start-pick-store'
-import { getAgentChatSessionIdsInAllTrees, useWorkspaceStore } from '@/stores/workspace-store'
+import { useQuickChatStore } from '@/stores/quick-chat-store'
+import {
+  getAgentChatSessionIdsInAllTrees,
+  getVisibleAgentChatSessionIds,
+  useWorkspaceStore
+} from '@/stores/workspace-store'
 import type { QueuedPrompt } from '../prompt-queue-orchestration'
 import { attachAgentRosterWatch } from './agent-roster-watch'
 import {
@@ -583,16 +588,23 @@ export function initAcpEventListeners(): () => void {
     // The transport captures this before the snapshot round-trip so a late
     // recovery for a torn-down/replaced session is rejected at install.
     recoveryGeneration: (sessionId) => sessionReopenGenerations.get(sessionId) ?? 0,
-    pendingPermissionSessions: () => {
+    // The chats on screen, the ones waiting on the user's answer, and the ones
+    // holding a prompt whose reply the drop lost (resent once the reconnect
+    // ends). Every other chat resubscribes after the overlay clears.
+    reconnectPrioritySessions: () => {
       const state = useAcpStore.getState()
+      const quickView = useQuickChatStore.getState().view
       return [
-        ...new Set(
-          [
+        ...new Set([
+          ...(quickView.mode === 'chat' ? [quickView.sessionId] : []),
+          ...getVisibleAgentChatSessionIds(useWorkspaceStore.getState()),
+          ...[
             ...Object.values(state.pendingPermissions),
             ...Object.values(state.pendingQuestions),
             ...Object.values(state.pendingElicitations)
-          ].map((prompt) => prompt.sessionId)
-        )
+          ].map((prompt) => prompt.sessionId),
+          ...Object.keys(state.promptCommandStates)
+        ])
       ]
     },
     installPendingPrompts: (sessionId, prompts) =>

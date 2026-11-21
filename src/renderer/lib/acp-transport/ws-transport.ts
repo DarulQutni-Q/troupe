@@ -295,6 +295,11 @@ export class WsAcpTransport implements AcpTransport {
   /** Sessions we should re-subscribe after reconnect. */
   private readonly subscribed = new Set<string>()
   /**
+   * Sessions the latest reconnect pass has not resubscribed yet. Any subscribe
+   * or snapshot that lands for one settles it, so the pass skips it.
+   */
+  private resubscribeOwed = new Set<string>()
+  /**
    * The watches (projects, chat-history index, agent roster, project file
    * changes, store keys, terminal sets): frames are routed here from
    * `onMessage`, and every (re)connect resubscribes them.
@@ -335,7 +340,8 @@ export class WsAcpTransport implements AcpTransport {
   /**
    * Story 5.3 (AC3): transport-level reconnect listener. Fired `true` when
    * `scheduleReconnect` runs (WS drop detected) and `false` when `reconnect`
-   * succeeds (socket re-opened + sessions re-subscribed). The store subscribes
+   * succeeds (socket re-opened + priority sessions re-subscribed; the rest
+   * follow in the background). The store subscribes
    * to flip its `transportReconnecting` flag, which drives the non-blocking
    * `AgentConnectionLamp` overlay in `AgentChatPanel`. Desktop Tauri never
    * uses the WS transport, so the listener stays unset there.
@@ -345,8 +351,8 @@ export class WsAcpTransport implements AcpTransport {
    * Story 10: coarse connection-health listener (feeds the connection-status
    * store). Fired at `openSocket` start ('connecting', skipped while a
    * reconnect cycle owns the state), on a completed fresh auth handshake ('connected', deferred to
-   * `reconnect()` during a reconnect cycle so it only fires after session
-   * re-subscriptions succeed), and in `scheduleReconnect` ('reconnecting').
+   * `reconnect()` during a reconnect cycle so it only fires after the
+   * priority sessions are re-subscribed), and in `scheduleReconnect` ('reconnecting').
    * Stays unset on Tauri desktop.
    */
   private onConnectionStateChange?: (state: AcpConnectionState) => void
@@ -401,7 +407,7 @@ export class WsAcpTransport implements AcpTransport {
   /**
    * Story 5.3 (AC3): register a listener for transport-level reconnect state.
    * Fired `true` on WS drop (before the reconnect timer is set) and `false`
-   * on successful reconnect (after sessions are re-subscribed). Does NOT fire
+   * on successful reconnect (after the priority sessions are re-subscribed). Does NOT fire
    * on the initial `connect()` — only on reconnect transitions.
    */
   setReconnectListener(listener: (reconnecting: boolean, recovered?: boolean) => void): void {
@@ -637,6 +643,7 @@ export class WsAcpTransport implements AcpTransport {
     try {
       await this.requestSubscription(sessionId, lastSeq, timeoutMs)
       completed = true
+      this.resubscribeOwed.delete(sessionId)
     } finally {
       this.endSync(sessionId, completed)
     }
@@ -753,6 +760,7 @@ export class WsAcpTransport implements AcpTransport {
         await this.recoveryHandler?.({ sessionId, degraded: true }, reopenGeneration)
       }
       completed = true
+      this.resubscribeOwed.delete(sessionId)
     } finally {
       this.endSync(sessionId, completed)
     }
@@ -2258,36 +2266,85 @@ export class WsAcpTransport implements AcpTransport {
       await this.connect()
       // A fresh pass owns every session again; drop retries from a prior socket.
       this.sessionRetry.cancelAll()
-      const prioritized = this.reconnectPriorityProvider?.() ?? []
-      const ordered = [
-        ...prioritized.filter((sid) => this.subscribed.has(sid)),
-        ...[...this.subscribed].filter((sid) => !prioritized.includes(sid))
-      ]
-      const retryingSessions: string[] = []
-      const obsoleteSessions: string[] = []
-      for (const sid of ordered) {
-        const last = this.lastSeq.get(sid)
-        // Force re-subscribe after reconnect; pass an explicit boundary.
-        // A single failing session must NOT abort the whole resubscribe pass
-        // nor tear the socket down (CLI-F1): it is retried alone with its own
-        // bounded backoff while the socket and the other sessions stay up.
+      const socket = this.socket
+      const owed = new Set(this.subscribed)
+      this.resubscribeOwed = owed
+      // Only the chats the user needs now (on screen, waiting on an answer,
+      // holding an unconfirmed prompt) hold the reconnect open: each
+      // resubscribe is a round-trip, and the chat on screen must not wait
+      // behind every other open chat.
+      const priority = new Set(this.reconnectPriorityProvider?.() ?? [])
+      await this.resubscribeSessions(
+        socket,
+        owed,
+        [...owed].filter((sid) => priority.has(sid))
+      )
+      // The attempt counter is NOT reset here: only `stableTimer` resets it
+      // after `RECONNECT_STABLE_MS` of stable connection. The auth handshake
+      // stays silent while `reconnecting`, so `connected` is emitted here.
+      this.reconnecting = false
+      this.emitConnectionState('connected')
+      this.onReconnectStateChange?.(false, true)
+      void this.resubscribeInBackground(socket, owed)
+    } catch (err) {
+      // Story 8 (web honesty): an idle client — no subscribed sessions and no
+      // in-flight requests — has nothing to recover, so its reconnect churn
+      // (e.g. the server's 75s PONG watchdog killing the idle `/ws` mid-auth,
+      // surfacing "WebSocket closed before auth") is benign and must not
+      // pollute the warn-level error channel every ~68s forever. Demote to
+      // info in exactly that state; a session-bearing or mid-request client
+      // keeps the warn — a dropped channel there is a real outage.
+      const idle = this.subscribed.size === 0 && this.pending.size === 0
+      void logFrontendError({
+        level: idle ? 'info' : 'warn',
+        source: 'WsAcpTransport.reconnect',
+        message: `ACP reconnect failed: ${String(err)}`
+      })
+      this.discardSocket('reconnect attempt failed')
+      this.scheduleReconnect()
+    }
+  }
+
+  /**
+   * Resubscribe each of `sids` that `owed` still holds, one at a time. A
+   * failing session never aborts the pass nor tears the socket down (CLI-F1):
+   * it is retried alone with its own bounded backoff. Throws when the socket
+   * died or was replaced: that is a connection failure, not a per-session one.
+   */
+  private async resubscribeSessions(
+    socket: WebSocket | null,
+    owed: Set<string>,
+    sids: readonly string[]
+  ): Promise<void> {
+    const retryingSessions: string[] = []
+    const obsoleteSessions: string[] = []
+    try {
+      for (const sid of sids) {
+        // Without this check `subscribeInternal` would open a new socket
+        // itself and resubscribe on it, behind the back of that socket's own pass.
+        if (this.socket !== socket || !this.isSocketLive()) {
+          throw new AcpTransportError('closed', 'WebSocket lost during the resubscribe pass')
+        }
+        // A subscribe that already landed on this socket settled the session.
+        if (!owed.delete(sid) || !this.subscribed.has(sid)) continue
         try {
-          await this.subscribeInternal(sid, last ?? 0, true, RESUBSCRIBE_TIMEOUT_MS)
+          await this.subscribeInternal(
+            sid,
+            this.lastSeq.get(sid) ?? 0,
+            true,
+            RESUBSCRIBE_TIMEOUT_MS
+          )
         } catch (error) {
           if (error instanceof AcpTransportError && error.code === WS_ERROR_CODES.NOT_FOUND) {
             this.dropObsoleteSession(sid)
             obsoleteSessions.push(sid)
           } else if (!this.isSocketLive()) {
-            // The socket itself died mid-pass: that is a connection failure,
-            // not a per-session one — fall through to the teardown path.
             throw error
           } else {
             // A subscribe TIMEOUT on a socket that still reads OPEN may be a
-            // half-open link: the resume probes and heartbeat `forceReconnect`
-            // return early mid-pass, so without this each remaining session
-            // would stall a further RESUBSCRIBE_TIMEOUT_MS. Probe once; if the
-            // socket cannot round-trip, treat it as a connection failure
-            // (the catch below tears it down and re-arms the backoff).
+            // half-open link: without a probe each remaining session would
+            // stall a further RESUBSCRIBE_TIMEOUT_MS. If the socket cannot
+            // round-trip, treat it as a connection failure.
             if (error instanceof AcpTransportError && error.code === 'timeout') {
               try {
                 await this.request<void>('ping', {}, RESUME_PROBE_TIMEOUT_MS)
@@ -2305,6 +2362,7 @@ export class WsAcpTransport implements AcpTransport {
           }
         }
       }
+    } finally {
       if (obsoleteSessions.length > 0) {
         void logFrontendError({
           level: 'warn',
@@ -2319,33 +2377,26 @@ export class WsAcpTransport implements AcpTransport {
           message: `ACP subscription recovery deferred to per-session retry for session ids: ${retryingSessions.join(', ')}`
         })
       }
-      // Story 5.3 (AC3): fire `false` AFTER the socket re-opens and every
-      // session was either re-subscribed or handed to its own retry so the
-      // overlay stays visible for the full reconnect window (drop → backoff →
-      // reopen → resubscribe). The attempt counter is NOT reset here: only
-      // `stableTimer` resets it after `RECONNECT_STABLE_MS` of stable connection.
-      this.reconnecting = false
-      // Story 10: the reconnect cycle is fully recovered — socket open,
-      // authed, and every required session re-subscribed or retrying. Only NOW
-      // is the control channel healthy (the auth handshake deliberately stays
-      // silent while `reconnecting`).
-      this.emitConnectionState('connected')
-      this.onReconnectStateChange?.(false, true)
+    }
+  }
+
+  /** The rest of a reconnect pass, after the channel was already reported live. */
+  private async resubscribeInBackground(
+    socket: WebSocket | null,
+    owed: Set<string>
+  ): Promise<void> {
+    try {
+      await this.resubscribeSessions(socket, owed, [...owed])
     } catch (err) {
-      // Story 8 (web honesty): an idle client — no subscribed sessions and no
-      // in-flight requests — has nothing to recover, so its reconnect churn
-      // (e.g. the server's 75s PONG watchdog killing the idle `/ws` mid-auth,
-      // surfacing "WebSocket closed before auth") is benign and must not
-      // pollute the warn-level error channel every ~68s forever. Demote to
-      // info in exactly that state; a session-bearing or mid-request client
-      // keeps the warn — a dropped channel there is a real outage.
-      const idle = this.subscribed.size === 0 && this.pending.size === 0
+      // The socket closed or was replaced: its close already started the
+      // next reconnect, which resubscribes every session again.
+      if (this.socket !== socket) return
       void logFrontendError({
-        level: idle ? 'info' : 'warn',
+        level: 'warn',
         source: 'WsAcpTransport.reconnect',
-        message: `ACP reconnect failed: ${String(err)}`
+        message: `ACP background resubscribe failed: ${String(err)}`
       })
-      this.discardSocket('reconnect attempt failed')
+      this.discardSocket('background resubscribe failed')
       this.scheduleReconnect()
     }
   }

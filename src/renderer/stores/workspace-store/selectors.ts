@@ -143,6 +143,16 @@ export function getAllTreeRoots(state: Pick<WorkspaceState, 'root' | 'parkedTree
   return [state.root, ...Object.values(state.parkedTrees).map((tree) => tree.root)]
 }
 
+/** Session ids of the agent chats on screen: the active tab of each pane in the active tree. */
+export function getVisibleAgentChatSessionIds(state: Pick<WorkspaceState, 'root'>): string[] {
+  const ids: string[] = []
+  for (const leaf of getAllLeafPanes(state.root)) {
+    const tab = leaf.tabs.find((t) => t.id === leaf.activeTabId)
+    if (tab?.type === 'agent-chat') ids.push(tab.sessionId)
+  }
+  return ids
+}
+
 /** Session ids that have an agent-chat tab in at least one tree (active or parked). */
 export function getAgentChatSessionIdsInAllTrees(
   state: Pick<WorkspaceState, 'root' | 'parkedTrees'>
