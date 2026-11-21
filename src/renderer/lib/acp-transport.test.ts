@@ -4145,9 +4145,10 @@ describe('WsAcpTransport half-open socket during the resubscribe pass', () => {
     // Without the probe the pass would still be waiting on sess-2/sess-3 (45s).
     expect(halfOpen.readyState).toBe(FakeWebSocket.CLOSED)
     const subscribes = halfOpen.sent
-      .map((raw) => JSON.parse(raw) as { type: string })
+      .map((raw) => JSON.parse(raw) as { type: string; payload: { sessionId: string } })
       .filter((req) => req.type === 'subscribe')
-    expect(subscribes).toHaveLength(1)
+    // sess-1's retry is armed before the probe, so it may go out once more.
+    expect([...new Set(subscribes.map((req) => req.payload.sessionId))]).toEqual(['sess-1'])
     expect(internals.reconnectTimer).not.toBeNull() // backoff re-armed, pass failed as a connection error
     transport.dispose()
   })
