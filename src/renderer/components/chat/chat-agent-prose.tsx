@@ -28,6 +28,7 @@ import {
 import { ChatMarkdownTable } from './chat-markdown-table'
 import { ChatMarkdownSpan } from './chat-markdown-word'
 import { chatMediaFromMarkdown } from './chat-media-source'
+import { LinkChip } from './LinkChip'
 
 const MEDIA_REMARK_PLUGINS = [...Object.values(defaultRemarkPlugins), remarkTermulMedia]
 /** Adds prose file-path linkification when a `filePathContext` exists. */
@@ -98,6 +99,26 @@ const STREAMDOWN_ANIMATED = {
 // add a second, competing confirm path that opens via `window.open`.
 const LINK_SAFETY_OFF: LinkSafetyConfig = { enabled: false }
 const LINK_CLASS = 'wrap-anywhere font-medium text-primary underline'
+
+function nodeText(node: React.ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(nodeText).join('')
+  return ''
+}
+
+function stripScheme(url: string): string {
+  return url.replace(/^https?:\/\//i, '').replace(/\/$/, '')
+}
+
+/**
+ * A bare link the agent wrote (an autolink, whose text is the URL itself,
+ * `www.` literals included). A labelled `[text](url)` link keeps its label.
+ */
+export function isBareLink(href: string | undefined, children: React.ReactNode): href is string {
+  if (!href || !/^https?:\/\//i.test(href)) return false
+  const text = nodeText(children).trim()
+  return text.length > 0 && stripScheme(text) === stripScheme(href)
+}
 
 function decodeFragment(href: string): string {
   try {
@@ -292,6 +313,11 @@ export function AgentProse({
             </a>
           )
         }
+        // A bare URL shows as favicon + page title once the reply settles
+        // (a streaming URL may still be incomplete).
+        if (isBareLink(href, children)) {
+          return <LinkChip url={href} resolve={!streaming} className={className} />
+        }
         // Streamdown's own link safety is off (see `linkSafety` below): every
         // external link, with or without a workspace, goes through the one
         // confirm-then-open path.
@@ -320,7 +346,7 @@ export function AgentProse({
       }
     }
     return merged
-  }, [filePathContext])
+  }, [filePathContext, streaming])
 
   return (
     <div

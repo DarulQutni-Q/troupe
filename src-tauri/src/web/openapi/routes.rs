@@ -29,6 +29,7 @@ use crate::mcp_catalog::{
     CancelRequest, CommitRequest, CommitResult, FormReply, FormRequest, McpCatalogPage,
     McpCatalogSearchRequest, McpCatalogStatus, PlanReply, PlanRequest,
 };
+use crate::link_preview::LinkPreview;
 use crate::project_icon::ProjectIcon;
 use crate::skills::files::SkillFileEntry;
 use crate::skills::{AgentSkillContent, AgentSkillSummary};
@@ -59,6 +60,7 @@ use crate::web::mcp_oauth_api::{
     OAuthCallbackQuery, OAuthCompleteRequest, OAuthStartRequest, OAuthStartResponse,
     OAuthStatusRequest, OAuthStatusResponse,
 };
+use crate::web::link_preview_api::LinkPreviewRequest;
 use crate::web::project_icon_api::ProjectIconRequest;
 use crate::web::project_registry::{ProjectListPayload, ProjectSummary};
 use crate::web::projects_api::{
@@ -165,6 +167,10 @@ pub static ROUTES: &[ApiRoute] = &[
     ApiRoute::post("/project/icon", Tag::Projects, "Resolve a project's icon")
         .json::<ProjectIconRequest>()
         .ipc::<Option<ProjectIcon>>(),
+    ApiRoute::post("/link/preview", Tag::Host, "Resolve a chat link's title and favicon")
+        .json::<LinkPreviewRequest>()
+        .ipc::<Option<LinkPreview>>()
+        .describe("Fetches only public http(s) addresses. `null` means show the plain link."),
     // Files
     ApiRoute::post("/fs/mkdir", Tag::Fs, "Create a directory").json::<MkdirRequest>(),
     ApiRoute::post("/fs/write", Tag::Fs, "Write a text file")

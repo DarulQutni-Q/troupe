@@ -6,6 +6,7 @@ import { Bubble, BubbleContent } from '@/components/ui/bubble'
 import { Message, MessageContent } from '@/components/ui/message'
 import { useMobileWebShell } from '@/hooks/use-mobile-web-shell'
 import type { ContentBlock } from '@/lib/acp-api'
+import { splitLinks } from '@/lib/chat-links'
 import {
   parseSelectionContextSegments,
   type SelectionContext,
@@ -35,6 +36,7 @@ import { blockDisplayName, blockResource, blockToAttachmentData } from './chat-a
 import { chatMediaFromBlock } from './chat-media-source'
 import { type BubbleAlign, staggerChild } from './chat-motion'
 import { FileChip } from './FileChip'
+import { LinkChip } from './LinkChip'
 import {
   logLongPressFallbackOnce,
   MessageActions,
@@ -72,6 +74,7 @@ function UserMessageText({ text }: { text: string }): React.JSX.Element {
     | { kind: 'context'; context: SelectionContext; index: number }
     | { kind: 'conversation'; title: string }
     | { kind: 'tool'; tool: TermulToolEntry }
+    | { kind: 'link'; url: string }
   const flat: FlatSeg[] = []
   let hasPills = false
   let contextCount = 0
@@ -83,8 +86,15 @@ function UserMessageText({ text }: { text: string }): React.JSX.Element {
         continue
       }
       for (const tseg of parseToolSegments(cseg.text)) {
-        flat.push(tseg)
-        if (tseg.kind === 'tool') hasPills = true
+        if (tseg.kind === 'tool') {
+          flat.push(tseg)
+          hasPills = true
+          continue
+        }
+        for (const lseg of splitLinks(tseg.text)) {
+          flat.push(lseg)
+          if (lseg.kind === 'link') hasPills = true
+        }
       }
     }
   }
@@ -156,6 +166,8 @@ function UserMessageText({ text }: { text: string }): React.JSX.Element {
               <ConversationChip key={`conversation-${i}`} title={seg.title} />
             ) : seg.kind === 'tool' ? (
               <ToolChip key={`tool-${i}`} tool={seg.tool} />
+            ) : seg.kind === 'link' ? (
+              <LinkChip key={`link-${i}`} url={seg.url} />
             ) : seg.kind === 'context' ? (
               <SelectionContextChip
                 key={`context-${i}`}

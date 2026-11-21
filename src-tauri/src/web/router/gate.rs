@@ -51,6 +51,9 @@ const GATED_PREFIXES: &[&str] = &[
     "/shells",
     "/acp/",
     "/worktree/",
+    // Chat link previews (favicon + title) — the host fetches public pages
+    // for the caller, so only an authenticated client may ask.
+    "/link/",
     // The OpenAPI description of these routes.
     "/openapi.json",
     // Automations and their runs, agents and secrets.
@@ -63,7 +66,6 @@ const GATED_PREFIXES: &[&str] = &[
     // in the sub-router).
     "/canvas/",
 ];
-
 
 /// Whether `path` is a gated API route. Pure decision fn (unit-testable).
 pub(crate) fn requires_token(path: &str) -> bool {

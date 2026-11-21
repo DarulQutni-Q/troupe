@@ -39,6 +39,7 @@ mod migrations;
 mod path_validation;
 // Console-window hiding + Windows kill-on-close Job Objects for spawned processes.
 mod process_util;
+mod link_preview;
 mod project_icon;
 mod pty;
 mod remote;
@@ -2299,6 +2300,8 @@ pub fn run() {
             commands::git_branch_switch,
             // Project icon resolution (local file scan → git-remote fetch)
             commands::project_icon_resolve,
+            // Link preview (favicon + title) for links written in agent chat
+            commands::link_preview_resolve,
             // Secure storage commands
             secure_storage::secure_storage_set,
             secure_storage::secure_storage_get,

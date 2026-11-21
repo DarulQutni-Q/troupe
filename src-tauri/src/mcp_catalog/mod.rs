@@ -10,7 +10,7 @@
 mod consent;
 mod convert;
 mod form;
-mod icon;
+pub(crate) mod icon;
 mod import;
 mod launch_check;
 mod plan;

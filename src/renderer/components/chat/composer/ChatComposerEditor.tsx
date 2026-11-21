@@ -1,9 +1,11 @@
 import { type Editor, type EditorEvents, Extension } from '@tiptap/core'
 import { Placeholder } from '@tiptap/extension-placeholder'
+import { Slice } from '@tiptap/pm/model'
 import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state'
 import { EditorContent, useEditor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import { useEffect, useRef } from 'react'
+import { hasLink } from '@/lib/chat-links'
 import {
   CMD_PILL_NODE,
   CONTEXT_PILL_NODE,
@@ -11,6 +13,7 @@ import {
   docOffsetToDisplayOffset,
   docToDisplayText,
   FILE_PILL_NODE,
+  LINK_PILL_NODE,
   SKILL_PILL_NODE,
   TOOL_PILL_NODE
 } from '@/lib/composer/doc-to-prompt'
@@ -20,6 +23,7 @@ import { cn } from '@/lib/utils'
 import { CommandPill } from './CommandPillNode'
 import { ConversationPill } from './ConversationPillNode'
 import { FilePill } from './FilePillNode'
+import { LinkPill } from './LinkPillNode'
 import { SelectionContextPill } from './SelectionContextPillNode'
 import { SkillPill } from './SkillPillNode'
 import { ToolPill } from './ToolPillNode'
@@ -94,7 +98,8 @@ const ATOM_PILL_NODES = new Set([
   FILE_PILL_NODE,
   CONTEXT_PILL_NODE,
   CONVERSATION_PILL_NODE,
-  TOOL_PILL_NODE
+  TOOL_PILL_NODE,
+  LINK_PILL_NODE
 ])
 
 /**
@@ -296,6 +301,7 @@ export function ChatComposerEditor({
         SelectionContextPill,
         ConversationPill,
         ToolPill,
+        LinkPill,
         createComposerKeymap(beforeKeyDownRef),
         Placeholder.configure({
           placeholder: () => placeholderRef.current,
@@ -345,13 +351,21 @@ export function ChatComposerEditor({
           onPasteAttachmentsRef.current?.(event as ClipboardEvent)
           if (event.defaultPrevented) return true
           const text = event.clipboardData?.getData('text/plain') ?? ''
-          if (!/[\uE000\uE004\uE006\uE008\uE00A\uE00C]/.test(text)) return false
+          const hasTokens = /[\uE000\uE004\uE006\uE008\uE00A\uE00C]/.test(text)
+          if (!hasTokens && !hasLink(text)) return false
           event.preventDefault()
           try {
             const parsed = view.state.schema.nodeFromJSON(
               draftFromTokens(text, getSkillPathsRef.current?.() ?? {})
             )
-            const slice = parsed.slice(0)
+            // A plain-text paste with links lands inline in the current line
+            // (open slice), as a default paste would; token pastes keep their
+            // established block slice.
+            const slice = hasTokens
+              ? parsed.slice(0)
+              : parsed.childCount === 1
+                ? new Slice(parsed.firstChild?.content ?? parsed.content, 0, 0)
+                : parsed.slice(1, parsed.content.size - 1)
             const tr = view.state.tr.replaceSelection(slice)
             tr.setMeta('paste', true)
             view.dispatch(tr)
