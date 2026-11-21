@@ -278,9 +278,14 @@ export function AgentChatPanel({
   // Story 5.3 (AC3): reconnecting until the socket is back AND this chat is
   // resubscribed (a reconnect resubscribes off-screen chats in the background).
   // Separate from the session-level `isClosed && isOpeningHistory` banner.
-  const chatReconnecting = useAcpStore(
-    (s) => s.transportReconnecting || s.resyncingSessions[sessionId] === true
-  )
+  const transportReconnecting = useAcpStore((s) => s.transportReconnecting)
+  const sessionResyncing = useAcpStore((s) => s.resyncingSessions[sessionId] === true)
+  const chatReconnecting = transportReconnecting || sessionResyncing
+  const prioritizeResync = useAcpStore((s) => s.prioritizeResync)
+  // A chat that comes on screen while the reconnect still owes it goes next.
+  useEffect(() => {
+    if (isVisible && sessionResyncing) prioritizeResync(sessionId)
+  }, [isVisible, sessionResyncing, prioritizeResync, sessionId])
   const hostOffline = useConnectionStatusStore((s) => s.controlChannel === 'host-offline')
   const promptCommand = useAcpStore((s) => s.promptCommandStates[sessionId])
   const recheckPromptCommand = useAcpStore((s) => s.recheckPromptCommand)

@@ -663,6 +663,8 @@ export interface AcpState {
    * "Reconnecting…" overlay after `transportReconnecting` clears.
    */
   resyncingSessions: Readonly<Record<SessionId, true>>
+  /** Resubscribe this chat next if the running reconnect still owes it (a chat that came on screen). */
+  prioritizeResync: (sessionId: SessionId) => void
   /** Sessions whose stream could not be fully re-synced: recovered live-only (no server snapshot exists) or resubscribe retries ran out. */
   degradedRecoverySessions: Record<SessionId, true>
 

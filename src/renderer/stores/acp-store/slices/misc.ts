@@ -4,6 +4,7 @@
 
 import type { StateCreator } from 'zustand'
 import { type AgentId, acpApi, type SessionId } from '@/lib/acp-api'
+import { getAcpTransport } from '@/lib/acp-transport'
 import { logFrontendError } from '@/lib/log-api'
 import { randomUUID } from '@/lib/uuid'
 import {
@@ -35,6 +36,7 @@ type MiscSliceState = Pick<
   AcpState,
   | 'transportReconnecting'
   | 'resyncingSessions'
+  | 'prioritizeResync'
   | 'degradedRecoverySessions'
   | 'generateCommitMessage'
   | 'assistTerminal'
@@ -44,6 +46,7 @@ type MiscSliceState = Pick<
 export const createMiscSlice: StateCreator<AcpState, [], [], MiscSliceState> = (set, get) => ({
   transportReconnecting: false,
   resyncingSessions: {},
+  prioritizeResync: (sessionId) => getAcpTransport().prioritizeResubscribe?.(sessionId),
   degradedRecoverySessions: {},
 
   generateCommitMessage: async (cwd, stagedDiff) => {

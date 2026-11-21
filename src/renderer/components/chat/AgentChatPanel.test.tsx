@@ -18,6 +18,7 @@ const {
   mockOpen,
   mockOpenDiscovered,
   mockRecheckPromptCommand,
+  mockPrioritizeResync,
   mockRetryCrashed,
   mockRetryFailed,
   agentStatusRef,
@@ -74,6 +75,7 @@ const {
   mockOpen: vi.fn(),
   mockOpenDiscovered: vi.fn(),
   mockRecheckPromptCommand: vi.fn(),
+  mockPrioritizeResync: vi.fn(),
   // Story 5: failed-launch retry routing (Retry must reach retryFailedLaunch,
   // never retryCrashedSession, and never toast a circular "Could not retry").
   mockRetryCrashed: vi.fn(),
@@ -278,6 +280,7 @@ vi.mock('@/stores/acp-store', () => {
     resyncingSessions: resyncingSessionsRef.current,
     promptCommandStates: promptCommandStatesRef.current,
     recheckPromptCommand: mockRecheckPromptCommand,
+    prioritizeResync: mockPrioritizeResync,
     openHistorySession: mockOpen,
     openDiscoveredSession: mockOpenDiscovered,
     sendPrompt: mockSendPrompt,
@@ -1267,8 +1270,26 @@ describe('AgentChatPanel OSK + reconnect overlay (Story 5.3)', () => {
     oskRef.current = { isOskOpen: false, keyboardHeight: 0, height: 0, offsetTop: 0 }
     transportReconnectingRef.current = false
     resyncingSessionsRef.current = {}
+    mockPrioritizeResync.mockReset()
     promptCommandStatesRef.current = {}
     discoveredContextRef.current = {}
+  })
+
+  it('asks for its chat to resubscribe next when it comes on screen while the reconnect still owes it', () => {
+    seedLiveSession('s1')
+    resyncingSessionsRef.current = { s1: true }
+    const { rerender } = render(<AgentChatPanel sessionId="s1" isVisible={false} />)
+    expect(mockPrioritizeResync.mock.calls).toEqual([])
+
+    rerender(<AgentChatPanel sessionId="s1" isVisible />)
+    expect(mockPrioritizeResync.mock.calls).toEqual([['s1']])
+  })
+
+  it('does not reorder the reconnect for a chat on screen that is already resubscribed', () => {
+    seedLiveSession('s1')
+    resyncingSessionsRef.current = { s2: true }
+    render(<AgentChatPanel sessionId="s1" isVisible />)
+    expect(mockPrioritizeResync.mock.calls).toEqual([])
   })
 
   it('applies OSK bottom padding when the OSK is open on mobile (AC1)', () => {
