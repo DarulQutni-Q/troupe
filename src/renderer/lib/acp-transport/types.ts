@@ -720,7 +720,8 @@ export interface AcpTransport {
   /**
    * Story 5.3 (AC3): register a listener for transport-level reconnect state.
    * The second argument is only meaningful when `reconnecting` is `false`:
-   * `true` = the channel genuinely recovered (open, authed, re-subscribed);
+   * `true` = the channel genuinely recovered (open, authed, priority
+   * sessions re-subscribed);
    * `false` = the cycle ended WITHOUT recovery (token-class halt), so
    * nothing may assume the host is reachable.
    * Only on the WS transport — absent on Tauri IPC (desktop). The store
@@ -773,7 +774,19 @@ export interface AcpTransport {
    * subscribing (WS only). Call before `resumeSession` so its built-in
    * re-subscribe uses the server cursor, not a dead per-instance 0. */
   seedSessionCursor?(sessionId: SessionId, cursor: SessionCursor): void
+  /**
+   * Sessions a reconnect resubscribes before it reports the channel live.
+   * Every other subscribed session resubscribes after that, in the background.
+   */
   setReconnectPriorityProvider?(provider: () => SessionId[]): void
+  /**
+   * Sessions whose stream is not resynced since the last reconnect: still
+   * queued for the background resubscribe, being resubscribed, or waiting on a
+   * per-session retry. Fired with the full sorted list whenever it changes.
+   */
+  setResyncListener?(listener: (sessionIds: readonly SessionId[]) => void): void
+  /** Resubscribe this session next if the running reconnect pass still owes it. */
+  prioritizeResubscribe?(sessionId: SessionId): void
   /**
    * Issue #1595: register the installer for the host's still-pending
    * approvals, questions and elicitations a `subscribe` / snapshot reply
