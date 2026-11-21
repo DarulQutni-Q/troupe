@@ -321,6 +321,29 @@ jobs:
           # PR-scoped caches are invisible to other PRs and crowd the 10 GB cap.
           save-if: ${{ github.ref == 'refs/heads/dev' }}
 
+      # No web build here: a debug build reads dist-web/ from disk at run time
+      # (rust-embed without debug-embed, #[allow_missing]), so the bundle does
+      # not change what compiles. Web Build (Windows) checks the bundle builds.
+      - name: Cargo check
+        working-directory: src-tauri
+        run: cargo check --all-targets
+
+      - name: Build troupe-server (Windows host)
+        working-directory: src-tauri
+        run: cargo build --bin troupe-server --features standalone-server
+
+  web-build-windows:
+    name: Web Build (Windows)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
@@ -335,14 +358,6 @@ jobs:
       - name: Assert dist-web/index.html exists
         shell: bash
         run: test -f dist-web/index.html && test -s dist-web/index.html
-
-      - name: Cargo check
-        working-directory: src-tauri
-        run: cargo check --all-targets
-
-      - name: Build troupe-server (Windows host)
-        working-directory: src-tauri
-        run: cargo build --bin troupe-server --features standalone-server
 
   build-check:
     name: Verify Tauri Frontend Build
