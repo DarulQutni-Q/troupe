@@ -124,7 +124,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-22.04
-    # Check, test and clippy run about 17 minutes on a warm cache, and the
+    # Clippy and test run about 14 minutes on a cold cache, and the
     # post-job cache save adds about one more.
     timeout-minutes: 30
     steps:
@@ -182,17 +182,15 @@ jobs:
       - name: Fetch and verify figcraft bundle (canvas/bundle/)
         run: bun scripts/canvas/fetch-figcraft-bundle.mjs
 
-      - name: Cargo check
+      # No separate `cargo check --all-targets`: clippy type-checks the same
+      # targets and features and fails on any compile error.
+      - name: Cargo clippy
         working-directory: src-tauri
-        run: cargo check --all-targets
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: Cargo test
         working-directory: src-tauri
         run: cargo test
-
-      - name: Cargo clippy
-        working-directory: src-tauri
-        run: cargo clippy --all-targets -- -D warnings
 
   web-build:
     name: Web Client Build
