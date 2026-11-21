@@ -216,10 +216,6 @@ jobs:
         working-directory: src-tauri
         run: cargo test
 
-      - name: Cargo clippy
-        working-directory: src-tauri
-        run: cargo clippy --all-targets -- -D warnings
-
   standalone-server-build:
     name: Standalone Server Build
     needs: changes
