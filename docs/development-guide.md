@@ -235,7 +235,8 @@ The file explorer and editor support live file watching through the filesystem A
 `.github/workflows/pr-validation.yml` runs on every push to the PR, but not on title or description edits. Its jobs run in parallel and none waits on another:
 
 - Checks: `bun scripts/ci/checks.ts` runs the rebrand check, `bun run ci` (Biome), the three typechecks, the shell tests, `bun run build:web` and `bun run build:frontend:tauri` at once, then lists every failure. Run it locally the same way, or name checks to run a subset: `bun scripts/ci/checks.ts biome tsc:web`.
-- Test: `bun run test`.
+- Test: `bun run test`. It uploads vitest's JSON report as the `vitest-report` artifact.
+- Test (bun): the same files (`bun scripts/ci/test-files.ts` lists vitest's include set) under `bun test`, on a pinned Bun canary, beside vitest while the two are compared. It fails if any listed file is missing from its junit report, which it uploads as `bun-junit`. `bun tools/ci-audit/test-parity.ts <run-id>` prints both Test step times and every file whose results differ.
 - Rust Checks, Standalone Server Build and Rust Windows Smoke Check, when the PR changes Rust inputs: `cargo check --all-targets`, `cargo test`, `cargo clippy --all-targets -- -D warnings`, the `troupe-server` build, and a Windows build.
 
 `.github/workflows/e2e.yml` builds `dist-web/` and a release `troupe-server`, then runs the Playwright suite. It runs the ACP lifecycle specs on a pull request that changes ACP, relay, protocol or e2e files, and daily. A manual dispatch takes a `specs` input to run other specs. The job uploads Playwright traces when it fails.
