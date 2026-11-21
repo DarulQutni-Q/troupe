@@ -232,15 +232,11 @@ The file explorer and editor support live file watching through the filesystem A
 
 `.github/workflows/pr-metadata.yml` validates the PR title (conventional commits) and the PR description (template sections). It also runs when you edit the title or description.
 
-`.github/workflows/pr-validation.yml` runs on every push to the PR, but not on title or description edits:
+`.github/workflows/pr-validation.yml` runs on every push to the PR, but not on title or description edits. Its jobs run in parallel and none waits on another:
 
-- `bun run lint`
-- `bun run typecheck`
-- `bun run test`
-- `cargo check --all-targets`
-- `cargo test`
-- `cargo clippy --all-targets -- -D warnings`
-- frontend Tauri build verification
+- Checks: `bun scripts/ci/checks.ts` runs the rebrand check, `bun run ci` (Biome), the three typechecks, the shell tests, `bun run build:web` and `bun run build:frontend:tauri` at once, then lists every failure. Run it locally the same way, or name checks to run a subset: `bun scripts/ci/checks.ts biome tsc:web`.
+- Test: `bun run test`.
+- Rust Checks, Standalone Server Build and Rust Windows Smoke Check, when the PR changes Rust inputs: `cargo clippy --all-targets -- -D warnings` (it type-checks every target, so there is no separate `cargo check` on Linux), `cargo test`, the `troupe-server` build, and a Windows `cargo check --all-targets` plus build. They also run on every push to `dev`, which seeds the Rust caches that PRs restore.
 
 `.github/workflows/e2e.yml` builds `dist-web/` and a release `troupe-server`, then runs the Playwright suite. It runs the ACP lifecycle specs on a pull request that changes ACP, relay, protocol or e2e files, and daily. A manual dispatch takes a `specs` input to run other specs. The job uploads Playwright traces when it fails.
 

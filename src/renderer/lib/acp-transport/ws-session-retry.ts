@@ -33,12 +33,18 @@ export class SessionResubscribeRetry {
       onGiveUp: (sessionId: string, lastError: unknown) => void
       /** False while the socket is not authenticated + OPEN (the reconnect pass owns recovery). */
       canRun: () => boolean
+      /** The set of retrying sessions may have changed. */
+      onChange?: () => void
       random?: () => number
     }
   ) {}
 
   has(sessionId: string): boolean {
     return this.entries.has(sessionId)
+  }
+
+  sessionIds(): string[] {
+    return [...this.entries.keys()]
   }
 
   /** Arm (or advance) the retry for `sessionId`; a pending timer is left alone. */
@@ -48,6 +54,7 @@ export class SessionResubscribeRetry {
     if (entry.attempt >= SESSION_RETRY_MAX_ATTEMPTS) {
       this.entries.delete(sessionId)
       this.deps.onGiveUp(sessionId, lastError)
+      this.deps.onChange?.()
       return
     }
     const delay = jitteredBackoffMs(
@@ -59,22 +66,39 @@ export class SessionResubscribeRetry {
     entry.attempt += 1
     entry.timer = setTimeout(() => {
       entry.timer = null
-      void this.fire(sessionId, entry)
+      // A failed attempt is already rescheduled.
+      this.fire(sessionId, entry).catch(() => undefined)
     }, delay)
     this.entries.set(sessionId, entry)
+    this.deps.onChange?.()
+  }
+
+  /**
+   * Run a retry that waits on its timer now, keeping its attempt count. Settles
+   * with that attempt, after a failure is rescheduled. `undefined` when
+   * `sessionId` has no retry waiting.
+   */
+  runNow(sessionId: string): Promise<void> | undefined {
+    const entry = this.entries.get(sessionId)
+    if (!entry?.timer) return undefined
+    clearTimeout(entry.timer)
+    entry.timer = null
+    return this.fire(sessionId, entry)
   }
 
   cancel(sessionId: string): void {
     const entry = this.entries.get(sessionId)
     if (entry?.timer) clearTimeout(entry.timer)
-    this.entries.delete(sessionId)
+    if (this.entries.delete(sessionId)) this.deps.onChange?.()
   }
 
   cancelAll(): void {
+    if (this.entries.size === 0) return
     for (const entry of this.entries.values()) {
       if (entry.timer) clearTimeout(entry.timer)
     }
     this.entries.clear()
+    this.deps.onChange?.()
   }
 
   private async fire(sessionId: string, entry: RetryEntry): Promise<void> {
@@ -92,10 +116,10 @@ export class SessionResubscribeRetry {
       entry.attempt <= SESSION_CURSOR_RETRY_ATTEMPTS ? 'cursor' : 'degrade'
     try {
       await this.deps.run(sessionId, mode)
-      if (this.entries.get(sessionId) === entry) this.entries.delete(sessionId)
     } catch (err) {
-      if (this.entries.get(sessionId) !== entry) return
-      this.schedule(sessionId, err)
+      if (this.entries.get(sessionId) === entry) this.schedule(sessionId, err)
+      throw err
     }
+    if (this.entries.get(sessionId) === entry) this.cancel(sessionId)
   }
 }
