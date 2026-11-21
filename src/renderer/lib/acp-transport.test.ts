@@ -4226,7 +4226,8 @@ describe('WsAcpTransport reconnect resubscribes the priority sessions first', ()
 
   async function reconnectWithVisibleLast(
     priority = ['sess-visible'],
-    cursors: Record<string, number> = {}
+    cursors: Record<string, number> = {},
+    sessions = ['sess-a', 'sess-b', 'sess-visible']
   ) {
     vi.useFakeTimers()
     HeldSubscribeSocket.instances = []
@@ -4235,7 +4236,7 @@ describe('WsAcpTransport reconnect resubscribes the priority sessions first', ()
       WebSocketImpl: HeldSubscribeSocket as unknown as typeof WebSocket
     })
     await transport.connect()
-    for (const sid of ['sess-a', 'sess-b', 'sess-visible']) {
+    for (const sid of sessions) {
       if (cursors[sid])
         transport.seedSessionCursor(sid, { lastSeq: cursors[sid], logEpoch: 'epoch-A' })
       await transport.subscribeSession(sid)
@@ -4243,12 +4244,122 @@ describe('WsAcpTransport reconnect resubscribes the priority sessions first', ()
     transport.setReconnectPriorityProvider(() => priority)
     const reconnectStates: boolean[] = []
     transport.setReconnectListener((reconnecting) => reconnectStates.push(reconnecting))
+    const resyncing: Array<readonly string[]> = []
+    transport.setResyncListener((sessionIds) => resyncing.push(sessionIds))
     const internals = transport as unknown as TransportInternals
     internals.socket.close()
     await vi.advanceTimersByTimeAsync(600)
     const socket = HeldSubscribeSocket.instances[1]
-    return { transport, internals, socket, reconnectStates }
+    return { transport, internals, socket, reconnectStates, resyncing }
   }
+
+  function promptAndSubscribeFrames(socket: HeldSubscribeSocket): Array<[string, string]> {
+    return socket.sent
+      .map((raw) => JSON.parse(raw) as { type: string; payload: { sessionId: string } })
+      .filter((req) => req.type === 'subscribe' || req.type === 'send_prompt')
+      .map((req) => [req.type, req.payload.sessionId])
+  }
+
+  it('resubscribes a chat promoted while the background pass runs right after the in-flight one, once', async () => {
+    const { transport, socket } = await reconnectWithVisibleLast(['sess-visible'], {}, [
+      'sess-a',
+      'sess-b',
+      'sess-c',
+      'sess-visible'
+    ])
+    socket.answer('sess-visible')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(socket.subscribedIds()).toEqual(['sess-visible', 'sess-a'])
+
+    transport.prioritizeResubscribe('sess-c')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(socket.subscribedIds()).toEqual(['sess-visible', 'sess-a'])
+
+    socket.answer('sess-a')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(socket.subscribedIds()).toEqual(['sess-visible', 'sess-a', 'sess-c'])
+    socket.answer('sess-c')
+    await vi.advanceTimersByTimeAsync(0)
+    socket.answer('sess-b')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(socket.subscribedIds()).toEqual(['sess-visible', 'sess-a', 'sess-c', 'sess-b'])
+    expect(socket.held).toEqual([])
+    transport.dispose()
+  })
+
+  it('sends a prompt for a chat the background pass is resubscribing only after that subscribe replies', async () => {
+    const { transport, socket } = await reconnectWithVisibleLast()
+    socket.answer('sess-visible')
+    await vi.advanceTimersByTimeAsync(0)
+    let settled = false
+    const sent = transport.sendPrompt('a1', 'sess-a', 'hello').then(() => {
+      settled = true
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(promptAndSubscribeFrames(socket)).toEqual([
+      ['subscribe', 'sess-visible'],
+      ['subscribe', 'sess-a']
+    ])
+    expect(settled).toBe(false)
+
+    socket.answer('sess-a')
+    await sent
+    expect(promptAndSubscribeFrames(socket)).toEqual([
+      ['subscribe', 'sess-visible'],
+      ['subscribe', 'sess-a'],
+      ['subscribe', 'sess-b'],
+      ['send_prompt', 'sess-a']
+    ])
+    transport.dispose()
+  })
+
+  it('rejects a prompt whose in-flight background subscribe fails, without sending it, and retries the chat', async () => {
+    const { transport, socket, resyncing } = await reconnectWithVisibleLast()
+    socket.answer('sess-visible')
+    await vi.advanceTimersByTimeAsync(0)
+    const sent = transport.sendPrompt('a1', 'sess-a', 'hello')
+    const outcome = sent.then(
+      () => 'sent',
+      (error: AcpTransportError) => error.code
+    )
+    await vi.advanceTimersByTimeAsync(0)
+
+    socket.answer('sess-a', 'internal')
+    expect(await outcome).toBe('internal')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(promptAndSubscribeFrames(socket)).toEqual([
+      ['subscribe', 'sess-visible'],
+      ['subscribe', 'sess-a'],
+      ['subscribe', 'sess-b']
+    ])
+    expect(resyncing.at(-1)).toEqual(['sess-a', 'sess-b'])
+    transport.dispose()
+  })
+
+  it('reports each chat as resyncing until its own resubscribe completes', async () => {
+    const { transport, socket, resyncing } = await reconnectWithVisibleLast()
+    expect(resyncing).toEqual([['sess-a', 'sess-b', 'sess-visible']])
+
+    socket.answer('sess-visible')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(resyncing.at(-1)).toEqual(['sess-a', 'sess-b'])
+    socket.answer('sess-a')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(resyncing.at(-1)).toEqual(['sess-b'])
+    socket.answer('sess-b')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(resyncing.at(-1)).toEqual([])
+    transport.dispose()
+  })
+
+  it('stops reporting chats as resyncing when the transport is disposed mid-pass', async () => {
+    const { transport, socket, resyncing } = await reconnectWithVisibleLast()
+    socket.answer('sess-visible')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(resyncing.at(-1)).toEqual(['sess-a', 'sess-b'])
+    transport.dispose()
+    expect(resyncing.at(-1)).toEqual([])
+  })
 
   afterEach(() => {
     _resetAcpTransportForTests(null)

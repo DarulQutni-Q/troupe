@@ -18,6 +18,8 @@ export interface AcpConnectionCoordinatorOptions {
   /** Install the host's still-pending approvals, questions and elicitations of a (re)subscribed session. */
   installPendingPrompts?: PendingPromptsHandler
   setReconnecting: (reconnecting: boolean, recovered?: boolean) => void
+  /** Sessions not yet resynced after a reconnect (see `AcpTransport.setResyncListener`). */
+  setResyncingSessions?: (sessionIds: readonly SessionId[]) => void
 }
 
 /**
@@ -33,6 +35,9 @@ export class AcpConnectionCoordinator {
   attach(): void {
     this.transport.setReconnectListener?.(this.options.setReconnecting)
     this.transport.setReconnectPriorityProvider?.(this.options.reconnectPrioritySessions)
+    if (this.options.setResyncingSessions) {
+      this.transport.setResyncListener?.(this.options.setResyncingSessions)
+    }
     this.transport.setRecoveryHandler?.(this.options.installRecovery)
     if (this.options.recoveryGeneration) {
       this.transport.setRecoveryGenerationProvider?.(this.options.recoveryGeneration)

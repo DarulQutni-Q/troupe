@@ -47,6 +47,7 @@ const {
   launchingRef,
   oskRef,
   transportReconnectingRef,
+  resyncingSessionsRef,
   promptCommandStatesRef,
   changedFilesArgsRef,
   changedFilePathsRef,
@@ -141,6 +142,7 @@ const {
   // Story 5.3 (AC1/AC3): test seams for OSK + reconnect overlay.
   oskRef: { current: { isOskOpen: false, keyboardHeight: 0, height: 0, offsetTop: 0 } },
   transportReconnectingRef: { current: false },
+  resyncingSessionsRef: { current: {} as Record<string, true> },
   promptCommandStatesRef: { current: {} as Record<string, unknown> },
   changedFilesArgsRef: {
     current: [] as Array<{ cwd: string; toolCalls: unknown[]; turnActive: boolean }>
@@ -273,6 +275,7 @@ vi.mock('@/stores/acp-store', () => {
     launchingSessionIds: launchingRef.current,
     discoveredReopenContexts: discoveredContextRef.current,
     transportReconnecting: transportReconnectingRef.current,
+    resyncingSessions: resyncingSessionsRef.current,
     promptCommandStates: promptCommandStatesRef.current,
     recheckPromptCommand: mockRecheckPromptCommand,
     openHistorySession: mockOpen,
@@ -1263,6 +1266,7 @@ describe('AgentChatPanel OSK + reconnect overlay (Story 5.3)', () => {
     launchingRef.current = {}
     oskRef.current = { isOskOpen: false, keyboardHeight: 0, height: 0, offsetTop: 0 }
     transportReconnectingRef.current = false
+    resyncingSessionsRef.current = {}
     promptCommandStatesRef.current = {}
     discoveredContextRef.current = {}
   })
@@ -1375,6 +1379,38 @@ describe('AgentChatPanel OSK + reconnect overlay (Story 5.3)', () => {
       const status = screen.getByRole('status')
       const overlay = status.closest('[class*="pointer-events-none"]')
       expect(overlay).not.toBeNull()
+    })
+
+    it('shows the overlay after the grace period on a chat the reconnect has not resubscribed yet, not on a resubscribed one', () => {
+      seedLiveSession('s1')
+      resyncingSessionsRef.current = { s1: true }
+      const { rerender } = render(<AgentChatPanel sessionId="s1" isVisible />)
+      advanceTimers(RECONNECT_GRACE_MS - 1)
+      expect(screen.queryByText(/Reconnecting/)).toBeNull()
+      advanceTimers(1)
+      expect(screen.getByRole('status')).toHaveTextContent('Reconnecting…')
+
+      resyncingSessionsRef.current = { s2: true }
+      rerender(<AgentChatPanel sessionId="s1" isVisible />)
+      advanceTimers(RECONNECT_GRACE_MS * 2)
+      expect(screen.queryByRole('status')).toBeNull()
+    })
+
+    it('keeps the overlay up without a second grace period when the socket is back but this chat is still resyncing', () => {
+      seedLiveSession('s1')
+      transportReconnectingRef.current = true
+      const { rerender } = render(<AgentChatPanel sessionId="s1" isVisible />)
+      advanceTimers(RECONNECT_GRACE_MS)
+      expect(screen.getByRole('status')).toHaveTextContent('Reconnecting…')
+
+      transportReconnectingRef.current = false
+      resyncingSessionsRef.current = { s1: true }
+      rerender(<AgentChatPanel sessionId="s1" isVisible />)
+      expect(screen.getByRole('status')).toHaveTextContent('Reconnecting…')
+
+      resyncingSessionsRef.current = {}
+      rerender(<AgentChatPanel sessionId="s1" isVisible />)
+      expect(screen.queryByRole('status')).toBeNull()
     })
 
     it('does not render the transport reconnect overlay when transportReconnecting is false (AC3)', () => {

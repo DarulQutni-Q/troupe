@@ -275,10 +275,12 @@ export function AgentChatPanel({
   const setMode = useAcpStore((s) => s.setMode)
   const pickModel = useAcpStore((s) => s.pickModel)
   const setSwitchPendingOption = useAcpStore((s) => s.setSwitchPendingOption)
-  // Story 5.3 (AC3): WS transport-level reconnect flag (separate from the
-  // session-level `isClosed && isOpeningHistory` banner). Desktop Tauri never
-  // uses the WS transport, so this stays `false` there.
-  const transportReconnecting = useAcpStore((s) => s.transportReconnecting)
+  // Story 5.3 (AC3): reconnecting until the socket is back AND this chat is
+  // resubscribed (a reconnect resubscribes off-screen chats in the background).
+  // Separate from the session-level `isClosed && isOpeningHistory` banner.
+  const chatReconnecting = useAcpStore(
+    (s) => s.transportReconnecting || s.resyncingSessions[sessionId] === true
+  )
   const hostOffline = useConnectionStatusStore((s) => s.controlChannel === 'host-offline')
   const promptCommand = useAcpStore((s) => s.promptCommandStates[sessionId])
   const recheckPromptCommand = useAcpStore((s) => s.recheckPromptCommand)
@@ -287,8 +289,8 @@ export function AgentChatPanel({
   // "Reconnecting…" overlay and the "Waiting to confirm" pill only show once the
   // state has lasted the grace period. "Host offline" is not delayed. Above the
   // early returns so the hook order never changes.
-  const showReconnecting = useDelayedFlag(transportReconnecting, RECONNECT_GRACE_MS)
-  const showTransportOverlay = transportReconnecting && (hostOffline || showReconnecting)
+  const showReconnecting = useDelayedFlag(chatReconnecting, RECONNECT_GRACE_MS)
+  const showTransportOverlay = chatReconnecting && (hostOffline || showReconnecting)
   const showPromptReconcile = useDelayedFlag(
     promptCommand != null && session?.activeTurn === true,
     RECONNECT_GRACE_MS

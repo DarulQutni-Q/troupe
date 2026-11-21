@@ -78,7 +78,11 @@ import {
   type UserPromptEvent
 } from '@/lib/acp-api'
 import { AcpConnectionCoordinator, type AcpRecovery } from '@/lib/acp-connection'
-import { getAcpTransport, isTransientAcpTransportError } from '@/lib/acp-transport'
+import {
+  type AcpTransport,
+  getAcpTransport,
+  isTransientAcpTransportError
+} from '@/lib/acp-transport'
 import { canonicalAgentId } from '@/lib/agents/agent-aliases'
 import { splitReadOnlyGuard } from '@/lib/github-handoff/read-only-guard'
 import { logFrontendError } from '@/lib/log-api'
@@ -235,6 +239,37 @@ export function startChatStartPickPruning(): () => void {
     if (state.sessions === prev.sessions) return
     useChatStartPickStore.getState().prune(new Set(Object.keys(state.sessions)))
   })
+}
+
+/** The chats on screen: the open quick chat and each pane's active chat tab. */
+function visibleChatSessionIds(): string[] {
+  const quickView = useQuickChatStore.getState().view
+  return [
+    ...(quickView.mode === 'chat' ? [quickView.sessionId] : []),
+    ...getVisibleAgentChatSessionIds(useWorkspaceStore.getState())
+  ]
+}
+
+/**
+ * A chat that comes on screen while a reconnect still owes its resubscribe
+ * goes next, ahead of the chats nobody is looking at. Returns the unsubscribe.
+ */
+export function startResyncPromotion(
+  transport: Pick<AcpTransport, 'prioritizeResubscribe'>
+): () => void {
+  let shown = new Set(visibleChatSessionIds())
+  const promoteNewlyShown = (): void => {
+    const next = new Set(visibleChatSessionIds())
+    for (const sid of next) if (!shown.has(sid)) transport.prioritizeResubscribe?.(sid)
+    shown = next
+  }
+  const unsubscribes = [
+    useWorkspaceStore.subscribe(promoteNewlyShown),
+    useQuickChatStore.subscribe(promoteNewlyShown)
+  ]
+  return (): void => {
+    for (const unsubscribe of unsubscribes) unsubscribe()
+  }
 }
 
 // --- Event listener wiring (called once at app mount) ----------------------
@@ -590,11 +625,9 @@ export function initAcpEventListeners(): () => void {
     recoveryGeneration: (sessionId) => sessionReopenGenerations.get(sessionId) ?? 0,
     reconnectPrioritySessions: () => {
       const state = useAcpStore.getState()
-      const quickView = useQuickChatStore.getState().view
       return [
         ...new Set([
-          ...(quickView.mode === 'chat' ? [quickView.sessionId] : []),
-          ...getVisibleAgentChatSessionIds(useWorkspaceStore.getState()),
+          ...visibleChatSessionIds(),
           ...[
             ...Object.values(state.pendingPermissions),
             ...Object.values(state.pendingQuestions),
@@ -604,6 +637,10 @@ export function initAcpEventListeners(): () => void {
         ])
       ]
     },
+    setResyncingSessions: (sessionIds) =>
+      useAcpStore.setState({
+        resyncingSessions: Object.fromEntries(sessionIds.map((sid) => [sid, true as const]))
+      }),
     installPendingPrompts: (sessionId, prompts) =>
       syncPendingPrompts(useAcpStore.getState, useAcpStore.setState, sessionId, prompts),
     setReconnecting: (reconnecting, recovered) => {
@@ -627,6 +664,7 @@ export function initAcpEventListeners(): () => void {
   teardown = [
     startClosedTranscriptEviction(),
     startChatStartPickPruning(),
+    startResyncPromotion(transport),
     // The `agents` watch: every relay transport has one, the desktop's
     // channel carrier included. It carries the roster and the browser policy
     // and automation change hints.

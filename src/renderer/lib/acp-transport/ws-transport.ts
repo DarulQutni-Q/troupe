@@ -124,6 +124,7 @@ import {
   type SubagentSettingsView
 } from './types'
 import { WatchClient } from './watch-client'
+import { SessionResyncQueue } from './ws-session-resync'
 import { SessionResubscribeRetry, type SessionRetryMode } from './ws-session-retry'
 import {
   HANDSHAKE_TIMEOUT_MS,
@@ -294,7 +295,10 @@ export class WsAcpTransport implements AcpTransport {
   private readonly syncGate = new SyncGate()
   /** Sessions we should re-subscribe after reconnect. */
   private readonly subscribed = new Set<string>()
-  private resubscribeOwed = new Set<string>()
+  private readonly resync = new SessionResyncQueue(() => this.emitResyncing())
+  private onResyncChange?: (sessionIds: readonly SessionId[]) => void
+  /** The resyncing session ids last reported to `onResyncChange`, sorted and joined. */
+  private reportedResyncing = ''
   /**
    * The watches (projects, chat-history index, agent roster, project file
    * changes, store keys, terminal sets): frames are routed here from
@@ -377,7 +381,8 @@ export class WsAcpTransport implements AcpTransport {
   private readonly sessionRetry = new SessionResubscribeRetry({
     run: (sid, mode) => this.retrySessionSubscription(sid, mode),
     onGiveUp: (sid, err) => this.giveUpSessionSubscription(sid, err),
-    canRun: () => this.isSocketLive()
+    canRun: () => this.isSocketLive(),
+    onChange: () => this.emitResyncing()
   })
   /**
    * AD-15: the host refused `authenticate` with `protocol_version_mismatch`
@@ -454,6 +459,24 @@ export class WsAcpTransport implements AcpTransport {
 
   setReconnectPriorityProvider(provider: () => SessionId[]): void {
     this.reconnectPriorityProvider = provider
+  }
+
+  setResyncListener(listener: (sessionIds: readonly SessionId[]) => void): void {
+    this.onResyncChange = listener
+  }
+
+  prioritizeResubscribe(sessionId: SessionId): void {
+    this.resync.promote(sessionId)
+  }
+
+  private emitResyncing(): void {
+    const ids = [
+      ...new Set([...this.resync.sessionIds(), ...this.sessionRetry.sessionIds()])
+    ].sort()
+    const key = ids.join('\n')
+    if (key === this.reportedResyncing) return
+    this.reportedResyncing = key
+    this.onResyncChange?.(ids)
   }
 
   setPendingPromptsHandler(handler: PendingPromptsHandler): void {
@@ -594,6 +617,7 @@ export class WsAcpTransport implements AcpTransport {
     this.clearHeartbeat()
     this.clearStableTimer()
     this.sessionRetry.cancelAll()
+    this.resync.clear()
     this.hostProbe.stop()
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer)
@@ -629,21 +653,40 @@ export class WsAcpTransport implements AcpTransport {
   ): Promise<void> {
     await this.connect()
     let cursor = lastSeq
-    // Skip no-op re-subscribe when already live-subscribed (sendPrompt path).
+    // Skip no-op re-subscribe when already live-subscribed (sendPrompt path),
+    // unless the reconnect pass has not resubscribed this chat yet.
     if (!force && lastSeq === undefined && this.subscribed.has(sessionId)) {
-      if (!this.resubscribeOwed.has(sessionId)) return
-      // The reconnect pass has not reached this chat yet: subscribe it now,
-      // from the cursor the pass would use.
+      const inFlight = this.resync.inFlightFor(sessionId)
+      if (inFlight) return inFlight
+      if (!this.resync.isOwed(sessionId)) return
+      // Subscribe it now, from the cursor the pass would use.
       cursor = this.lastSeq.get(sessionId) ?? 0
     }
+    const owedRun = this.resync.claim(sessionId, () =>
+      this.subscribeNow(sessionId, cursor, timeoutMs)
+    )
+    if (!owedRun) return this.subscribeNow(sessionId, cursor, timeoutMs)
+    try {
+      await owedRun
+    } catch (error) {
+      // The pass no longer owes this chat, so a failure here is ours to hand off.
+      this.handOffFailedSubscription(sessionId, error)
+      throw error
+    }
+  }
+
+  private async subscribeNow(
+    sessionId: SessionId,
+    lastSeq: number | null | undefined,
+    timeoutMs?: number
+  ): Promise<void> {
     // Events can overtake the reply on the wire: hold them until the reply
     // says where the replay ends.
     this.beginSync(sessionId)
     let completed = false
     try {
-      await this.requestSubscription(sessionId, cursor, timeoutMs)
+      await this.requestSubscription(sessionId, lastSeq, timeoutMs)
       completed = true
-      this.resubscribeOwed.delete(sessionId)
     } finally {
       this.endSync(sessionId, completed)
     }
@@ -760,7 +803,7 @@ export class WsAcpTransport implements AcpTransport {
         await this.recoveryHandler?.({ sessionId, degraded: true }, reopenGeneration)
       }
       completed = true
-      this.resubscribeOwed.delete(sessionId)
+      this.resync.settle(sessionId)
     } finally {
       this.endSync(sessionId, completed)
     }
@@ -842,15 +885,20 @@ export class WsAcpTransport implements AcpTransport {
       source: 'WsAcpTransport.discontinuity',
       message: `Session ${sessionId} stream is discontinuous (${reason}); installing a snapshot`
     })
-    this.recoverSession(sessionId).catch((error) => {
-      if (this.disposed || !this.subscribed.has(sessionId)) return
-      if (error instanceof AcpTransportError && error.code === WS_ERROR_CODES.NOT_FOUND) {
-        this.dropObsoleteSession(sessionId)
-        return
-      }
-      if (this.isSocketLive()) this.sessionRetry.schedule(sessionId, error)
-      // A dead socket: the reconnect pass resubscribes every session.
-    })
+    this.recoverSession(sessionId).catch((error) =>
+      this.handOffFailedSubscription(sessionId, error)
+    )
+  }
+
+  /** A subscribe outside the reconnect pass failed: retry it alone, or drop a session the host no longer knows. */
+  private handOffFailedSubscription(sessionId: string, error: unknown): void {
+    if (this.disposed || !this.subscribed.has(sessionId)) return
+    if (error instanceof AcpTransportError && error.code === WS_ERROR_CODES.NOT_FOUND) {
+      this.dropObsoleteSession(sessionId)
+      return
+    }
+    if (this.isSocketLive()) this.sessionRetry.schedule(sessionId, error)
+    // A dead socket: the reconnect pass resubscribes every session.
   }
 
   onEvent<T>(eventName: string, callback: (payload: T, eventSeq?: number) => void): () => void {
@@ -1847,6 +1895,7 @@ export class WsAcpTransport implements AcpTransport {
         this.clearHeartbeat()
         this.clearStableTimer()
         this.sessionRetry.cancelAll()
+        this.resync.clear()
         this.rejectAllPending('closed', 'WebSocket closed')
         if (!this.disposed) {
           if (ev?.code === HOST_GOING_AWAY_CLOSE_CODE) this.enterHostOffline()
@@ -2090,6 +2139,7 @@ export class WsAcpTransport implements AcpTransport {
     this.clearHeartbeat()
     this.clearStableTimer()
     this.sessionRetry.cancelAll()
+    this.resync.clear()
     if (old) {
       // Detach so the old socket's close does not double-fire scheduleReconnect
       // / rejectAllPending on an already-tearing-down transport.
@@ -2259,6 +2309,7 @@ export class WsAcpTransport implements AcpTransport {
     this.clearCursor(sid)
     this.seenTurnIds.delete(sid)
     this.sessionRetry.cancel(sid)
+    this.resync.settle(sid)
   }
 
   private async reconnect(): Promise<void> {
@@ -2267,14 +2318,15 @@ export class WsAcpTransport implements AcpTransport {
       // A fresh pass owns every session again; drop retries from a prior socket.
       this.sessionRetry.cancelAll()
       const socket = this.socket
-      const owed = new Set(this.subscribed)
-      this.resubscribeOwed = owed
-      const priority = (this.reconnectPriorityProvider?.() ?? []).filter((sid) => owed.has(sid))
-      await this.resubscribeSessions(socket, owed, priority)
+      const priority = (this.reconnectPriorityProvider?.() ?? []).filter((sid) =>
+        this.subscribed.has(sid)
+      )
+      this.resync.reset([...priority, ...this.subscribed])
+      await this.resubscribeSessions(socket, priority)
       this.reconnecting = false
       this.emitConnectionState('connected')
       this.onReconnectStateChange?.(false, true)
-      void this.resubscribeInBackground(socket, owed)
+      void this.resubscribeInBackground(socket)
     } catch (err) {
       // Story 8 (web honesty): an idle client — no subscribed sessions and no
       // in-flight requests — has nothing to recover, so its reconnect churn
@@ -2294,28 +2346,36 @@ export class WsAcpTransport implements AcpTransport {
     }
   }
 
+  /** Resubscribe each listed session this pass still owes, one at a time. */
   private async resubscribeSessions(
     socket: WebSocket | null,
-    owed: Set<string>,
-    sids: readonly string[]
+    sids: Iterable<string>
   ): Promise<void> {
     const retryingSessions: string[] = []
     const obsoleteSessions: string[] = []
     try {
       for (const sid of sids) {
-        // Without this check `subscribeInternal` would open a new socket
+        // Without this check the subscribe request would open a new socket
         // itself and resubscribe on it, behind the back of that socket's own pass.
         if (this.socket !== socket || !this.isSocketLive()) {
           throw new AcpTransportError('closed', 'WebSocket lost during the resubscribe pass')
         }
-        if (!owed.delete(sid) || !this.subscribed.has(sid)) continue
+        const claimedByPrompt = this.resync.inFlightFor(sid)
+        if (claimedByPrompt) {
+          // Its caller hands a failure off; the pass only waits for it.
+          await claimedByPrompt.catch(() => undefined)
+          continue
+        }
+        if (!this.subscribed.has(sid)) {
+          this.resync.settle(sid)
+          continue
+        }
+        const run = this.resync.claim(sid, () =>
+          this.subscribeNow(sid, this.lastSeq.get(sid) ?? 0, RESUBSCRIBE_TIMEOUT_MS)
+        )
+        if (!run) continue
         try {
-          await this.subscribeInternal(
-            sid,
-            this.lastSeq.get(sid) ?? 0,
-            true,
-            RESUBSCRIBE_TIMEOUT_MS
-          )
+          await run
         } catch (error) {
           if (error instanceof AcpTransportError && error.code === WS_ERROR_CODES.NOT_FOUND) {
             this.dropObsoleteSession(sid)
@@ -2359,12 +2419,9 @@ export class WsAcpTransport implements AcpTransport {
     }
   }
 
-  private async resubscribeInBackground(
-    socket: WebSocket | null,
-    owed: Set<string>
-  ): Promise<void> {
+  private async resubscribeInBackground(socket: WebSocket | null): Promise<void> {
     try {
-      await this.resubscribeSessions(socket, owed, [...owed])
+      await this.resubscribeSessions(socket, this.owedSessions())
     } catch (err) {
       // Whoever closed or replaced this socket already scheduled the next reconnect or entered host-offline.
       if (this.socket !== socket) return
@@ -2376,6 +2433,11 @@ export class WsAcpTransport implements AcpTransport {
       this.discardSocket('background resubscribe failed')
       this.scheduleReconnect()
     }
+  }
+
+  /** The owed sessions, front first, read live so a promoted session goes next. */
+  private *owedSessions(): Generator<string> {
+    for (let sid = this.resync.peek(); sid !== undefined; sid = this.resync.peek()) yield sid
   }
 
   /** One per-session retry attempt (see {@link SessionResubscribeRetry}). */

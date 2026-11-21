@@ -780,6 +780,14 @@ export interface AcpTransport {
    */
   setReconnectPriorityProvider?(provider: () => SessionId[]): void
   /**
+   * Sessions whose stream is not resynced since the last reconnect: still
+   * queued for the background resubscribe, being resubscribed, or waiting on a
+   * per-session retry. Fired with the full sorted list whenever it changes.
+   */
+  setResyncListener?(listener: (sessionIds: readonly SessionId[]) => void): void
+  /** Resubscribe this session next if the running reconnect pass still owes it. */
+  prioritizeResubscribe?(sessionId: SessionId): void
+  /**
    * Issue #1595: register the installer for the host's still-pending
    * approvals, questions and elicitations a `subscribe` / snapshot reply
    * carries (each list authoritative for the session: a request not listed

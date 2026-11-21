@@ -657,6 +657,12 @@ export interface AcpState {
    * (which fires when `openHistorySession` is in flight — both can show).
    */
   transportReconnecting: boolean
+  /**
+   * Sessions the last reconnect has not resubscribed yet (queued for the
+   * background pass, in flight, or retrying). Their panels keep the
+   * "Reconnecting…" overlay after `transportReconnecting` clears.
+   */
+  resyncingSessions: Readonly<Record<SessionId, true>>
   /** Sessions whose stream could not be fully re-synced: recovered live-only (no server snapshot exists) or resubscribe retries ran out. */
   degradedRecoverySessions: Record<SessionId, true>
 
