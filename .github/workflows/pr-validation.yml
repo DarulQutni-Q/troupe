@@ -7,13 +7,19 @@ on:
     # cancel the queued run for the latest commit.
     types: [opened, synchronize, reopened, ready_for_review]
     branches: [main, develop, dev]
+  # Pushes to dev run the Rust jobs so rust-cache saves dev-scoped entries.
+  # A PR can restore caches from its base branch but not from other PRs.
+  # They also record the test file times that PR shards balance with.
+  push:
+    branches: [dev]
 
 permissions:
   contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Merges to dev land minutes apart. Cancelling would drop the cache save.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # Job-level filter. Do not add on.pull_request.paths to this workflow: a
@@ -109,10 +115,23 @@ jobs:
       - name: Run checks
         run: bun scripts/ci/checks.ts
 
+  # bun test on a pinned canary (scripts/test.ts), split into shards that
+  # each finish in about 30 s on a 4-vCPU runner. Every shard computes the
+  # same partition, checks that it covers each test file once, and checks
+  # that its junit report has exactly its own files. Together that proves
+  # the shards ran every file, with no job that waits on the others.
   test:
-    name: Test
+    name: Test (${{ matrix.shard }}/${{ strategy.job-total }})
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      # Reads the timings artifacts of an earlier dev run.
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -127,85 +146,89 @@ jobs:
       - name: Install Bun dependencies
         run: bun install --frozen-lockfile
 
-      - name: Test
-        run: bun run test --reporter=default --reporter=json --outputFile=vitest-report.json
-
-      # Read with tools/ci-audit/test-parity.ts against the bun-junit artifact.
-      - name: Upload vitest report
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
-        with:
-          name: vitest-report
-          path: vitest-report.json
-          retention-days: 14
-
-  # The same suite under bun test, beside vitest, to compare speed and
-  # per-file results before deciding on a switch. Stable Bun lacks
-  # --parallel, --files-from and the jsdom environment, so this pins the
-  # canary that has them. setup-bun's stable Bun still runs bun install.
-  test-bun:
-    name: Test (bun)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        with:
-          bun-version: 1.3.x
-
-      - name: Install Bun dependencies
-        run: bun install --frozen-lockfile
-
+      # Downloads and checks the pinned canary before the timed Test step.
       - name: Install pinned Bun canary
+        run: |
+          bin=$(bun -e "import { canaryBun } from './scripts/test.ts'; console.log(await canaryBun())")
+          "$bin" --version
+
+      # The newest dev run that finished before this run was created. Every
+      # shard, and every rerun of a shard, picks the same one, so they all
+      # compute the same partition. A cache restore picks the newest entry
+      # at restore time, which can differ between shards.
+      - name: Download dev test timings
+        timeout-minutes: 1
         env:
-          BUN_CANARY_URL: https://registry.npmjs.org/@oven/bun-linux-x64/-/bun-linux-x64-1.4.5-canary.20261120.1.tgz
-          # npm view @oven/bun-linux-x64@1.4.5-canary.20261120.1 dist.integrity
-          BUN_CANARY_INTEGRITY: sha512-WeORe6WhB0QEhPu739WCWKFswaplOIoP21RgEk3NmHC5gNOOKmHMiQZuy29bnEwtGqQ8LuBZ+SI57RHxbOhfZQ==
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          DIR: ${{ runner.temp }}/dev-timings
         run: |
           set -euo pipefail
-          dir="$RUNNER_TEMP/bun-canary"
-          mkdir -p "$dir"
-          curl -fsSL -o "$dir/bun.tgz" "$BUN_CANARY_URL"
-          actual="sha512-$(openssl dgst -sha512 -binary "$dir/bun.tgz" | base64 -w0)"
-          if [ "$actual" != "$BUN_CANARY_INTEGRITY" ]; then
-            echo "::error::Bun canary integrity mismatch: got $actual"
-            exit 1
+          mkdir -p "$DIR"
+          created=$(gh api "repos/$REPO/actions/runs/$RUN_ID" --jq .created_at)
+          dev_run=$(gh api "repos/$REPO/actions/workflows/pr-validation.yml/runs?branch=dev&event=push&status=completed&per_page=20" \
+            --jq "[.workflow_runs[] | select(.updated_at < \"$created\")][0].id // empty")
+          if [ -z "$dev_run" ]; then
+            echo "No dev run finished before $created. Using scripts/ci/test-timings.json only."
+            exit 0
           fi
-          tar -xzf "$dir/bun.tgz" -C "$dir" package/bin/bun
-          "$dir/package/bin/bun" --version
-          echo "BUN_CANARY=$dir/package/bin/bun" >> "$GITHUB_ENV"
+          count=$(gh api "repos/$REPO/actions/runs/$dev_run/artifacts?per_page=100" \
+            --jq '[.artifacts[] | select((.name | startswith("test-timings-")) and (.expired | not))] | length')
+          echo "Dev run $dev_run has $count test-timings artifacts."
+          if [ "$count" -gt 0 ]; then
+            gh run download "$dev_run" -R "$REPO" -p 'test-timings-*' -D "$DIR"
+          fi
 
-      # vitest's own include set, so both runners get the same files.
-      - name: List test files
-        timeout-minutes: 2
-        run: ./node_modules/.bin/vitest list --filesOnly > "$RUNNER_TEMP/test-files.txt"
+      - name: Pick this shard's files
+        timeout-minutes: 1
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ strategy.job-total }}
+          OUT: ${{ runner.temp }}/shard
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          bun scripts/ci/shard.ts "$SHARD" "$SHARDS" "$OUT" \
+            scripts/ci/test-timings.json "$RUNNER_TEMP"/dev-timings/*/timings.json
 
-      # 15 s per test matches vitest's testTimeout. Bun's default is 5 s.
+      # The seed comes from the run id, so a rerun of this shard runs the
+      # tests in the same order. bun prints it; `bun run test --seed=<n>`
+      # with this shard's files reproduces the order locally.
       - name: Test
+        timeout-minutes: 1
+        env:
+          OUT: ${{ runner.temp }}/shard
+          RUN_ID: ${{ github.run_id }}
         run: >-
-          "$BUN_CANARY" test
-          --files-from="$RUNNER_TEMP/test-files.txt"
-          --parallel="$(nproc)"
-          --timeout=15000
+          bun scripts/test.ts
+          --files-from="$OUT/files.txt"
+          --seed="$((RUN_ID % 2147483647))"
+          --timings="$OUT/timings.json"
+          --update-timings
           --reporter=junit
           --reporter-outfile=bun-junit.xml
 
-      - name: Check every listed file ran
+      - name: Check this shard ran exactly its files
         if: ${{ !cancelled() }}
-        run: bun scripts/ci/check-junit-files.ts "$RUNNER_TEMP/test-files.txt" bun-junit.xml
+        run: bun scripts/ci/check-junit-files.ts "$RUNNER_TEMP/shard/files.txt" bun-junit.xml
 
       - name: Upload bun junit report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
         with:
-          name: bun-junit
+          name: bun-junit-${{ matrix.shard }}
           path: bun-junit.xml
           retention-days: 14
+
+      # Later runs balance their shards with these file times.
+      - name: Upload test timings
+        if: ${{ !cancelled() && github.event_name == 'push' }}
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: test-timings-${{ matrix.shard }}
+          path: ${{ runner.temp }}/shard/timings.json
+          retention-days: 30
 
   rust-checks:
     name: Rust Checks

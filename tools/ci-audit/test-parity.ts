@@ -1,60 +1,51 @@
-// Compares the vitest and bun test runs of one PR Validation run, file by file.
-//   bun tools/ci-audit/test-parity.ts <run-id> [--repo owner/name]
-// Downloads the `vitest-report` (vitest JSON) and `bun-junit` (bun junit XML)
-// artifacts with `gh run download`, then prints both Test step wall times,
-// files missing on either side, and every file whose test counts differ.
-import { mkdtempSync } from 'node:fs'
+// Audits the sharded bun test jobs of one PR Validation run.
+//   bun tools/ci-audit/test-parity.ts <run-id> [--baseline <run-id>] [--repo owner/name]
+// Downloads every `bun-junit*` artifact with `gh run download`, then prints
+// each Test shard's Test step and job seconds, the run's time to result for
+// Checks and the shards, the totals, and any file run by no shard or by more
+// than one. With --baseline, also lists every file whose test counts differ
+// from the baseline run's.
+import { mkdtempSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 type Counts = { tests: number; failed: number; skipped: number }
 type Side = Map<string, Counts>
-
-type VitestReport = {
-  testResults: { name: string; status: string; assertionResults: { status: string }[] }[]
+type Job = {
+  name: string
+  conclusion: string
+  startedAt: string
+  completedAt: string
+  steps: { name: string; startedAt: string; completedAt: string }[]
 }
-type RunJobs = {
-  jobs: {
-    name: string
-    conclusion: string
-    steps: { name: string; startedAt: string; completedAt: string }[]
-  }[]
-}
+type Run = { createdAt: string; jobs: Job[] }
 
-const SIDES = [
-  { label: 'vitest', job: 'Test', artifact: 'vitest-report' },
-  { label: 'bun', job: 'Test (bun)', artifact: 'bun-junit' }
-] as const
-
-function parseArgs(argv: string[]): { runId: string; repo: string[] } {
-  const [runId, flag, repo] = argv
-  if (!runId || !/^\d+$/.test(runId) || (flag !== undefined && (flag !== '--repo' || !repo))) {
-    console.error('usage: bun tools/ci-audit/test-parity.ts <run-id> [--repo owner/name]')
+function parseArgs(argv: string[]): { runId: string; baseline?: string; repo: string[] } {
+  const usage =
+    'usage: bun tools/ci-audit/test-parity.ts <run-id> [--baseline <run-id>] [--repo owner/name]'
+  const [runId, ...rest] = argv
+  const options: Record<string, string> = {}
+  for (let i = 0; i < rest.length; i += 2) {
+    const [flag, value] = [rest[i], rest[i + 1]]
+    if ((flag !== '--baseline' && flag !== '--repo') || !value) {
+      console.error(usage)
+      process.exit(2)
+    }
+    options[flag] = value
+  }
+  if (
+    !runId ||
+    !/^\d+$/.test(runId) ||
+    (options['--baseline'] && !/^\d+$/.test(options['--baseline']))
+  ) {
+    console.error(usage)
     process.exit(2)
   }
-  return { runId, repo: repo ? ['--repo', repo] : [] }
-}
-
-function commonDir(paths: string[]): string {
-  let prefix = paths[0] ?? ''
-  for (const path of paths) while (!path.startsWith(prefix)) prefix = prefix.slice(0, -1)
-  return prefix.slice(0, prefix.lastIndexOf('/') + 1)
-}
-
-function parseVitest(report: VitestReport): Side {
-  const root = commonDir(report.testResults.map((result) => result.name))
-  const side: Side = new Map()
-  for (const result of report.testResults) {
-    const statuses = result.assertionResults.map((assertion) => assertion.status)
-    const failed = statuses.filter((status) => status === 'failed').length
-    side.set(result.name.slice(root.length), {
-      tests: statuses.length,
-      // A file that fails outside any test (import or hook error) has no failed test.
-      failed: failed === 0 && result.status === 'failed' ? 1 : failed,
-      skipped: statuses.filter((status) => ['skipped', 'pending', 'todo'].includes(status)).length
-    })
+  return {
+    runId,
+    baseline: options['--baseline'],
+    repo: options['--repo'] ? ['--repo', options['--repo']] : []
   }
-  return side
 }
 
 // Bun reports an error thrown outside any test as a testcase named
@@ -84,57 +75,91 @@ function parseBunJunit(xml: string): Side {
   return side
 }
 
-function stepSeconds(jobs: RunJobs, jobName: string): string {
-  const job = jobs.jobs.find((candidate) => candidate.name === jobName)
-  const step = job?.steps.find((candidate) => candidate.name === 'Test')
-  if (!job || !step) return 'n/a'
-  const seconds = (Date.parse(step.completedAt) - Date.parse(step.startedAt)) / 1000
-  return `${seconds}s (job ${job.conclusion || 'in progress'})`
+/** One Side per downloaded junit artifact, keyed by artifact name. */
+async function downloadJunit(runId: string, repo: string[]): Promise<Map<string, Side>> {
+  const dir = mkdtempSync(join(tmpdir(), `test-parity-${runId}-`))
+  await Bun.$`gh run download ${runId} ${repo} -p ${'bun-junit*'} -D ${dir}`.quiet()
+  const sides = new Map<string, Side>()
+  for (const artifact of readdirSync(dir).sort()) {
+    sides.set(artifact, parseBunJunit(await Bun.file(join(dir, artifact, 'bun-junit.xml')).text()))
+  }
+  return sides
 }
 
-function total(side: Side): Counts {
+const seconds = (from: string, to: string): number => (Date.parse(to) - Date.parse(from)) / 1000
+
+function total(sides: Iterable<Side>): Counts {
   const sum = { tests: 0, failed: 0, skipped: 0 }
-  for (const counts of side.values()) {
-    sum.tests += counts.tests
-    sum.failed += counts.failed
-    sum.skipped += counts.skipped
+  for (const side of sides) {
+    for (const counts of side.values()) {
+      sum.tests += counts.tests
+      sum.failed += counts.failed
+      sum.skipped += counts.skipped
+    }
   }
   return sum
+}
+
+function merge(sides: Iterable<Side>): { merged: Side; runs: Map<string, number> } {
+  const merged: Side = new Map()
+  const runs = new Map<string, number>()
+  for (const side of sides) {
+    for (const [file, counts] of side) {
+      merged.set(file, counts)
+      runs.set(file, (runs.get(file) ?? 0) + 1)
+    }
+  }
+  return { merged, runs }
 }
 
 const format = (counts: Counts | undefined): string =>
   counts ? `${counts.tests} tests, ${counts.failed} failed, ${counts.skipped} skipped` : 'missing'
 
-const { runId, repo } = parseArgs(process.argv.slice(2))
-const dir = mkdtempSync(join(tmpdir(), `test-parity-${runId}-`))
-const artifactFlags = SIDES.flatMap((side) => ['-n', side.artifact])
-await Bun.$`gh run download ${runId} ${repo} ${artifactFlags} -D ${dir}`
-const jobs: RunJobs = await Bun.$`gh run view ${runId} ${repo} --json jobs`.json()
-
-const vitest = parseVitest(await Bun.file(join(dir, 'vitest-report', 'vitest-report.json')).json())
-const bun = parseBunJunit(await Bun.file(join(dir, 'bun-junit', 'bun-junit.xml')).text())
-const sides: Record<(typeof SIDES)[number]['label'], Side> = { vitest, bun }
+const { runId, baseline, repo } = parseArgs(process.argv.slice(2))
+const run: Run = await Bun.$`gh run view ${runId} ${repo} --json createdAt,jobs`.json()
+const shards = await downloadJunit(runId, repo)
 
 console.log(`run ${runId}`)
-for (const side of SIDES) {
+const testJobs = run.jobs
+  .filter((job) => /^Test \(\d+\/\d+\)$/.test(job.name))
+  .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+for (const job of testJobs) {
+  const step = job.steps.find((candidate) => candidate.name === 'Test')
+  const stepSeconds = step ? seconds(step.startedAt, step.completedAt) : Number.NaN
   console.log(
-    `${side.label.padEnd(7)} Test step ${stepSeconds(jobs, side.job)}; ${sides[side.label].size} files; ${format(total(sides[side.label]))}`
+    `${job.name}: Test step ${stepSeconds} s, job ${seconds(job.startedAt, job.completedAt)} s, ${job.conclusion || 'in progress'}`
   )
 }
+const resultJobs = run.jobs.filter((job) => job.name === 'Checks' || testJobs.includes(job))
+const done = resultJobs
+  .map((job) => job.completedAt)
+  .sort()
+  .at(-1)
+if (done) console.log(`time to result (Checks and Test shards): ${seconds(run.createdAt, done)} s`)
 
-const files = [...new Set([...vitest.keys(), ...bun.keys()])].sort()
-const missing = files.filter((file) => !vitest.has(file) || !bun.has(file))
-const differing = files.filter((file) => {
-  const a = vitest.get(file)
-  const b = bun.get(file)
-  return a && b && (a.tests !== b.tests || a.failed !== b.failed || a.skipped !== b.skipped)
-})
+const totals = total(shards.values())
+const { merged, runs } = merge(shards.values())
+console.log(
+  `${shards.size} junit reports; ${merged.size} distinct files; ${totals.tests} tests, ${totals.failed} failed, ${totals.skipped} skipped`
+)
+const repeated = [...runs].filter(([, count]) => count > 1)
+console.log(`files in more than one report: ${repeated.length}`)
+for (const [file, count] of repeated) console.log(`  ${file}: ${count}`)
 
-console.log(`\nfiles missing on one side: ${missing.length}`)
-for (const file of missing) {
-  console.log(`  ${file}: vitest ${format(vitest.get(file))}; bun ${format(bun.get(file))}`)
-}
-console.log(`\nfiles whose counts differ: ${differing.length}`)
-for (const file of differing) {
-  console.log(`  ${file}: vitest ${format(vitest.get(file))}; bun ${format(bun.get(file))}`)
+if (baseline) {
+  const { merged: base } = merge((await downloadJunit(baseline, repo)).values())
+  const files = [...new Set([...base.keys(), ...merged.keys()])].sort()
+  const missing = files.filter((file) => !base.has(file) || !merged.has(file))
+  const differing = files.filter((file) => {
+    const a = base.get(file)
+    const b = merged.get(file)
+    return a && b && (a.tests !== b.tests || a.failed !== b.failed || a.skipped !== b.skipped)
+  })
+  console.log(`\nbaseline ${baseline}: ${base.size} files, ${format(total([base]))}`)
+  console.log(`files missing on one side: ${missing.length}`)
+  for (const file of missing)
+    console.log(`  ${file}: baseline ${format(base.get(file))}; run ${format(merged.get(file))}`)
+  console.log(`files whose counts differ: ${differing.length}`)
+  for (const file of differing)
+    console.log(`  ${file}: baseline ${format(base.get(file))}; run ${format(merged.get(file))}`)
 }
