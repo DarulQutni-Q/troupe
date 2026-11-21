@@ -180,8 +180,10 @@ jobs:
           "$dir/package/bin/bun" --version
           echo "BUN_CANARY=$dir/package/bin/bun" >> "$GITHUB_ENV"
 
+      # vitest's own include set, so both runners get the same files.
       - name: List test files
-        run: bun scripts/ci/test-files.ts > "$RUNNER_TEMP/test-files.txt"
+        timeout-minutes: 2
+        run: ./node_modules/.bin/vitest list --filesOnly > "$RUNNER_TEMP/test-files.txt"
 
       # 15 s per test matches vitest's testTimeout. Bun's default is 5 s.
       - name: Test
@@ -195,7 +197,7 @@ jobs:
 
       - name: Check every listed file ran
         if: ${{ !cancelled() }}
-        run: bun scripts/ci/test-files.ts --check bun-junit.xml
+        run: bun scripts/ci/check-junit-files.ts "$RUNNER_TEMP/test-files.txt" bun-junit.xml
 
       - name: Upload bun junit report
         if: ${{ !cancelled() }}
