@@ -316,8 +316,18 @@ export async function launchChat(page, origin, project, prompt) {
   await page
     .getByRole('heading', { level: 1, name: `What should we do in ${project.name}?` })
     .waitFor({ state: 'visible', timeout: 60_000 })
+  await startFromLauncher(page, prompt)
+}
+
+export async function launchNextChat(page, prompt) {
+  await page.getByRole('button', { name: 'New chat', exact: true }).first().click()
+  await startFromLauncher(page, prompt)
+}
+
+async function startFromLauncher(page, prompt) {
   const launcher = page.getByRole('textbox', { name: 'Agent prompt' })
   const start = page.getByRole('button', { name: 'Start agent chat' })
+  await launcher.waitFor({ state: 'visible', timeout: 30_000 })
   const deadline = Date.now() + 40_000
   for (;;) {
     await launcher.focus()
@@ -329,4 +339,11 @@ export async function launchChat(page, origin, project, prompt) {
   }
   await start.click()
   await launcher.waitFor({ state: 'hidden', timeout: 60_000 })
+}
+
+export async function waitForReply(page, prompt) {
+  await page
+    .getByText(`Replied to: ${prompt}`)
+    .first()
+    .waitFor({ state: 'visible', timeout: 60_000 })
 }
