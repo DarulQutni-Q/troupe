@@ -15,6 +15,11 @@ on:
 permissions:
   contents: read
 
+env:
+  # File and line tables only. Backtraces keep file:line, and codegen, links
+  # and the cache get smaller. The test profile inherits this from dev.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   # Merges to dev land minutes apart. Cancelling would drop the cache save.
