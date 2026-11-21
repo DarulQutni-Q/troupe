@@ -48,11 +48,13 @@ export function LinkChip({
       ) : (
         <Globe size={12} className="shrink-0 text-muted-foreground" aria-hidden="true" />
       )}
-      <span className="max-w-[48ch] truncate underline underline-offset-2">{label}</span>
+      <span className="max-w-[48ch] truncate pb-px leading-tight underline underline-offset-2">
+        {label}
+      </span>
     </>
   )
   const chipClass = cn(
-    'inline-flex max-w-full items-center gap-1 align-bottom font-medium text-primary',
+    'inline-flex max-w-full items-center gap-1 align-middle leading-none font-medium text-primary',
     className
   )
   if (variant === 'static') {

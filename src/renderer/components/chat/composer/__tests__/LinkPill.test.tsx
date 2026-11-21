@@ -9,7 +9,7 @@ import { fileToken } from '@/lib/skill-tokens'
 import { ChatComposerEditor } from '../ChatComposerEditor'
 import { getComposerValue, setComposerValue } from '../chat-composer-test-helpers'
 import { FilePill } from '../FilePillNode'
-import { LinkPill } from '../LinkPillNode'
+import { findClosedLinks, LinkPill } from '../LinkPillNode'
 
 vi.mock('@/lib/link-preview-api', () => ({
   loadLinkPreview: vi.fn(() =>
@@ -46,11 +46,11 @@ function pasteEvent(text: string): Event {
   return ev
 }
 
+/** A plain insert, as an IME / autocorrect commit lands: no input rule runs. */
 function typeText(editor: Editor, text: string): void {
   const { view } = editor
   const { from, to } = view.state.selection
-  const handled = view.someProp('handleTextInput', (f) => f(view, from, to, text))
-  if (!handled) view.dispatch(view.state.tr.insertText(text, from, to))
+  view.dispatch(view.state.tr.insertText(text, from, to))
 }
 
 afterEach(() => {
@@ -85,6 +85,24 @@ describe('link pill model', () => {
     ]) {
       expect(roundTrip(value)).toBe(value)
     }
+  })
+})
+
+describe('findClosedLinks', () => {
+  it('finds only URLs closed by whitespace, across mark-split text nodes', () => {
+    const doc = schema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          content: [
+            { type: 'text', text: 'a https://a.dev' },
+            { type: 'text', text: '/x b https://typing.dev' }
+          ]
+        }
+      ]
+    })
+    expect(findClosedLinks(doc)).toEqual([[3, 18, 'https://a.dev/x']])
   })
 })
 

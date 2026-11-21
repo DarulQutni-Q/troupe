@@ -321,6 +321,10 @@ export function ChatComposerEditor({
           horizontalRule: false,
           bold: false,
           italic: false,
+          // StarterKit v3 bundles Link (autolink marks). The composer shows
+          // links as `linkPill` nodes instead; a link mark would split the
+          // text and compete with that conversion.
+          link: false,
           strike: false,
           listItem: false,
           orderedList: false
