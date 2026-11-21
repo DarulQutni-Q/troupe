@@ -469,10 +469,15 @@ export class WsAcpTransport implements AcpTransport {
     this.resync.promote(sessionId)
   }
 
+  /**
+   * Report the sessions not yet resynced. While the channel is reconnecting
+   * every chat already shows it, so none is reported then: the store hears
+   * about the background sessions once, as the channel goes live.
+   */
   private emitResyncing(): void {
-    const ids = [
-      ...new Set([...this.resync.sessionIds(), ...this.sessionRetry.sessionIds()])
-    ].sort()
+    const ids = this.reconnecting
+      ? []
+      : [...new Set([...this.resync.sessionIds(), ...this.sessionRetry.sessionIds()])].sort()
     const key = ids.join('\n')
     if (key === this.reportedResyncing) return
     this.reportedResyncing = key
@@ -2234,6 +2239,7 @@ export class WsAcpTransport implements AcpTransport {
     }
     if (!this.reconnecting) {
       this.reconnecting = true
+      this.emitResyncing()
       this.onReconnectStateChange?.(true)
     }
     this.emitConnectionState('host-offline')
@@ -2271,6 +2277,7 @@ export class WsAcpTransport implements AcpTransport {
     // delay. The listener is a no-op on Tauri desktop (never set).
     if (!this.reconnecting) {
       this.reconnecting = true
+      this.emitResyncing()
       this.onReconnectStateChange?.(true)
       // Story 10: coarse health feed — a drop was detected and the backoff
       // loop is engaging. Fired alongside `onReconnectStateChange(true)`.
@@ -2324,6 +2331,7 @@ export class WsAcpTransport implements AcpTransport {
       this.resync.reset([...priority, ...this.subscribed])
       await this.resubscribeSessions(socket, priority)
       this.reconnecting = false
+      this.emitResyncing()
       this.emitConnectionState('connected')
       this.onReconnectStateChange?.(false, true)
       void this.resubscribeInBackground(socket)
@@ -2686,6 +2694,7 @@ export class WsAcpTransport implements AcpTransport {
           // latch inside the helper); a bad identity is a plain halt.
           this.protocolHalted = err
           this.reconnecting = false
+          this.emitResyncing()
           this.reconnectAttempt = 0
           this.onReconnectStateChange?.(false)
           this.emitConnectionState('disconnected')
@@ -2723,6 +2732,7 @@ export class WsAcpTransport implements AcpTransport {
           // first post-recovery blip would inherit the fully elevated
           // backoff instead of starting from the base delay.
           this.reconnecting = false
+          this.emitResyncing()
           this.reconnectAttempt = 0
           this.onReconnectStateChange?.(false, false)
           this.emitConnectionState('disconnected')

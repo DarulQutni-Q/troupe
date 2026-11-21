@@ -4336,19 +4336,20 @@ describe('WsAcpTransport reconnect resubscribes the priority sessions first', ()
     transport.dispose()
   })
 
-  it('reports each chat as resyncing until its own resubscribe completes', async () => {
-    const { transport, socket, resyncing } = await reconnectWithVisibleLast()
-    expect(resyncing).toEqual([['sess-a', 'sess-b', 'sess-visible']])
+  it('reports the background chats as resyncing once the channel is live, each until its resubscribe completes', async () => {
+    const { transport, socket, resyncing, reconnectStates } = await reconnectWithVisibleLast()
+    expect(resyncing).toEqual([])
 
     socket.answer('sess-visible')
     await vi.advanceTimersByTimeAsync(0)
-    expect(resyncing.at(-1)).toEqual(['sess-a', 'sess-b'])
+    expect(reconnectStates).toEqual([true, false])
+    expect(resyncing).toEqual([['sess-a', 'sess-b']])
     socket.answer('sess-a')
     await vi.advanceTimersByTimeAsync(0)
     expect(resyncing.at(-1)).toEqual(['sess-b'])
     socket.answer('sess-b')
     await vi.advanceTimersByTimeAsync(0)
-    expect(resyncing.at(-1)).toEqual([])
+    expect(resyncing).toEqual([['sess-a', 'sess-b'], ['sess-b'], []])
     transport.dispose()
   })
 
