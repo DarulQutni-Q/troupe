@@ -100,12 +100,16 @@ export function SelectorPanel(props: SelectorPanelProps): React.JSX.Element {
         onPick={() => pick(configId, catalog, model.value)}
       />
     ))
+  // V1 has no setup view: the launcher picks a not-set-up agent at once and
+  // saves its config (#907), so that row keeps no "Not set up" pill there.
+  // Chat cannot arm it (the store rejects the arm), so the row is disabled.
+  const pickNow = (tab: AgentTab): boolean => notSetUp(tab) && sw.selectAgent != null
   const agentRow = (tab: AgentTab, onPick: () => void, key = tab.configId): ReactNode => (
     <AgentRow
       key={key}
       tab={tab}
-      badge={badgeOf(tab)}
-      disabled={disabled || notSetUp(tab)}
+      badge={pickNow(tab) ? (hasUpdate(tab) ? 'Update' : null) : badgeOf(tab)}
+      disabled={disabled || (notSetUp(tab) && !pickNow(tab))}
       touch={touch}
       onPick={onPick}
     />
