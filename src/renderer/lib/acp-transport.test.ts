@@ -4335,6 +4335,27 @@ describe('WsAcpTransport reconnect resubscribes the priority sessions first', ()
     transport.dispose()
   })
 
+  it('probes and tears down a half-open socket when a prompt-claimed priority resubscribe times out', async () => {
+    const { transport, socket, reconnectStates } = await reconnectWithVisibleLast([
+      'sess-visible',
+      'sess-b'
+    ])
+    const outcome = transport.sendPrompt('a1', 'sess-b', 'hello').then(
+      () => 'sent',
+      (error: AcpTransportError) => error.code
+    )
+    await vi.advanceTimersByTimeAsync(0)
+    expect(socket.subscribedIds()).toEqual(['sess-visible', 'sess-b'])
+    socket.holdPing = true
+    socket.answer('sess-visible')
+    await vi.advanceTimersByTimeAsync(15_000 + 100)
+    expect(await outcome).toBe('timeout')
+    await vi.advanceTimersByTimeAsync(5_100)
+    expect(socket.readyState).toBe(FakeWebSocket.CLOSED)
+    expect(reconnectStates).toEqual([true])
+    transport.dispose()
+  })
+
   it('rejects a prompt whose in-flight background subscribe fails, without sending it, and retries the chat', async () => {
     const { transport, socket, resyncing } = await reconnectWithVisibleLast()
     socket.answer('sess-visible')

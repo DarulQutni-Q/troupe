@@ -2356,6 +2356,25 @@ export class WsAcpTransport implements AcpTransport {
     }
   }
 
+  /**
+   * A timeout on a socket that still reads OPEN may be a half-open link; probe
+   * once so each remaining session doesn't stall another RESUBSCRIBE_TIMEOUT_MS.
+   * Rethrows `error` when the probe fails.
+   */
+  private async probeAfterResubscribeTimeout(sid: string, error: unknown): Promise<void> {
+    if (!(error instanceof AcpTransportError) || error.code !== 'timeout') return
+    try {
+      await this.request<void>('ping', {}, RESUME_PROBE_TIMEOUT_MS)
+    } catch (probeError) {
+      void logFrontendError({
+        level: 'warn',
+        source: 'WsAcpTransport.reconnect',
+        message: `Resubscribe of ${sid} timed out and the socket failed its probe (half-open link): ${String(probeError)}`
+      })
+      throw error
+    }
+  }
+
   /** Resubscribe each listed session this pass still owes, one at a time. */
   private async resubscribeSessions(
     socket: WebSocket | null,
@@ -2372,11 +2391,15 @@ export class WsAcpTransport implements AcpTransport {
         }
         const claimedByPrompt = this.resync.inFlightFor(sid)
         if (claimedByPrompt) {
-          // Its caller hands a failure off; the pass only waits for it.
-          await claimedByPrompt.catch(() => undefined)
+          // Its caller hands a failure off; the pass only checks the link.
+          const error = await claimedByPrompt.then(
+            () => null,
+            (err: unknown) => err
+          )
           if (this.socket !== socket || !this.isSocketLive()) {
             throw new AcpTransportError('closed', 'WebSocket lost during the resubscribe pass')
           }
+          if (error) await this.probeAfterResubscribeTimeout(sid, error)
           continue
         }
         if (!this.subscribed.has(sid)) {
@@ -2396,19 +2419,7 @@ export class WsAcpTransport implements AcpTransport {
           } else if (!this.isSocketLive()) {
             throw error
           } else {
-            // A timeout on a socket that still reads OPEN may be a half-open link; probe once so each remaining session doesn't stall another RESUBSCRIBE_TIMEOUT_MS.
-            if (error instanceof AcpTransportError && error.code === 'timeout') {
-              try {
-                await this.request<void>('ping', {}, RESUME_PROBE_TIMEOUT_MS)
-              } catch (probeError) {
-                void logFrontendError({
-                  level: 'warn',
-                  source: 'WsAcpTransport.reconnect',
-                  message: `Resubscribe of ${sid} timed out and the socket failed its probe (half-open link): ${String(probeError)}`
-                })
-                throw error
-              }
-            }
+            await this.probeAfterResubscribeTimeout(sid, error)
             retryingSessions.push(sid)
             this.sessionRetry.schedule(sid, error)
           }
