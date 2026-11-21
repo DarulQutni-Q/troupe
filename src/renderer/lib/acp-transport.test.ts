@@ -4356,6 +4356,25 @@ describe('WsAcpTransport reconnect resubscribes the priority sessions first', ()
     transport.dispose()
   })
 
+  it('keeps a background chat resyncing and subscribes it before a prompt while its timeout probe runs', async () => {
+    const { transport, socket, resyncing } = await reconnectWithVisibleLast()
+    socket.answer('sess-visible')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(socket.subscribedIds()).toEqual(['sess-visible', 'sess-a'])
+    socket.holdPing = true
+    await vi.advanceTimersByTimeAsync(15_000 + 100)
+    expect(resyncing.at(-1)).toContain('sess-a')
+
+    void transport.sendPrompt('a1', 'sess-a', 'hello').catch(() => undefined)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(promptAndSubscribeFrames(socket)).toEqual([
+      ['subscribe', 'sess-visible'],
+      ['subscribe', 'sess-a'],
+      ['subscribe', 'sess-a']
+    ])
+    transport.dispose()
+  })
+
   it('rejects a prompt whose in-flight background subscribe fails, without sending it, and retries the chat', async () => {
     const { transport, socket, resyncing } = await reconnectWithVisibleLast()
     socket.answer('sess-visible')

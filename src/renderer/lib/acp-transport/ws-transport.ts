@@ -2419,9 +2419,11 @@ export class WsAcpTransport implements AcpTransport {
           } else if (!this.isSocketLive()) {
             throw error
           } else {
-            await this.probeAfterResubscribeTimeout(sid, error)
+            // Armed before the probe so the chat reads as retrying (not live) while
+            // it runs; a failed probe tears the socket down, which cancels it.
             retryingSessions.push(sid)
             this.sessionRetry.schedule(sid, error)
+            await this.probeAfterResubscribeTimeout(sid, error)
           }
         }
       }
