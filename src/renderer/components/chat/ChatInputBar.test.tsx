@@ -386,6 +386,11 @@ vi.mock('@/lib/acp-api', () => ({
 beforeEach(() => {
   persistenceStore.clear()
   fakePersistenceApi.readFails = false
+  fakePersistenceApi.read.mockClear()
+  fakePersistenceApi.write.mockClear()
+  fakePersistenceApi.writeDebounced.mockClear()
+  fakePersistenceApi.delete.mockClear()
+  fakePersistenceApi.flushPendingWrites.mockClear()
   // Start each test from a clean skill slate (web/no-skills default). Skill
   // tests override mockSkills.current.
   mockSkills.current = []
