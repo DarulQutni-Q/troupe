@@ -7,13 +7,18 @@ on:
     # cancel the queued run for the latest commit.
     types: [opened, synchronize, reopened, ready_for_review]
     branches: [main, develop, dev]
+  # Pushes to dev run the Rust jobs so rust-cache saves dev-scoped entries.
+  # A PR can restore caches from its base branch but not from other PRs.
+  push:
+    branches: [dev]
 
 permissions:
   contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Merges to dev land minutes apart. Cancelling would drop the cache save.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # Job-level filter. Do not add on.pull_request.paths to this workflow: a
@@ -35,7 +40,8 @@ jobs:
         id: filter
         shell: bash
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # A push compares against the previous tip of the branch.
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           set -euo pipefail
 
@@ -153,6 +159,8 @@ jobs:
         with:
           workspaces: src-tauri
           cache-on-failure: true
+          # PR-scoped caches are invisible to other PRs and crowd the 10 GB cap.
+          save-if: ${{ github.ref == 'refs/heads/dev' }}
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -246,6 +254,8 @@ jobs:
         with:
           workspaces: src-tauri
           cache-on-failure: true
+          # PR-scoped caches are invisible to other PRs and crowd the 10 GB cap.
+          save-if: ${{ github.ref == 'refs/heads/dev' }}
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -303,6 +313,8 @@ jobs:
         with:
           workspaces: src-tauri
           cache-on-failure: true
+          # PR-scoped caches are invisible to other PRs and crowd the 10 GB cap.
+          save-if: ${{ github.ref == 'refs/heads/dev' }}
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
