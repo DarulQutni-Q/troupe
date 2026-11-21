@@ -85,13 +85,9 @@ import { logFrontendError } from '@/lib/log-api'
 import type { McpInstallRequestEvent, McpInstallResolvedEvent } from '@/lib/mcp-install-request'
 import { foldRecoveredPlan, markPlanTool } from '@/lib/plan-session'
 import { wireBlocksToDisplay } from '@/lib/skills-wire-reverse'
+import { useChatActivityStore } from '@/stores/chat-activity-store'
 import { useChatStartPickStore } from '@/stores/chat-start-pick-store'
-import { useQuickChatStore } from '@/stores/quick-chat-store'
-import {
-  getAgentChatSessionIdsInAllTrees,
-  getVisibleAgentChatSessionIds,
-  useWorkspaceStore
-} from '@/stores/workspace-store'
+import { getAgentChatSessionIdsInAllTrees, useWorkspaceStore } from '@/stores/workspace-store'
 import type { QueuedPrompt } from '../prompt-queue-orchestration'
 import { attachAgentRosterWatch } from './agent-roster-watch'
 import {
@@ -590,11 +586,9 @@ export function initAcpEventListeners(): () => void {
     recoveryGeneration: (sessionId) => sessionReopenGenerations.get(sessionId) ?? 0,
     reconnectPrioritySessions: () => {
       const state = useAcpStore.getState()
-      const quickView = useQuickChatStore.getState().view
       return [
         ...new Set([
-          ...(quickView.mode === 'chat' ? [quickView.sessionId] : []),
-          ...getVisibleAgentChatSessionIds(useWorkspaceStore.getState()),
+          ...useChatActivityStore.getState().viewing,
           ...[
             ...Object.values(state.pendingPermissions),
             ...Object.values(state.pendingQuestions),

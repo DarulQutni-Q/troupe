@@ -659,9 +659,10 @@ export class WsAcpTransport implements AcpTransport {
     await this.connect()
     let cursor = lastSeq
     // Skip no-op re-subscribe when already live-subscribed (sendPrompt path),
-    // unless the reconnect pass has not resubscribed this chat yet.
+    // unless the reconnect pass has not resubscribed this chat yet or its
+    // retry waits on a timer (that retry runs now instead).
     if (!force && lastSeq === undefined && this.subscribed.has(sessionId)) {
-      const inFlight = this.resync.inFlightFor(sessionId)
+      const inFlight = this.resync.inFlightFor(sessionId) ?? this.sessionRetry.runNow(sessionId)
       if (inFlight) return inFlight
       if (!this.resync.isOwed(sessionId)) return
       // Subscribe it now, from the cursor the pass would use.

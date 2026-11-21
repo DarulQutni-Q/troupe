@@ -37,6 +37,7 @@ import {
   WsAcpTransport
 } from './acp-transport'
 import { DesktopAcpTransport } from './acp-transport/desktop-transport'
+import { SESSION_RETRY_MAX_MS } from './acp-transport/ws-session-retry'
 import { classifySetupError } from './agents/acp-spawn-errors'
 
 // Reconnect backoff carries ±25 % jitter; pin it to the neutral factor so the
@@ -4500,6 +4501,42 @@ describe('WsAcpTransport reconnect resubscribes the priority sessions first', ()
       ['send_prompt', 'sess-b', undefined]
     ])
     expect(socket.held).toEqual([])
+    transport.dispose()
+  })
+
+  it('subscribes a chat whose background resubscribe failed before sending its prompt, and drops its pending retry', async () => {
+    const { transport, socket, resyncing } = await reconnectWithVisibleLast(['sess-visible'], {
+      'sess-a': 5
+    })
+    socket.answer('sess-visible')
+    await vi.advanceTimersByTimeAsync(0)
+    socket.answer('sess-a', 'internal')
+    await vi.advanceTimersByTimeAsync(0)
+    socket.answer('sess-b')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(resyncing.at(-1)).toEqual(['sess-a'])
+
+    const sent = transport.sendPrompt('a1', 'sess-a', 'hello')
+    await vi.advanceTimersByTimeAsync(0)
+    socket.answer('sess-a')
+    await sent
+    await vi.advanceTimersByTimeAsync(SESSION_RETRY_MAX_MS)
+
+    const frames = socket.sent
+      .map(
+        (raw) =>
+          JSON.parse(raw) as { type: string; payload: { sessionId: string; lastSeq?: number } }
+      )
+      .filter((req) => req.type === 'subscribe' || req.type === 'send_prompt')
+      .map((req) => [req.type, req.payload.sessionId, req.payload.lastSeq])
+    expect(frames).toEqual([
+      ['subscribe', 'sess-visible', 0],
+      ['subscribe', 'sess-a', 5],
+      ['subscribe', 'sess-b', 0],
+      ['subscribe', 'sess-a', 5],
+      ['send_prompt', 'sess-a', undefined]
+    ])
+    expect(resyncing.at(-1)).toEqual([])
     transport.dispose()
   })
 

@@ -66,10 +66,24 @@ export class SessionResubscribeRetry {
     entry.attempt += 1
     entry.timer = setTimeout(() => {
       entry.timer = null
-      void this.fire(sessionId, entry)
+      // A failed attempt is already rescheduled.
+      this.fire(sessionId, entry).catch(() => undefined)
     }, delay)
     this.entries.set(sessionId, entry)
     this.deps.onChange?.()
+  }
+
+  /**
+   * Run a retry that waits on its timer now, keeping its attempt count. Settles
+   * with that attempt, after a failure is rescheduled. `undefined` when
+   * `sessionId` has no retry waiting.
+   */
+  runNow(sessionId: string): Promise<void> | undefined {
+    const entry = this.entries.get(sessionId)
+    if (!entry?.timer) return undefined
+    clearTimeout(entry.timer)
+    entry.timer = null
+    return this.fire(sessionId, entry)
   }
 
   cancel(sessionId: string): void {
@@ -102,10 +116,10 @@ export class SessionResubscribeRetry {
       entry.attempt <= SESSION_CURSOR_RETRY_ATTEMPTS ? 'cursor' : 'degrade'
     try {
       await this.deps.run(sessionId, mode)
-      if (this.entries.get(sessionId) === entry) this.cancel(sessionId)
     } catch (err) {
-      if (this.entries.get(sessionId) !== entry) return
-      this.schedule(sessionId, err)
+      if (this.entries.get(sessionId) === entry) this.schedule(sessionId, err)
+      throw err
     }
+    if (this.entries.get(sessionId) === entry) this.cancel(sessionId)
   }
 }
