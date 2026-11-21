@@ -171,7 +171,7 @@ export const SCENARIOS = [
     async run(ctx) {
       const faultAt = await ctx.hide()
       await ctx.sleep(20 * SEC)
-      ctx.mark('rst while hidden')
+      const rstAt = ctx.mark('rst while hidden')
       ctx.proxy.rst()
       await ctx.sleep(20 * SEC)
       const showAt = await ctx.show()
@@ -185,7 +185,7 @@ export const SCENARIOS = [
           e.ok &&
           (e.reqType === 'subscribe' || e.reqType === 'recover_session_snapshot') &&
           e.sessionId === focusSessionId &&
-          e.t > showAt,
+          e.t > rstAt,
         15 * SEC
       )
       // Back to the streaming chat so its recovery is measured as without the switch.
