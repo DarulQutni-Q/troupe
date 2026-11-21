@@ -85,6 +85,7 @@ import { logFrontendError } from '@/lib/log-api'
 import type { McpInstallRequestEvent, McpInstallResolvedEvent } from '@/lib/mcp-install-request'
 import { foldRecoveredPlan, markPlanTool } from '@/lib/plan-session'
 import { wireBlocksToDisplay } from '@/lib/skills-wire-reverse'
+import { useChatActivityStore } from '@/stores/chat-activity-store'
 import { useChatStartPickStore } from '@/stores/chat-start-pick-store'
 import { getAgentChatSessionIdsInAllTrees, useWorkspaceStore } from '@/stores/workspace-store'
 import type { QueuedPrompt } from '../prompt-queue-orchestration'
@@ -583,18 +584,24 @@ export function initAcpEventListeners(): () => void {
     // The transport captures this before the snapshot round-trip so a late
     // recovery for a torn-down/replaced session is rejected at install.
     recoveryGeneration: (sessionId) => sessionReopenGenerations.get(sessionId) ?? 0,
-    pendingPermissionSessions: () => {
+    reconnectPrioritySessions: () => {
       const state = useAcpStore.getState()
       return [
-        ...new Set(
-          [
+        ...new Set([
+          ...useChatActivityStore.getState().viewing,
+          ...[
             ...Object.values(state.pendingPermissions),
             ...Object.values(state.pendingQuestions),
             ...Object.values(state.pendingElicitations)
-          ].map((prompt) => prompt.sessionId)
-        )
+          ].map((prompt) => prompt.sessionId),
+          ...Object.keys(state.promptCommandStates)
+        ])
       ]
     },
+    setResyncingSessions: (sessionIds) =>
+      useAcpStore.setState({
+        resyncingSessions: Object.fromEntries(sessionIds.map((sid) => [sid, true as const]))
+      }),
     installPendingPrompts: (sessionId, prompts) =>
       syncPendingPrompts(useAcpStore.getState, useAcpStore.setState, sessionId, prompts),
     setReconnecting: (reconnecting, recovered) => {
