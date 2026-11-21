@@ -92,7 +92,7 @@
   }
 
   // Socket census: every socket the client opens, its lifecycle, the request
-  // types it sends (never payloads) and the replies to them.
+  // types and session ids it sends (no other payload) and the replies to them.
   let socketSeq = 0
   const OriginalWebSocket = window.WebSocket
   class LabWebSocket extends OriginalWebSocket {
@@ -118,12 +118,13 @@
           return
         }
         if (typeof frame.id === 'string' && typeof frame.ok === 'boolean') {
-          const type = sentTypes.get(frame.id)
+          const sent = sentTypes.get(frame.id)
           sentTypes.delete(frame.id)
           emit('ws-reply', {
             sock,
             path,
-            reqType: type ?? null,
+            reqType: sent?.type ?? null,
+            sessionId: sent?.sessionId,
             ok: frame.ok,
             code: frame.err?.code
           })
@@ -144,11 +145,15 @@
       if (typeof data === 'string') {
         try {
           const frame = JSON.parse(data)
-          if (typeof frame.id === 'string') this.__lab.sentTypes.set(frame.id, frame.type)
+          const sessionId =
+            typeof frame.payload?.sessionId === 'string' ? frame.payload.sessionId : undefined
+          if (typeof frame.id === 'string')
+            this.__lab.sentTypes.set(frame.id, { type: frame.type, sessionId })
           emit('ws-send', {
             sock: this.__lab.sock,
             path: this.__lab.path,
-            reqType: frame.type ?? null
+            reqType: frame.type ?? null,
+            sessionId
           })
         } catch {
           // not JSON

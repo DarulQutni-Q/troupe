@@ -3,7 +3,7 @@
 //
 //   node tools/reconnect-lab/run.mjs [--only s1,s3a] [--repeat 2] [--web-dir dist-web]
 //        [--server-bin <path>] [--hide override+pause|override|pause|freeze] [--rtt <ms>]
-//        [--chats <n>] [--out <dir>] [--headed]
+//        [--chats <n>] [--switch-chat] [--out <dir>] [--headed]
 //   node tools/reconnect-lab/run.mjs --from tools/reconnect-lab/out   (re-analyse a saved run)
 //
 // Prints one table per run and writes per-scenario timelines to
@@ -51,7 +51,8 @@ function parseArgs(argv) {
     hide: 'override+pause',
     headed: false,
     rttMs: 0,
-    chats: null
+    chats: null,
+    switchChat: false
   }
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i]
@@ -63,6 +64,7 @@ function parseArgs(argv) {
     else if (flag === '--hide') args.hide = value()
     else if (flag === '--rtt') args.rttMs = Number(value())
     else if (flag === '--chats') args.chats = value()
+    else if (flag === '--switch-chat') args.switchChat = true
     else if (flag === '--out') args.out = resolve(value())
     else if (flag === '--from') args.from = resolve(value())
     else if (flag === '--headed') args.headed = true
@@ -232,12 +234,35 @@ async function runScenario({ scenario, run, browser, server, proxy, origin, prob
       },
       waitForEvent: (predicate, timeoutMs) =>
         waitFor(() => events.some(predicate), timeoutMs, 'a scenario event'),
+      waitForControl: (state, after, timeoutMs) =>
+        waitFor(
+          () => controlTransitions(events).some((tr) => tr.to === state && tr.t > after),
+          timeoutMs,
+          `the control channel to become ${state}`
+        ),
+      /** The session id of the first prompt the page sent: the first chat launched. */
+      firstChatSessionId: () =>
+        events.find((e) => e.src === 'page' && e.type === 'ws-send' && e.reqType === 'send_prompt')
+          ?.sessionId ?? null,
+      switchChat: args.switchChat,
+      historyChats: 0,
+      async switchToChat(name) {
+        const tab = page.getByRole('tab', { name }).first()
+        await tab.click({ timeout: 10_000 }).catch(async (error) => {
+          const names = await page
+            .getByRole('tab')
+            .evaluateAll((tabs) => tabs.map((t) => t.getAttribute('aria-label') ?? t.textContent))
+          throw new Error(`no chat tab ${name} among ${JSON.stringify(names)}: ${error}`)
+        })
+        return mark(`switched to chat tab ${name}`)
+      },
       waitRecovered: (returnAt, timeoutMs) => waitRecovered(events, returnAt, returnAt, timeoutMs)
     }
 
     const prompt = `[DURATION:${scenario.turnSec}] reconnect lab ${scenario.name}`
     const historyChats =
       scenario.historyChats === undefined ? 0 : (args.chats ?? scenario.historyChats + 1) - 1
+    ctx.historyChats = historyChats
     for (let i = 1; i <= historyChats; i++) {
       const historyPrompt = `[REPLY:${scenario.historyReplyChars}] reconnect lab history ${i}`
       mark(`launch history chat ${i}`)
@@ -280,7 +305,9 @@ async function runScenario({ scenario, run, browser, server, proxy, origin, prob
       label: r.label ?? null,
       faultAt: i === 0 ? faultAt : r.t,
       returnAt: r.t,
-      end: returns[i + 1]?.t ?? end
+      end: returns[i + 1]?.t ?? end,
+      switchAt: r.switchAt ?? null,
+      focusSessionId: r.focusSessionId ?? null
     }))
     const row = analyze(
       {
@@ -374,12 +401,16 @@ function reanalyze(dir) {
       if (row.error) return row
       const logFile = join(dir, `${row.name}.run${run}.log`)
       const events = JSON.parse(readFileSync(logFile.replace(/\.log$/, '.events.json'), 'utf8'))
-      const windows = row.results.map(({ label, faultAt, returnAt, end }) => ({
-        label,
-        faultAt,
-        returnAt,
-        end
-      }))
+      const windows = row.results.map(
+        ({ label, faultAt, returnAt, end, switchAt, focusSessionId }) => ({
+          label,
+          faultAt,
+          returnAt,
+          end,
+          switchAt: switchAt ?? null,
+          focusSessionId: focusSessionId ?? null
+        })
+      )
       const next = analyze({ ...row, logFile }, windows, events)
       writeTimeline(next, events)
       return next
@@ -453,7 +484,7 @@ function summarize(row) {
     live: `med ${fmt(median(row.results.map((r) => r.liveMs)))} [${list('liveMs')}]`,
     overlay: `[${list('overlayMs')}]`,
     overlayClear: `[${list('overlayClearMs')}]`,
-    subscribes: `[${list('lastSubscribeMs')}]`,
+    subscribes: `[${row.results.map((r) => `${r.subscribes} (last ${fmt(r.lastSubscribeMs)})`).join('/')}]`,
     ws: String(row.results.reduce((n, r) => n + r.wsOpened, 0)),
     proxy: String(row.results.reduce((n, r) => n + r.proxyUpgrades, 0))
   }
@@ -464,6 +495,12 @@ function printRow(row) {
   console.log(
     `  connected-after ${s.connected} ms, stream-resumed-after ${s.stream} ms, live-again-after ${s.live} ms, reconnecting-visible ${s.overlay} ms, reconnecting-cleared-after ${s.overlayClear} ms, subscribes ${s.subscribes}, ws ${s.ws}`
   )
+  for (const r of row.results) {
+    if (r.switchMs === null || r.switchMs === undefined) continue
+    console.log(
+      `  switched chats ${fmt(r.switchMs)} ms after return; that chat resubscribed ${fmt(r.focusResyncMs)} ms after the switch (reply ${r.focusRank ?? 'never'} of ${r.subscribes})`
+    )
+  }
 }
 
 function printProbe(rows) {
@@ -537,7 +574,7 @@ function writeTimeline(row, events) {
     )
   for (const [i, r] of (row.results ?? []).entries()) {
     lines.push(
-      `# window ${i + 1}${r.label ? ` (${r.label})` : ''}: return at ${rel(r.returnAt)}, state at return ${r.stateAtReturn}, connected-after ${fmt(r.connectedMs)} ms, stream-resumed-after ${fmt(r.streamMs)} ms, live-again-after ${fmt(r.liveMs)} ms (live chunk at return ~${r.liveChunkAtReturn}, DOM had ${r.baseChunk}; gap since last chunk before fault ${fmt(r.streamGapMs)} ms), main thread busy ${fmt(r.mainThreadBusyMs)} ms of that, reconnecting visible ${fmt(r.overlayMs)} ms after return / ${fmt(r.overlayTotalMs)} ms total, cleared after ${fmt(r.overlayClearMs)} ms, authenticated-to-connected ${fmt(r.authToConnectedMs)} ms, ${r.subscribes} subscribe replies (last after ${fmt(r.lastSubscribeMs)} ms), ws opened ${r.wsOpened} ${JSON.stringify(r.wsByRole)}, proxy upgrades ${r.proxyUpgrades}`
+      `# window ${i + 1}${r.label ? ` (${r.label})` : ''}: return at ${rel(r.returnAt)}, state at return ${r.stateAtReturn}, connected-after ${fmt(r.connectedMs)} ms, stream-resumed-after ${fmt(r.streamMs)} ms, live-again-after ${fmt(r.liveMs)} ms (live chunk at return ~${r.liveChunkAtReturn}, DOM had ${r.baseChunk}; gap since last chunk before fault ${fmt(r.streamGapMs)} ms), main thread busy ${fmt(r.mainThreadBusyMs)} ms of that, reconnecting visible ${fmt(r.overlayMs)} ms after return / ${fmt(r.overlayTotalMs)} ms total, cleared after ${fmt(r.overlayClearMs)} ms, authenticated-to-connected ${fmt(r.authToConnectedMs)} ms, ${r.subscribes} subscribe replies (last after ${fmt(r.lastSubscribeMs)} ms)${r.switchMs === null || r.switchMs === undefined ? '' : `, switched chats after ${fmt(r.switchMs)} ms and that chat resubscribed ${fmt(r.focusResyncMs)} ms after the switch (reply ${r.focusRank ?? 'never'} of ${r.subscribes})`}, ws opened ${r.wsOpened} ${JSON.stringify(r.wsByRole)}, proxy upgrades ${r.proxyUpgrades}`
     )
     for (const step of row.steps[i] ?? []) {
       lines.push(

@@ -164,7 +164,7 @@ export const SCENARIOS = [
     id: 's9',
     name: 'many-chats-hidden-rst',
     returnDef:
-      'thaw (RST 20 s into a 40 s hide) with --chats open chats; the streaming one is on screen',
+      'thaw (RST 20 s into a 40 s hide) with --chats open chats; the streaming one is on screen (with --switch-chat: the first chat from when the channel is back until it resubscribes)',
     turnSec: 260,
     historyChats: 5,
     historyReplyChars: 60_000,
@@ -174,7 +174,24 @@ export const SCENARIOS = [
       ctx.mark('rst while hidden')
       ctx.proxy.rst()
       await ctx.sleep(20 * SEC)
-      return { faultAt, returns: [{ t: await ctx.show() }] }
+      const showAt = await ctx.show()
+      if (!ctx.switchChat || ctx.historyChats === 0) return { faultAt, returns: [{ t: showAt }] }
+      // The first chat is off screen, so the reconnect resubscribes it in the
+      // background; switching to it once the channel is back must promote it.
+      const focusSessionId = ctx.firstChatSessionId()
+      await ctx.waitForControl('connected', showAt, 30 * SEC)
+      const switchAt = await ctx.switchToChat(/reconnect lab history 1\b/)
+      await ctx.waitForEvent(
+        (e) =>
+          e.type === 'ws-reply' &&
+          (e.reqType === 'subscribe' || e.reqType === 'recover_session_snapshot') &&
+          e.sessionId === focusSessionId &&
+          e.t > showAt,
+        15 * SEC
+      )
+      // Back to the streaming chat so its recovery is measured as without the switch.
+      await ctx.switchToChat(/reconnect lab many-chats-hidden-rst/)
+      return { faultAt, returns: [{ t: showAt, switchAt, focusSessionId }] }
     }
   }
 ]

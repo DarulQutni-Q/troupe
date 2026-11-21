@@ -92,8 +92,11 @@ function socketRoles(events) {
  * - authToConnectedMs: from the last successful `authenticate` reply to the
  *   channel becoming `connected`: the part of the reconnect that waits on
  *   session resubscribes.
+ * - focusResyncMs / focusRank: for a window that switched to another chat at
+ *   `switchAt`, from the switch to that chat's subscribe reply (negative: it
+ *   was resubscribed before the switch), and which reply after R it was.
  */
-export function recovery(events, { faultAt, returnAt, end }) {
+export function recovery(events, { faultAt, returnAt, end, switchAt, focusSessionId }) {
   const transitions = controlTransitions(events)
   let connectedAt = null
   if (controlStateAt(transitions, end) === 'connected') {
@@ -165,13 +168,16 @@ export function recovery(events, { faultAt, returnAt, end }) {
       e.t > returnAt &&
       e.t <= end
   )
+  const focusIndex = focusSessionId
+    ? subscribeReplies.findIndex((e) => e.ok && isAcpSocket(e) && e.sessionId === focusSessionId)
+    : -1
   const lastAuth =
     connectedAt === null
       ? undefined
       : events
           .filter(
             (e) =>
-              e.src === 'page' &&
+              isAcpSocket(e) &&
               e.type === 'ws-reply' &&
               e.reqType === 'authenticate' &&
               e.ok &&
@@ -195,6 +201,9 @@ export function recovery(events, { faultAt, returnAt, end }) {
     authToConnectedMs: lastAuth ? connectedAt - lastAuth.t : null,
     subscribes: subscribeReplies.length,
     lastSubscribeMs: subscribeReplies.length > 0 ? subscribeReplies.at(-1).t - returnAt : null,
+    switchMs: switchAt ? switchAt - returnAt : null,
+    focusResyncMs: switchAt && focusIndex >= 0 ? subscribeReplies[focusIndex].t - switchAt : null,
+    focusRank: focusIndex >= 0 ? focusIndex + 1 : null,
     wsOpened: opened.length,
     wsByRole: byRole,
     proxyUpgrades,
