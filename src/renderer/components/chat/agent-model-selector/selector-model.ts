@@ -411,10 +411,10 @@ export function isInstalledTab(tab: AgentTab): boolean {
 
 /**
  * What choosing an agent does, which sets where the pickers list it: `ready`
- * shows its models, `setup` needs its config saved first (the chat cannot arm
- * it), `install` needs installing first. The launcher arms a ready agent with
- * no stored config (a pick saves it, #907), so there every installed agent is
- * `ready`.
+ * shows its models, `setup` needs its config saved first (the store rejects
+ * arming an agent with no stored config), `install` needs installing first.
+ * The V2 pickers in chat and the launcher classify alike, so both show the
+ * same tabs.
  */
 export type AgentGroup = 'ready' | 'setup' | 'install'
 
@@ -427,14 +427,22 @@ export const AGENT_GROUPS: ReadonlyArray<{ group: AgentGroup; label: string }> =
 
 const GROUP_RANK: Record<AgentGroup, number> = { ready: 0, setup: 1, install: 2 }
 
-/** The one classification behind the desktop tabs, its "More" list and the mobile provider list. */
+/**
+ * The one classification behind the desktop tabs, its "More" list and the
+ * mobile provider list. An installed current agent counts as `ready`: the
+ * launcher can have one selected before its config is stored (first run).
+ */
 export function agentGroup(
   tab: AgentTab,
   agentConfigs: readonly { id: string }[],
-  armsUnconfigured: boolean
+  currentConfigId: string | null
 ): AgentGroup {
   if (!isInstalledTab(tab)) return 'install'
-  if (!armsUnconfigured && tab.entry && armableConfigId(tab.entry, agentConfigs) === null) {
+  if (
+    tab.entry &&
+    armableConfigId(tab.entry, agentConfigs) === null &&
+    !agentTabSelected(tab, currentConfigId)
+  ) {
     return 'setup'
   }
   return 'ready'
@@ -501,14 +509,12 @@ export function splitAgentTabs(
 }
 
 /** V2: every agent in `orderAgentTabs` order, split to fill `capacity` slots. */
-export function stableAgentTabs(
-  source: AgentTabSource & { capacity: number; armsUnconfigured: boolean }
-): {
+export function stableAgentTabs(source: AgentTabSource & { capacity: number }): {
   visible: AgentTab[]
   overflow: AgentTab[]
 } {
   const groupOf = (tab: AgentTab): AgentGroup =>
-    agentGroup(tab, source.agentConfigs, source.armsUnconfigured)
+    agentGroup(tab, source.agentConfigs, source.currentConfigId)
   return splitAgentTabs(orderAgentTabs(allAgentTabs(source).all, groupOf), source.capacity, groupOf)
 }
 

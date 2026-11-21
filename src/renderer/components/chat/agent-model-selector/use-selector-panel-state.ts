@@ -201,10 +201,6 @@ export function useSelectorPanelState(
   const searching = query.trim().length > 0
 
   const { reserveMoreTab, stableTabCapacity } = options
-  // Chat cannot arm a ready agent that has no stored config (the store
-  // rejects the arm). The launcher can: an explicit pick persists that config
-  // and prewarms it (issue #907). Do not disable those rows in the launcher.
-  const launcher = sw.selectAgent != null
   const tabs = useMemo(() => {
     const args = {
       currentConfigId: sw.currentConfigId,
@@ -214,7 +210,7 @@ export function useSelectorPanelState(
       agentConfigs: sw.agentConfigs
     }
     if (stableTabCapacity != null) {
-      return stableAgentTabs({ ...args, capacity: stableTabCapacity, armsUnconfigured: launcher })
+      return stableAgentTabs({ ...args, capacity: stableTabCapacity })
     }
     const first = buildAgentTabs(args)
     return reserveMoreTab && first.overflow.length > 0 ? buildAgentTabs({ ...args, max: 3 }) : first
@@ -225,8 +221,7 @@ export function useSelectorPanelState(
     sw.entries,
     sw.agentConfigs,
     reserveMoreTab,
-    stableTabCapacity,
-    launcher
+    stableTabCapacity
   ])
   const allTabs = useMemo(() => [...tabs.visible, ...tabs.overflow], [tabs])
   const tabById = useMemo(() => new Map(allTabs.map((t) => [t.configId, t])), [allTabs])
@@ -236,7 +231,8 @@ export function useSelectorPanelState(
   }
   const viewInOverflow =
     viewId != null && tabs.overflow.some((tab) => agentTabSelected(tab, viewId))
-  const groupOf = (tab: AgentTab): AgentGroup => agentGroup(tab, sw.agentConfigs, launcher)
+  const groupOf = (tab: AgentTab): AgentGroup =>
+    agentGroup(tab, sw.agentConfigs, sw.currentConfigId)
   const notSetUp = (tab: AgentTab): boolean => groupOf(tab) === 'setup'
   const hasUpdate = (tab: AgentTab): boolean =>
     Boolean(tab.entry && sw.updateAgentIds?.has(tab.entry.agent.id))
