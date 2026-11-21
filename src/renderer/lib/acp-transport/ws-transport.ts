@@ -2373,6 +2373,9 @@ export class WsAcpTransport implements AcpTransport {
         if (claimedByPrompt) {
           // Its caller hands a failure off; the pass only waits for it.
           await claimedByPrompt.catch(() => undefined)
+          if (this.socket !== socket || !this.isSocketLive()) {
+            throw new AcpTransportError('closed', 'WebSocket lost during the resubscribe pass')
+          }
           continue
         }
         if (!this.subscribed.has(sid)) {

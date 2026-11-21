@@ -182,6 +182,7 @@ export const SCENARIOS = [
       await ctx.waitForEvent(
         (e) =>
           e.type === 'ws-reply' &&
+          e.ok &&
           (e.reqType === 'subscribe' || e.reqType === 'recover_session_snapshot') &&
           e.sessionId === focusSessionId &&
           e.t > showAt,
