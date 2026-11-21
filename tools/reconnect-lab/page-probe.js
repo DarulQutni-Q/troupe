@@ -201,8 +201,11 @@
     let lamp = null
     for (const el of document.querySelectorAll('[role="status"]')) {
       const text = el.textContent ?? ''
-      if (text.includes('Reconnecting…')) overlay = 'reconnecting'
-      else if (text.includes('Host offline') && overlay === 'none') overlay = 'host-offline'
+      // Inactive chat tabs stay mounted but hidden; only an overlay the user can see counts.
+      const shown = el.checkVisibility?.({ visibilityProperty: true }) ?? true
+      if (shown && text.includes('Reconnecting…')) overlay = 'reconnecting'
+      else if (shown && text.includes('Host offline') && overlay === 'none')
+        overlay = 'host-offline'
       const label = el.getAttribute('aria-label')
       if (label && (label.startsWith('Connected') || label.includes('channel:'))) lamp = label
     }
