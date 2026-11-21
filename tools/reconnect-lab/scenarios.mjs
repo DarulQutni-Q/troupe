@@ -159,5 +159,24 @@ export const SCENARIOS = [
       await ctx.sleep(12 * SEC)
       return { faultAt, returns: [{ t: await ctx.show() }] }
     }
+  },
+  {
+    id: 's9',
+    name: 'many-chats-hidden-rst',
+    returnDef:
+      'thaw (RST 20 s into a 40 s hide) with --chats open chats; the streaming one is on screen',
+    turnSec: 260,
+    // Chats opened before the streaming one, each holding one long finished
+    // reply, so every resubscribe reads a real history. `--chats` overrides.
+    historyChats: 5,
+    historyReplyChars: 60_000,
+    async run(ctx) {
+      const faultAt = await ctx.hide()
+      await ctx.sleep(20 * SEC)
+      ctx.mark('rst while hidden')
+      ctx.proxy.rst()
+      await ctx.sleep(20 * SEC)
+      return { faultAt, returns: [{ t: await ctx.show() }] }
+    }
   }
 ]

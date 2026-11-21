@@ -3,7 +3,7 @@
 //
 //   node tools/reconnect-lab/run.mjs [--only s1,s3a] [--repeat 2] [--web-dir dist-web]
 //        [--server-bin <path>] [--hide override+pause|override|pause|freeze] [--rtt <ms>]
-//        [--out <dir>] [--headed]
+//        [--chats <n>] [--out <dir>] [--headed]
 //   node tools/reconnect-lab/run.mjs --from tools/reconnect-lab/out   (re-analyse a saved run)
 //
 // Prints one table per run and writes per-scenario timelines to
@@ -20,11 +20,13 @@ import {
   LAB_DEVICE_ID,
   LAB_TOKEN,
   launchChat,
+  launchNextChat,
   loadPlaywright,
   registerProject,
   repoRoot,
   routeWebDir,
-  startLabServer
+  startLabServer,
+  waitForReply
 } from './lab-env.mjs'
 import {
   chunkAt,
@@ -48,7 +50,8 @@ function parseArgs(argv) {
     serverBin: null,
     hide: 'override+pause',
     headed: false,
-    rttMs: 0
+    rttMs: 0,
+    chats: null
   }
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i]
@@ -59,6 +62,7 @@ function parseArgs(argv) {
     else if (flag === '--server-bin') args.serverBin = resolve(value())
     else if (flag === '--hide') args.hide = value()
     else if (flag === '--rtt') args.rttMs = Number(value())
+    else if (flag === '--chats') args.chats = Number(value())
     else if (flag === '--out') args.out = resolve(value())
     else if (flag === '--from') args.from = resolve(value())
     else if (flag === '--headed') args.headed = true
@@ -225,8 +229,18 @@ async function runScenario({ scenario, run, browser, server, proxy, origin, prob
     }
 
     const prompt = `[DURATION:${scenario.turnSec}] reconnect lab ${scenario.name}`
+    const historyChats =
+      scenario.historyChats === undefined ? 0 : (args.chats ?? scenario.historyChats + 1) - 1
+    for (let i = 1; i <= historyChats; i++) {
+      const historyPrompt = `[REPLY:${scenario.historyReplyChars}] reconnect lab history ${i}`
+      mark(`launch history chat ${i}`)
+      if (i === 1) await launchChat(page, origin, project, historyPrompt)
+      else await launchNextChat(page, historyPrompt)
+      await waitForReply(page, historyPrompt)
+    }
     mark('launch chat')
-    await launchChat(page, origin, project, prompt)
+    if (historyChats === 0) await launchChat(page, origin, project, prompt)
+    else await launchNextChat(page, prompt)
     await waitFor(
       () => {
         const now = Date.now()
@@ -267,6 +281,7 @@ async function runScenario({ scenario, run, browser, server, proxy, origin, prob
         id: scenario.id,
         name: scenario.name,
         returnDef: scenario.returnDef,
+        chats: historyChats + 1,
         loadavg: {
           atFault: loadAtFault,
           atEnd: loadavg()
@@ -284,6 +299,7 @@ async function runScenario({ scenario, run, browser, server, proxy, origin, prob
     return row
   } catch (error) {
     const logFile = join(outDir, `${scenario.name}.run${run}.log`)
+    await page.screenshot({ path: logFile.replace(/\.log$/, '.error.png') }).catch(() => {})
     writeTimeline(
       {
         id: scenario.id,
@@ -400,7 +416,16 @@ function median(values) {
 
 function summarize(row) {
   if (row.error)
-    return { connected: 'error', stream: 'error', live: 'error', overlay: '', ws: '', proxy: '' }
+    return {
+      connected: 'error',
+      stream: 'error',
+      live: 'error',
+      overlay: '',
+      overlayClear: '',
+      subscribes: '',
+      ws: '',
+      proxy: ''
+    }
   if (row.results.length === 1) {
     const r = row.results[0]
     return {
@@ -408,6 +433,8 @@ function summarize(row) {
       stream: fmt(r.streamMs),
       live: fmt(r.liveMs),
       overlay: fmt(r.overlayMs),
+      overlayClear: fmt(r.overlayClearMs),
+      subscribes: `${r.subscribes} (last ${fmt(r.lastSubscribeMs)})`,
       ws: `${r.wsOpened} (acp ${r.wsByRole.acp}, store ${r.wsByRole.store})`,
       proxy: String(r.proxyUpgrades)
     }
@@ -418,6 +445,8 @@ function summarize(row) {
     stream: `med ${fmt(median(row.results.map((r) => r.streamMs)))} [${list('streamMs')}]`,
     live: `med ${fmt(median(row.results.map((r) => r.liveMs)))} [${list('liveMs')}]`,
     overlay: `[${list('overlayMs')}]`,
+    overlayClear: `[${list('overlayClearMs')}]`,
+    subscribes: `[${list('lastSubscribeMs')}]`,
     ws: String(row.results.reduce((n, r) => n + r.wsOpened, 0)),
     proxy: String(row.results.reduce((n, r) => n + r.proxyUpgrades, 0))
   }
@@ -426,7 +455,7 @@ function summarize(row) {
 function printRow(row) {
   const s = summarize(row)
   console.log(
-    `  connected-after ${s.connected} ms, stream-resumed-after ${s.stream} ms, live-again-after ${s.live} ms, reconnecting-visible ${s.overlay} ms, ws ${s.ws}`
+    `  connected-after ${s.connected} ms, stream-resumed-after ${s.stream} ms, live-again-after ${s.live} ms, reconnecting-visible ${s.overlay} ms, reconnecting-cleared-after ${s.overlayClear} ms, subscribes ${s.subscribes}, ws ${s.ws}`
   )
 }
 
@@ -455,12 +484,25 @@ function printTable(run, rows) {
     'stream-resumed-after-ms',
     'live-again-after-ms',
     'reconnecting-visible-ms',
+    'reconnecting-cleared-after-ms',
+    'subscribes (last after ms)',
     'ws-connections (page)',
     'ws-upgrades (proxy)'
   ]
   const body = rows.map((row) => {
     const s = summarize(row)
-    return [`${row.id} ${row.name}`, s.connected, s.stream, s.live, s.overlay, s.ws, s.proxy]
+    const label = row.chats ? `${row.id} ${row.name} (${row.chats} chats)` : `${row.id} ${row.name}`
+    return [
+      label,
+      s.connected,
+      s.stream,
+      s.live,
+      s.overlay,
+      s.overlayClear,
+      s.subscribes,
+      s.ws,
+      s.proxy
+    ]
   })
   const widths = header.map((h, i) => Math.max(h.length, ...body.map((r) => r[i].length)))
   const line = (cells) => `| ${cells.map((c, i) => c.padEnd(widths[i])).join(' | ')} |`
@@ -477,7 +519,9 @@ function writeTimeline(row, events) {
     const s = (t - origin) / 1000
     return `R${s >= 0 ? '+' : '-'}${Math.abs(s).toFixed(3).padStart(8)}s`
   }
-  const lines = [`# ${row.id} ${row.name} run ${row.run}: ${row.returnDef ?? ''}`]
+  const lines = [
+    `# ${row.id} ${row.name} run ${row.run}: ${row.returnDef ?? ''}${row.chats ? ` (${row.chats} chats)` : ''}`
+  ]
   if (row.error) lines.push(`# ERROR ${row.error}`)
   if (row.proxy) lines.push(`# proxy from fault to end: ${JSON.stringify(row.proxy)}`)
   if (row.loadavg)
@@ -486,7 +530,7 @@ function writeTimeline(row, events) {
     )
   for (const [i, r] of (row.results ?? []).entries()) {
     lines.push(
-      `# window ${i + 1}${r.label ? ` (${r.label})` : ''}: return at ${rel(r.returnAt)}, state at return ${r.stateAtReturn}, connected-after ${fmt(r.connectedMs)} ms, stream-resumed-after ${fmt(r.streamMs)} ms, live-again-after ${fmt(r.liveMs)} ms (live chunk at return ~${r.liveChunkAtReturn}, DOM had ${r.baseChunk}; gap since last chunk before fault ${fmt(r.streamGapMs)} ms), main thread busy ${fmt(r.mainThreadBusyMs)} ms of that, reconnecting visible ${fmt(r.overlayMs)} ms after return / ${fmt(r.overlayTotalMs)} ms total, ws opened ${r.wsOpened} ${JSON.stringify(r.wsByRole)}, proxy upgrades ${r.proxyUpgrades}`
+      `# window ${i + 1}${r.label ? ` (${r.label})` : ''}: return at ${rel(r.returnAt)}, state at return ${r.stateAtReturn}, connected-after ${fmt(r.connectedMs)} ms, stream-resumed-after ${fmt(r.streamMs)} ms, live-again-after ${fmt(r.liveMs)} ms (live chunk at return ~${r.liveChunkAtReturn}, DOM had ${r.baseChunk}; gap since last chunk before fault ${fmt(r.streamGapMs)} ms), main thread busy ${fmt(r.mainThreadBusyMs)} ms of that, reconnecting visible ${fmt(r.overlayMs)} ms after return / ${fmt(r.overlayTotalMs)} ms total, cleared after ${fmt(r.overlayClearMs)} ms, authenticated-to-connected ${fmt(r.authToConnectedMs)} ms, ${r.subscribes} subscribe replies (last after ${fmt(r.lastSubscribeMs)} ms), ws opened ${r.wsOpened} ${JSON.stringify(r.wsByRole)}, proxy upgrades ${r.proxyUpgrades}`
     )
     for (const step of row.steps[i] ?? []) {
       lines.push(

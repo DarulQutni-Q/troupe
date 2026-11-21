@@ -85,6 +85,13 @@ function socketRoles(events) {
  * - liveMs: first chunk emitted after `R` on screen (on a reopened socket when
  *   the old one died): the chat is live again.
  * - overlayMs: "Reconnecting…"/"Host offline" visible inside [R, end].
+ * - overlayClearMs: when the overlay last went away (0: not shown after R;
+ *   null: still shown at `end`).
+ * - subscribes / lastSubscribeMs: session subscribe or snapshot replies after
+ *   R, and when the last one arrived: the whole resubscribe pass.
+ * - authToConnectedMs: from the last successful `authenticate` reply to the
+ *   channel becoming `connected`: the part of the reconnect that waits on
+ *   session resubscribes.
  */
 export function recovery(events, { faultAt, returnAt, end }) {
   const transitions = controlTransitions(events)
@@ -143,6 +150,35 @@ export function recovery(events, { faultAt, returnAt, end }) {
     if (e.path !== '/ws') byRole.other += 1
     else byRole[roles.get(e.sock) ?? 'acp'] += 1
   }
+  const lastOverlay = events
+    .filter((e) => e.src === 'page' && e.type === 'overlay' && e.t <= end)
+    .at(-1)
+  const overlayClearMs =
+    lastOverlay && lastOverlay.state !== 'none'
+      ? null
+      : Math.max(0, (lastOverlay?.t ?? 0) - returnAt)
+  const subscribeReplies = events.filter(
+    (e) =>
+      e.src === 'page' &&
+      e.type === 'ws-reply' &&
+      (e.reqType === 'subscribe' || e.reqType === 'recover_session_snapshot') &&
+      e.t > returnAt &&
+      e.t <= end
+  )
+  const lastAuth =
+    connectedAt === null
+      ? undefined
+      : events
+          .filter(
+            (e) =>
+              e.src === 'page' &&
+              e.type === 'ws-reply' &&
+              e.reqType === 'authenticate' &&
+              e.ok &&
+              e.t >= faultAt &&
+              e.t <= connectedAt
+          )
+          .at(-1)
   const proxyUpgrades = events.filter(
     (e) => e.src === 'proxy' && e.type === 'ws-upgrade' && e.t >= faultAt && e.t <= end
   ).length
@@ -155,6 +191,10 @@ export function recovery(events, { faultAt, returnAt, end }) {
     streamGapMs: grow && lastChunkBeforeFault ? grow.t - lastChunkBeforeFault.t : null,
     overlayMs: overlayMs(events, returnAt, end),
     overlayTotalMs: overlayMs(events, faultAt, end),
+    overlayClearMs,
+    authToConnectedMs: lastAuth ? connectedAt - lastAuth.t : null,
+    subscribes: subscribeReplies.length,
+    lastSubscribeMs: subscribeReplies.length > 0 ? subscribeReplies.at(-1).t - returnAt : null,
     wsOpened: opened.length,
     wsByRole: byRole,
     proxyUpgrades,
