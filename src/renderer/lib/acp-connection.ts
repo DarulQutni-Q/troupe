@@ -14,7 +14,6 @@ export interface AcpConnectionCoordinatorOptions {
    * session is rejected.
    */
   recoveryGeneration?: (sessionId: SessionId) => number
-  /** Sessions a reconnect resubscribes before it reports the channel live. */
   reconnectPrioritySessions: () => SessionId[]
   /** Install the host's still-pending approvals, questions and elicitations of a (re)subscribed session. */
   installPendingPrompts?: PendingPromptsHandler

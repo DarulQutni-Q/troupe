@@ -62,7 +62,7 @@ function parseArgs(argv) {
     else if (flag === '--server-bin') args.serverBin = resolve(value())
     else if (flag === '--hide') args.hide = value()
     else if (flag === '--rtt') args.rttMs = Number(value())
-    else if (flag === '--chats') args.chats = Number(value())
+    else if (flag === '--chats') args.chats = value()
     else if (flag === '--out') args.out = resolve(value())
     else if (flag === '--from') args.from = resolve(value())
     else if (flag === '--headed') args.headed = true
@@ -71,6 +71,13 @@ function parseArgs(argv) {
   const hideParts = args.hide.split('+')
   if (hideParts.some((part) => !['override', 'pause'].includes(part))) {
     throw new Error(`--hide takes override, pause or override+pause, not ${args.hide}`)
+  }
+  if (args.chats !== null) {
+    const chats = Number(args.chats)
+    if (!Number.isInteger(chats) || chats < 1) {
+      throw new Error(`--chats takes a whole number of chats, 1 or more, not ${args.chats}`)
+    }
+    args.chats = chats
   }
   if (!args.from) args.serverBin ??= defaultServerBinary()
   return args

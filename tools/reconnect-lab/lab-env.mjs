@@ -319,10 +319,6 @@ export async function launchChat(page, origin, project, prompt) {
   await startFromLauncher(page, prompt)
 }
 
-/**
- * Open the launcher with the Rail's New chat button and start a chat with
- * `prompt`. The previous chat stays open in its own tab.
- */
 export async function launchNextChat(page, prompt) {
   await page.getByRole('button', { name: 'New chat', exact: true }).first().click()
   await startFromLauncher(page, prompt)
@@ -345,7 +341,6 @@ async function startFromLauncher(page, prompt) {
   await launcher.waitFor({ state: 'hidden', timeout: 60_000 })
 }
 
-/** Wait until the fake agent's `[REPLY:n]` answer to `prompt` is on screen. */
 export async function waitForReply(page, prompt) {
   await page
     .getByText(`Replied to: ${prompt}`)

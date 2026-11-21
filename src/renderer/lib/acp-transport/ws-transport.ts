@@ -294,10 +294,6 @@ export class WsAcpTransport implements AcpTransport {
   private readonly syncGate = new SyncGate()
   /** Sessions we should re-subscribe after reconnect. */
   private readonly subscribed = new Set<string>()
-  /**
-   * Sessions the latest reconnect pass has not resubscribed yet. Any subscribe
-   * or snapshot that lands for one settles it, so the pass skips it.
-   */
   private resubscribeOwed = new Set<string>()
   /**
    * The watches (projects, chat-history index, agent roster, project file
@@ -632,16 +628,20 @@ export class WsAcpTransport implements AcpTransport {
     timeoutMs?: number
   ): Promise<void> {
     await this.connect()
+    let cursor = lastSeq
     // Skip no-op re-subscribe when already live-subscribed (sendPrompt path).
     if (!force && lastSeq === undefined && this.subscribed.has(sessionId)) {
-      return
+      if (!this.resubscribeOwed.has(sessionId)) return
+      // The reconnect pass has not reached this chat yet: subscribe it now,
+      // from the cursor the pass would use.
+      cursor = this.lastSeq.get(sessionId) ?? 0
     }
     // Events can overtake the reply on the wire: hold them until the reply
     // says where the replay ends.
     this.beginSync(sessionId)
     let completed = false
     try {
-      await this.requestSubscription(sessionId, lastSeq, timeoutMs)
+      await this.requestSubscription(sessionId, cursor, timeoutMs)
       completed = true
       this.resubscribeOwed.delete(sessionId)
     } finally {
@@ -2269,19 +2269,8 @@ export class WsAcpTransport implements AcpTransport {
       const socket = this.socket
       const owed = new Set(this.subscribed)
       this.resubscribeOwed = owed
-      // Only the chats the user needs now (on screen, waiting on an answer,
-      // holding an unconfirmed prompt) hold the reconnect open: each
-      // resubscribe is a round-trip, and the chat on screen must not wait
-      // behind every other open chat.
-      const priority = new Set(this.reconnectPriorityProvider?.() ?? [])
-      await this.resubscribeSessions(
-        socket,
-        owed,
-        [...owed].filter((sid) => priority.has(sid))
-      )
-      // The attempt counter is NOT reset here: only `stableTimer` resets it
-      // after `RECONNECT_STABLE_MS` of stable connection. The auth handshake
-      // stays silent while `reconnecting`, so `connected` is emitted here.
+      const priority = (this.reconnectPriorityProvider?.() ?? []).filter((sid) => owed.has(sid))
+      await this.resubscribeSessions(socket, owed, priority)
       this.reconnecting = false
       this.emitConnectionState('connected')
       this.onReconnectStateChange?.(false, true)
@@ -2305,12 +2294,6 @@ export class WsAcpTransport implements AcpTransport {
     }
   }
 
-  /**
-   * Resubscribe each of `sids` that `owed` still holds, one at a time. A
-   * failing session never aborts the pass nor tears the socket down (CLI-F1):
-   * it is retried alone with its own bounded backoff. Throws when the socket
-   * died or was replaced: that is a connection failure, not a per-session one.
-   */
   private async resubscribeSessions(
     socket: WebSocket | null,
     owed: Set<string>,
@@ -2325,7 +2308,6 @@ export class WsAcpTransport implements AcpTransport {
         if (this.socket !== socket || !this.isSocketLive()) {
           throw new AcpTransportError('closed', 'WebSocket lost during the resubscribe pass')
         }
-        // A subscribe that already landed on this socket settled the session.
         if (!owed.delete(sid) || !this.subscribed.has(sid)) continue
         try {
           await this.subscribeInternal(
@@ -2341,10 +2323,7 @@ export class WsAcpTransport implements AcpTransport {
           } else if (!this.isSocketLive()) {
             throw error
           } else {
-            // A subscribe TIMEOUT on a socket that still reads OPEN may be a
-            // half-open link: without a probe each remaining session would
-            // stall a further RESUBSCRIBE_TIMEOUT_MS. If the socket cannot
-            // round-trip, treat it as a connection failure.
+            // A timeout on a socket that still reads OPEN may be a half-open link; probe once so each remaining session doesn't stall another RESUBSCRIBE_TIMEOUT_MS.
             if (error instanceof AcpTransportError && error.code === 'timeout') {
               try {
                 await this.request<void>('ping', {}, RESUME_PROBE_TIMEOUT_MS)
@@ -2380,7 +2359,6 @@ export class WsAcpTransport implements AcpTransport {
     }
   }
 
-  /** The rest of a reconnect pass, after the channel was already reported live. */
   private async resubscribeInBackground(
     socket: WebSocket | null,
     owed: Set<string>
@@ -2388,8 +2366,7 @@ export class WsAcpTransport implements AcpTransport {
     try {
       await this.resubscribeSessions(socket, owed, [...owed])
     } catch (err) {
-      // The socket closed or was replaced: its close already started the
-      // next reconnect, which resubscribes every session again.
+      // Whoever closed or replaced this socket already scheduled the next reconnect or entered host-offline.
       if (this.socket !== socket) return
       void logFrontendError({
         level: 'warn',

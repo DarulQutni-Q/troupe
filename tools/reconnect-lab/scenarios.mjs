@@ -166,8 +166,6 @@ export const SCENARIOS = [
     returnDef:
       'thaw (RST 20 s into a 40 s hide) with --chats open chats; the streaming one is on screen',
     turnSec: 260,
-    // Chats opened before the streaming one, each holding one long finished
-    // reply, so every resubscribe reads a real history. `--chats` overrides.
     historyChats: 5,
     historyReplyChars: 60_000,
     async run(ctx) {

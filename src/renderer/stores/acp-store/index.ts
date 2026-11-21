@@ -588,9 +588,6 @@ export function initAcpEventListeners(): () => void {
     // The transport captures this before the snapshot round-trip so a late
     // recovery for a torn-down/replaced session is rejected at install.
     recoveryGeneration: (sessionId) => sessionReopenGenerations.get(sessionId) ?? 0,
-    // The chats on screen, the ones waiting on the user's answer, and the ones
-    // holding a prompt whose reply the drop lost (resent once the reconnect
-    // ends). Every other chat resubscribes after the overlay clears.
     reconnectPrioritySessions: () => {
       const state = useAcpStore.getState()
       const quickView = useQuickChatStore.getState().view
