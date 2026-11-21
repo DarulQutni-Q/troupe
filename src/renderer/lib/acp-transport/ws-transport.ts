@@ -667,8 +667,9 @@ export class WsAcpTransport implements AcpTransport {
       // Subscribe it now, from the cursor the pass would use.
       cursor = this.lastSeq.get(sessionId) ?? 0
     }
+    // A claimed chat may hold up the priority pass, so it gets the pass's timeout.
     const owedRun = this.resync.claim(sessionId, () =>
-      this.subscribeNow(sessionId, cursor, timeoutMs)
+      this.subscribeNow(sessionId, cursor, timeoutMs ?? RESUBSCRIBE_TIMEOUT_MS)
     )
     if (!owedRun) return this.subscribeNow(sessionId, cursor, timeoutMs)
     try {
