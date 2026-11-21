@@ -16,6 +16,11 @@ on:
 permissions:
   contents: read
 
+env:
+  # File and line tables only. Backtraces keep file:line, and codegen, links
+  # and the cache get smaller. The test profile inherits this from dev.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   # Merges to dev land minutes apart. Cancelling would drop the cache save.
@@ -41,7 +46,8 @@ jobs:
         id: filter
         shell: bash
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # A push compares against the previous tip of the branch.
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           set -euo pipefail
 
@@ -235,7 +241,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-22.04
-    # Check, test and clippy run about 17 minutes on a warm cache, and the
+    # Clippy and test run about 14 minutes on a cold cache, and the
     # post-job cache save adds about one more.
     timeout-minutes: 30
     steps:
@@ -260,10 +266,12 @@ jobs:
           components: clippy
 
       - name: Cache Rust
-        uses: swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: src-tauri
           cache-on-failure: true
+          # PR-scoped caches are invisible to other PRs and crowd the 10 GB cap.
+          save-if: ${{ github.ref == 'refs/heads/dev' }}
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -293,17 +301,15 @@ jobs:
       - name: Fetch and verify figcraft bundle (canvas/bundle/)
         run: bun scripts/canvas/fetch-figcraft-bundle.mjs
 
-      - name: Cargo check
+      # No separate `cargo check --all-targets`: clippy type-checks the same
+      # targets and features and fails on any compile error.
+      - name: Cargo clippy
         working-directory: src-tauri
-        run: cargo check --all-targets
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: Cargo test
         working-directory: src-tauri
         run: cargo test
-
-      - name: Cargo clippy
-        working-directory: src-tauri
-        run: cargo clippy --all-targets -- -D warnings
 
   standalone-server-build:
     name: Standalone Server Build
@@ -331,10 +337,12 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Cache Rust
-        uses: swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: src-tauri
           cache-on-failure: true
+          # PR-scoped caches are invisible to other PRs and crowd the 10 GB cap.
+          save-if: ${{ github.ref == 'refs/heads/dev' }}
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -388,10 +396,35 @@ jobs:
           components: clippy
 
       - name: Cache Rust
-        uses: swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: src-tauri
           cache-on-failure: true
+          # PR-scoped caches are invisible to other PRs and crowd the 10 GB cap.
+          save-if: ${{ github.ref == 'refs/heads/dev' }}
+
+      # No web build here: a debug build reads dist-web/ from disk at run time
+      # (rust-embed without debug-embed, #[allow_missing]), so the bundle does
+      # not change what compiles. Web Build (Windows) checks the bundle builds.
+      - name: Cargo check
+        working-directory: src-tauri
+        run: cargo check --all-targets
+
+      - name: Build troupe-server (Windows host)
+        working-directory: src-tauri
+        run: cargo build --bin troupe-server --features standalone-server
+
+  web-build-windows:
+    name: Web Build (Windows)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -407,11 +440,3 @@ jobs:
       - name: Assert dist-web/index.html exists
         shell: bash
         run: test -f dist-web/index.html && test -s dist-web/index.html
-
-      - name: Cargo check
-        working-directory: src-tauri
-        run: cargo check --all-targets
-
-      - name: Build troupe-server (Windows host)
-        working-directory: src-tauri
-        run: cargo build --bin troupe-server --features standalone-server
