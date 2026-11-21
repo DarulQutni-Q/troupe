@@ -30,7 +30,7 @@ node tools/reconnect-lab/run.mjs --from tools/reconnect-lab/out   # re-analyse a
 | `--hide <method>` | How the tab is hidden: `override+pause` (default), `override` or `pause`. `override` flips `document.visibilityState`, and `pause` stops the page's JavaScript like a frozen tab. |
 | `--rtt <ms>` | Add this round-trip delay. The proxy holds each chunk for half of it in each direction. |
 | `--chats <n>` | For s9, open this many chats in total (default 6). |
-| `--switch-chat` | For s9, switch to the first chat once the channel is back, wait for its resubscribe, then switch back. Reports how long after the switch that chat resubscribed and which subscribe reply it was. |
+| `--switch-chat` | For s9, switch to the first chat right after the return, wait for its resubscribe, then switch back. Reports how long after the switch that chat resubscribed and which subscribe reply it was. |
 | `--out <dir>` | Write results here instead of `out/`. |
 | `--from <dir>` | Recompute the tables and timelines of a saved run. It rewrites the saved `.log` files. |
 | `--headed` | Show the browser window. |

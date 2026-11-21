@@ -234,12 +234,6 @@ async function runScenario({ scenario, run, browser, server, proxy, origin, prob
       },
       waitForEvent: (predicate, timeoutMs) =>
         waitFor(() => events.some(predicate), timeoutMs, 'a scenario event'),
-      waitForControl: (state, after, timeoutMs) =>
-        waitFor(
-          () => controlTransitions(events).some((tr) => tr.to === state && tr.t > after),
-          timeoutMs,
-          `the control channel to become ${state}`
-        ),
       /** The session id of the first prompt the page sent: the first chat launched. */
       firstChatSessionId: () =>
         events.find((e) => e.src === 'page' && e.type === 'ws-send' && e.reqType === 'send_prompt')
