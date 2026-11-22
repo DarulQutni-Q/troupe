@@ -17,18 +17,13 @@ pub struct LinkPreviewRequest {
     pub url: String,
 }
 
-/// The longest URL the route accepts; longer input is not a chat link.
-const MAX_URL_LEN: usize = 4096;
-
 pub async fn resolve_preview(Json(req): Json<LinkPreviewRequest>) -> impl IntoResponse {
-    if req.url.len() > MAX_URL_LEN {
-        return (
-            StatusCode::OK,
-            Json(IpcBody::<Option<LinkPreview>>::ok(None)),
-        );
-    }
+    // The length cap lives in the shared resolver, so the desktop command
+    // returns the same result for the same URL.
     (
         StatusCode::OK,
-        Json(IpcBody::ok(crate::link_preview::resolve(req.url).await)),
+        Json(IpcBody::<Option<LinkPreview>>::ok(
+            crate::link_preview::resolve(req.url).await,
+        )),
     )
 }

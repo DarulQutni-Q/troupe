@@ -10,27 +10,34 @@ export type LinkSegment = { kind: 'text'; text: string } | { kind: 'link'; url: 
 // Stops at whitespace, quotes, angle brackets and the private-use sentinel
 // range the message tokens use (U+E000–U+E00F).
 const URL_RE = /\bhttps?:\/\/[^\s<>"'`\uE000-\uE00F]+/gi
-const TRAILING_PUNCT = /[.,;:!?…]+$/
+const TRAILING_PUNCT = '.,;:!?…'
 
 const PAIRS: Record<string, string> = { ')': '(', ']': '[', '}': '{' }
 
-function count(text: string, char: string): number {
-  let n = 0
-  for (const c of text) if (c === char) n += 1
-  return n
-}
-
-/** Trim trailing punctuation and unbalanced closers off a matched URL. */
+/**
+ * Trim trailing punctuation and unbalanced closers off a matched URL. One
+ * pass from the end with bracket counts taken once, so a URL followed by
+ * thousands of `)` stays linear.
+ */
 export function trimUrlCandidate(raw: string): string {
-  let url = raw
-  for (;;) {
-    const before = url
-    url = url.replace(TRAILING_PUNCT, '')
-    const last = url.at(-1)
-    const open = last ? PAIRS[last] : undefined
-    if (open && last && count(url, last) > count(url, open)) url = url.slice(0, -1)
-    if (url === before) return url
+  const counts: Record<string, number> = {}
+  for (const c of raw) if (c in PAIRS || '([{'.includes(c)) counts[c] = (counts[c] ?? 0) + 1
+  let end = raw.length
+  while (end > 0) {
+    const last = raw[end - 1]
+    if (TRAILING_PUNCT.includes(last)) {
+      end -= 1
+      continue
+    }
+    const open = PAIRS[last]
+    if (open && (counts[last] ?? 0) > (counts[open] ?? 0)) {
+      counts[last] -= 1
+      end -= 1
+      continue
+    }
+    break
   }
+  return raw.slice(0, end)
 }
 
 /** A string that parses as an `http(s)` URL with a host. */

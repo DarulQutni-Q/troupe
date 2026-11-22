@@ -18,8 +18,20 @@ pub(super) struct PageMeta {
     pub icons: Vec<Url>,
 }
 
+/// A start tag whose `>` may appear inside a quoted attribute value.
 fn tag_re(name: &str) -> Regex {
-    Regex::new(&format!(r"(?is)<{name}\b[^>]*>")).expect("static tag regex")
+    Regex::new(&format!(r#"(?is)<{name}\b(?:[^>"']|"[^"]*"|'[^']*')*>"#)).expect("static tag regex")
+}
+
+/// Regions whose markup is not live: comments, scripts, styles, templates.
+fn inert_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?is)<!--.*?(?:-->|\z)|<script\b[^>]*>.*?(?:</script\s*>|\z)|<style\b[^>]*>.*?(?:</style\s*>|\z)|<template\b[^>]*>.*?(?:</template\s*>|\z)",
+        )
+        .expect("inert regex")
+    })
 }
 
 fn meta_re() -> &'static Regex {
@@ -162,6 +174,9 @@ fn icon_rank(rel: &str, href: &str, sizes: Option<&str>) -> Option<u32> {
 /// Extract the preview metadata from a page's HTML (only the head matters,
 /// but a body-level tag is still accepted).
 pub(super) fn extract(html: &str, page_url: &Url) -> PageMeta {
+    // Commented-out or scripted tags must not win over the live ones.
+    let live = inert_re().replace_all(html, " ");
+    let html = live.as_ref();
     let mut og_title = None;
     let mut twitter_title = None;
     let mut site_name = None;

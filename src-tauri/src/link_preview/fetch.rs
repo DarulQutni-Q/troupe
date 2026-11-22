@@ -54,6 +54,9 @@ fn client() -> Option<&'static reqwest::Client> {
                 .user_agent(USER_AGENT)
                 .timeout(TIMEOUT)
                 .no_proxy()
+                // A redirect must not carry the previous path and query (a
+                // share link's token) to the next origin.
+                .referer(false)
                 .dns_resolver(guarded_resolver(is_public, system_lookup()))
                 .redirect(reqwest::redirect::Policy::custom(|attempt| {
                     if attempt.previous().len() > MAX_REDIRECTS {
@@ -125,8 +128,19 @@ async fn get_bounded(
     let mut body = Vec::new();
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
-        let Ok(chunk) = chunk else {
-            break;
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            // A page head cut short can still carry its title; an icon cut
+            // short is broken, so the resolver must try the next candidate.
+            Err(_) if stop_at_head => break,
+            Err(e) => {
+                boundary_info(&format!(
+                    "link preview icon read failed from {}: {}",
+                    host_of(url),
+                    e.without_url()
+                ));
+                return None;
+            }
         };
         let room = limit.saturating_sub(body.len());
         body.extend_from_slice(&chunk[..chunk.len().min(room)]);

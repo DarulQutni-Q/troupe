@@ -59,6 +59,23 @@ fn icons_rank_rel_icon_near_32px_first_and_resolve_relative_hrefs() {
 }
 
 #[test]
+fn a_quoted_gt_stays_inside_the_attribute_value() {
+    let html = r#"<meta property="og:title" content="A > B"><title>Fallback</title>"#;
+    assert_eq!(extract(html, &page()).title.as_deref(), Some("A > B"));
+}
+
+#[test]
+fn commented_out_and_scripted_tags_are_ignored() {
+    let html = r#"<!-- <meta property="og:title" content="Old"> <link rel="icon" href="/old.ico"> -->
+        <script>document.write('<meta property="og:title" content="Script">')</script>
+        <meta property="og:title" content="Current">
+        <link rel="icon" href="/new.png">"#;
+    let meta = extract(html, &page());
+    assert_eq!(meta.title.as_deref(), Some("Current"));
+    assert_eq!(meta.icons[0].as_str(), "https://example.com/new.png");
+}
+
+#[test]
 fn no_metadata_yields_empty_meta() {
     let meta = extract("<html><body>hi</body></html>", &page());
     assert_eq!(meta.title, None);
@@ -93,6 +110,11 @@ fn parse_link_accepts_http_and_https_only_without_credentials() {
     assert!(parse_link("file:///etc/passwd").is_none());
     assert!(parse_link("https://user:pw@example.com").is_none());
     assert!(parse_link("not a url").is_none());
+    let long = format!("https://example.com/{}", "a".repeat(super::MAX_URL_LEN));
+    assert!(
+        parse_link(&long).is_none(),
+        "both transports refuse an oversized URL"
+    );
 }
 
 #[test]

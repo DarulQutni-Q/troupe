@@ -20,6 +20,15 @@ describe('splitLinks', () => {
       'https://en.wikipedia.org/wiki/Foo_(bar)'
     )
     expect(trimUrlCandidate('https://x.dev/a?!,')).toBe('https://x.dev/a')
+    expect(trimUrlCandidate('https://x.dev/(a)).')).toBe('https://x.dev/(a)')
+  })
+
+  it('trims a long run of closers in linear time', () => {
+    const started = performance.now()
+    expect(trimUrlCandidate(`https://example.com/${')'.repeat(50_000)}`)).toBe(
+      'https://example.com/'
+    )
+    expect(performance.now() - started).toBeLessThan(200)
   })
 
   it('ignores non-http schemes, a bare scheme, and text without links', () => {

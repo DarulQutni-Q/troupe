@@ -83,9 +83,16 @@ fn store(key: String, value: Option<LinkPreview>) {
     guard.insert(key, (Instant::now(), value));
 }
 
-/// Parse and validate a chat link: `http`/`https`, a host, no credentials.
-/// The fragment is dropped (it never reaches the server).
+/// The longest URL either transport resolves; longer input is not a chat link.
+pub(crate) const MAX_URL_LEN: usize = 4096;
+
+/// Parse and validate a chat link: `http`/`https`, a host, no credentials,
+/// at most [`MAX_URL_LEN`] bytes. The fragment is dropped (it never reaches
+/// the server).
 pub(crate) fn parse_link(raw: &str) -> Option<Url> {
+    if raw.len() > MAX_URL_LEN {
+        return None;
+    }
     let mut url = Url::parse(raw.trim()).ok()?;
     if !matches!(url.scheme(), "http" | "https") {
         return None;

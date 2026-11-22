@@ -18,6 +18,7 @@ import { cn } from '@/lib/utils'
 import { useColorTheme } from '@/stores/app-settings-store'
 import { ChatImageGallery, ChatMedia, MediaAltChip } from './ChatMedia'
 import { chatCodePlugin } from './chat-code-plugin'
+import { remarkBareLinkChips } from './chat-markdown-bare-links'
 import { ChatMarkdownCode } from './chat-markdown-code'
 import { remarkFilePathLinks } from './chat-markdown-file-links'
 import {
@@ -30,12 +31,17 @@ import { ChatMarkdownSpan } from './chat-markdown-word'
 import { chatMediaFromMarkdown } from './chat-media-source'
 import { LinkChip } from './LinkChip'
 
-const MEDIA_REMARK_PLUGINS = [...Object.values(defaultRemarkPlugins), remarkTermulMedia]
+const MEDIA_REMARK_PLUGINS = [
+  ...Object.values(defaultRemarkPlugins),
+  remarkTermulMedia,
+  remarkBareLinkChips
+]
 /** Adds prose file-path linkification when a `filePathContext` exists. */
 const FILE_PATH_REMARK_PLUGINS = [
   ...Object.values(defaultRemarkPlugins),
   remarkTermulMedia,
-  remarkFilePathLinks
+  remarkFilePathLinks,
+  remarkBareLinkChips
 ]
 
 /**
@@ -46,7 +52,8 @@ const FILE_PATH_REMARK_PLUGINS = [
 export const STREAMDOWN_ALLOWED_TAGS: AllowedTags = {
   'termul-file-path': ['dataPath'],
   'termul-media': ['dataUrl', 'dataAlt', 'dataLinkPreview'],
-  'termul-gallery': ['dataItems']
+  'termul-gallery': ['dataItems'],
+  'termul-link': ['dataUrl']
 }
 
 function stringProp(props: Record<string, unknown>, name: string): string | undefined {
@@ -99,26 +106,6 @@ const STREAMDOWN_ANIMATED = {
 // add a second, competing confirm path that opens via `window.open`.
 const LINK_SAFETY_OFF: LinkSafetyConfig = { enabled: false }
 const LINK_CLASS = 'wrap-anywhere font-medium text-primary underline'
-
-function nodeText(node: React.ReactNode): string {
-  if (typeof node === 'string' || typeof node === 'number') return String(node)
-  if (Array.isArray(node)) return node.map(nodeText).join('')
-  return ''
-}
-
-function stripScheme(url: string): string {
-  return url.replace(/^https?:\/\//i, '').replace(/\/$/, '')
-}
-
-/**
- * A bare link the agent wrote (an autolink, whose text is the URL itself,
- * `www.` literals included). A labelled `[text](url)` link keeps its label.
- */
-export function isBareLink(href: string | undefined, children: React.ReactNode): href is string {
-  if (!href || !/^https?:\/\//i.test(href)) return false
-  const text = nodeText(children).trim()
-  return text.length > 0 && stripScheme(text) === stripScheme(href)
-}
 
 function decodeFragment(href: string): string {
   try {
@@ -286,6 +273,16 @@ export function AgentProse({
           filePathContext={filePathContext}
         />
       ),
+      // A bare URL (see `remarkBareLinkChips`) shows as favicon + page title
+      // once the reply settles; a streaming URL may still be incomplete.
+      'termul-link': (props: Record<string, unknown>) => {
+        const url = stringProp(props, 'data-url') ?? ''
+        return /^https?:\/\//i.test(url) ? (
+          <LinkChip url={url} resolve={!streaming} />
+        ) : (
+          <>{props.children as React.ReactNode}</>
+        )
+      },
       'termul-gallery': (props: Record<string, unknown>) => (
         <TermulMarkdownGallery
           items={stringProp(props, 'data-items')}
@@ -312,11 +309,6 @@ export function AgentProse({
               {children}
             </a>
           )
-        }
-        // A bare URL shows as favicon + page title once the reply settles
-        // (a streaming URL may still be incomplete).
-        if (isBareLink(href, children)) {
-          return <LinkChip url={href} resolve={!streaming} className={className} />
         }
         // Streamdown's own link safety is off (see `linkSafety` below): every
         // external link, with or without a workspace, goes through the one

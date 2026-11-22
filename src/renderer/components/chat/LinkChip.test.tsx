@@ -100,6 +100,31 @@ describe('chat surfaces embed bare links', () => {
     expect(screen.getByText('the recording')).toBeInTheDocument()
   })
 
+  it('an explicit link whose label looks like the URL keeps its label', () => {
+    render(
+      <TooltipProvider>
+        <AgentProse
+          text="[example.com](https://example.com) and [**zoom**](https://zoom.us)"
+          streaming={false}
+          reduced
+        />
+      </TooltipProvider>
+    )
+    expect(screen.queryByTestId('link-chip')).toBeNull()
+    expect(screen.getByText('example.com')).toBeInTheDocument()
+    expect(screen.getByText('zoom')).toBeInTheDocument()
+  })
+
+  it('a bare URL with non-ASCII characters still becomes a chip', async () => {
+    render(
+      <TooltipProvider>
+        <AgentProse text="Menu: https://example.com/café ok" streaming={false} reduced />
+      </TooltipProvider>
+    )
+    await waitFor(() => expect(screen.getByTestId('link-chip')).toBeInTheDocument())
+    expect(loadLinkPreview).toHaveBeenCalledWith('https://example.com/café')
+  })
+
   it('a user bubble shows a written URL as a link chip', async () => {
     const message: ChatMessageType = {
       id: 'u1',
