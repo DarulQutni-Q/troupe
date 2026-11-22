@@ -1453,6 +1453,9 @@ describe('AgentChatPanel waiting-to-confirm state (AD-6)', () => {
     vi.useFakeTimers()
     promptCommandStatesRef.current = {}
     transportReconnectingRef.current = false
+    // A reconnect test that ran first can leave this chat marked resyncing,
+    // which shows the transport overlay as a second `status`.
+    resyncingSessionsRef.current = {}
   })
 
   afterEach(() => {
