@@ -79,8 +79,7 @@ describe('stableAgentTabs OpenCode alias', () => {
       viewConfigId: saved.id,
       entries: [opencode, gemini],
       agentConfigs: [opencode.config!, gemini.config!, saved],
-      capacity: 8,
-      armsUnconfigured: false
+      capacity: 8
     })
     const tabs = [...visible, ...overflow]
     const opencodeTabs = tabs.filter(
@@ -210,7 +209,7 @@ const unconfigured = (id: string, name: string): AgentTab => ({
 const STORED = ['a', 'c', 'cl', 'cu', 'e', 'g', 'z', 'b', 't0', 't1', 't2', 't3', 't4'].map((id) =>
   config(id, id)
 )
-const chatGroups = (t: AgentTab) => agentGroup(t, STORED, false)
+const chatGroups = (t: AgentTab) => agentGroup(t, STORED, null)
 
 describe('agentGroup', () => {
   it('sorts set-up, not-set-up, and not-installed agents into ready, setup, and install', () => {
@@ -229,12 +228,13 @@ describe('agentGroup', () => {
       config: config('x', 'Mine'),
       entry: null
     }
-    expect(agentGroup(custom, [], false)).toBe('ready')
+    expect(agentGroup(custom, [], null)).toBe('ready')
   })
 
-  it('counts a not-set-up agent as ready in the launcher, which can arm it', () => {
-    expect(agentGroup(unconfigured('q', 'Qwen Code'), STORED, true)).toBe('ready')
-    expect(agentGroup(tab('o', 'OpenCode', 'install-required'), STORED, true)).toBe('install')
+  it('counts the current agent as ready before its config is stored', () => {
+    expect(agentGroup(unconfigured('q', 'Qwen Code'), STORED, 'q')).toBe('ready')
+    expect(agentGroup(unconfigured('q', 'Qwen Code'), STORED, 'c')).toBe('setup')
+    expect(agentGroup(tab('o', 'OpenCode', 'install-required'), STORED, 'o')).toBe('install')
   })
 })
 
@@ -344,8 +344,7 @@ describe('stableAgentTabs (V2)', () => {
       viewConfigId: over.view ?? null,
       entries,
       agentConfigs: CONFIGS,
-      capacity: 4,
-      armsUnconfigured: false
+      capacity: 4
     })
 
   it('keeps one order whichever agent is current, armed, or viewed', () => {
@@ -369,22 +368,21 @@ describe('stableAgentTabs (V2)', () => {
     expect(ids(overflow)[1]).toBe('c')
   })
 
-  it('keeps a not-set-up agent behind More in chat, and gives it a tab in the launcher', () => {
+  it('keeps a not-set-up agent behind More unless it is the current agent', () => {
     const withQwen = [...entries, entry(null, 'qwen')]
     const source = {
-      currentConfigId: 'a',
       armedConfigId: null,
       viewConfigId: null,
       entries: withQwen,
       agentConfigs: CONFIGS,
       capacity: 8
     }
-    const chat = stableAgentTabs({ ...source, armsUnconfigured: false })
-    expect(ids(chat.visible)).toEqual(['a', 'b', 'd', 'e', 'c'])
-    expect(ids(chat.overflow)).toEqual(['qwen', 'opencode'])
-    const launcher = stableAgentTabs({ ...source, armsUnconfigured: true })
-    expect(ids(launcher.visible)).toEqual(['a', 'b', 'd', 'e', 'c', 'qwen'])
-    expect(ids(launcher.overflow)).toEqual(['opencode'])
+    const setUpCurrent = stableAgentTabs({ ...source, currentConfigId: 'a' })
+    expect(ids(setUpCurrent.visible)).toEqual(['a', 'b', 'd', 'e', 'c'])
+    expect(ids(setUpCurrent.overflow)).toEqual(['qwen', 'opencode'])
+    const qwenCurrent = stableAgentTabs({ ...source, currentConfigId: 'qwen' })
+    expect(ids(qwenCurrent.visible)).toEqual(['a', 'b', 'd', 'e', 'c', 'qwen'])
+    expect(ids(qwenCurrent.overflow)).toEqual(['opencode'])
   })
 
   it('adds the current agent from its stored config before the catalog lists it', () => {
@@ -394,8 +392,7 @@ describe('stableAgentTabs (V2)', () => {
       viewConfigId: null,
       entries: [],
       agentConfigs: [A],
-      capacity: 10,
-      armsUnconfigured: false
+      capacity: 10
     })
     expect(visible).toEqual([{ configId: 'a', name: 'Alpha', config: A, entry: null }])
   })
