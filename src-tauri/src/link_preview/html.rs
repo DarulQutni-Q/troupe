@@ -121,7 +121,21 @@ fn live_html(html: &str) -> String {
 /// text-only elements) has closed the head, so a page read can stop.
 pub(super) fn has_live_head_end(html: &str) -> bool {
     let lower = html.to_ascii_lowercase();
-    lower.contains("</head") && live_html(&lower).contains("</head>")
+    if !lower.contains("</head") {
+        return false;
+    }
+    // Drop every live start tag (quote-aware) so a `</head>` written in an
+    // attribute value does not count either.
+    start_tag_re()
+        .replace_all(&live_html(&lower), " ")
+        .contains("</head>")
+}
+
+fn start_tag_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"(?is)<[a-z](?:[^>"']|"[^"]*"|'[^']*')*>"#).expect("start tag regex")
+    })
 }
 
 fn meta_re() -> &'static Regex {

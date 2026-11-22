@@ -136,6 +136,9 @@ fn a_head_end_inside_a_script_does_not_end_the_head() {
         "<head><script>var s = '</head>';</script><title>x"
     ));
     assert!(!has_live_head_end("<head><!-- </head> -->"));
+    assert!(!has_live_head_end(
+        r#"<head><meta name="description" content="Use </head> here">"#
+    ));
     assert!(has_live_head_end("<head><title>x</title></HEAD><body>"));
 }
 
