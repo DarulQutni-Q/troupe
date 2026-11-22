@@ -126,9 +126,23 @@ pub(super) fn has_live_head_end(html: &str) -> bool {
     }
     // Drop every live start tag (quote-aware) so a `</head>` written in an
     // attribute value does not count either.
-    start_tag_re()
-        .replace_all(&live_html(&lower), " ")
-        .contains("</head>")
+    let live = live_html(&lower);
+    // A read chunk can end inside a start tag; that unfinished tag is
+    // attribute text too.
+    let live = match incomplete_tag_re().find(&live) {
+        Some(tail) => &live[..tail.start()],
+        None => live.as_str(),
+    };
+    start_tag_re().replace_all(live, " ").contains("</head>")
+}
+
+/// A start tag still open at the end of the read so far (quote-aware).
+fn incomplete_tag_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"(?s)<[a-z](?:[^>"']|"[^"]*"|'[^']*')*(?:"[^"]*|'[^']*)?\z"#)
+            .expect("incomplete tag regex")
+    })
 }
 
 fn start_tag_re() -> &'static Regex {
