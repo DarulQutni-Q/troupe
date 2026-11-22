@@ -23,14 +23,29 @@ fn tag_re(name: &str) -> Regex {
     Regex::new(&format!(r#"(?is)<{name}\b(?:[^>"']|"[^"]*"|'[^']*')*>"#)).expect("static tag regex")
 }
 
-/// Regions whose markup is not live: comments, scripts, styles, templates.
+/// Regions whose markup is not live (comments, scripts, styles, templates),
+/// plus any other start tag. Matching is leftmost-first, so a quoted
+/// `<script>` inside an attribute value is consumed by its enclosing tag and
+/// never mistaken for an element.
 fn inert_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(
-            r"(?is)<!--.*?(?:-->|\z)|<script\b[^>]*>.*?(?:</script\s*>|\z)|<style\b[^>]*>.*?(?:</style\s*>|\z)|<template\b[^>]*>.*?(?:</template\s*>|\z)",
-        )
-        .expect("inert regex")
+        const ATTRS: &str = r#"(?:[^>"']|"[^"]*"|'[^']*')*"#;
+        let pattern = format!(
+            r"(?is)(?P<inert><!--.*?(?:-->|\z)|<script\b{ATTRS}>.*?(?:</script\s*>|\z)|<style\b{ATTRS}>.*?(?:</style\s*>|\z)|<template\b{ATTRS}>.*?(?:</template\s*>|\z))|<[a-z]{ATTRS}>"
+        );
+        Regex::new(&pattern).expect("inert regex")
+    })
+}
+
+/// `html` with inert regions blanked out and every live tag kept as written.
+fn live_html(html: &str) -> std::borrow::Cow<'_, str> {
+    inert_re().replace_all(html, |caps: &regex::Captures<'_>| {
+        if caps.name("inert").is_some() {
+            " ".to_string()
+        } else {
+            caps[0].to_string()
+        }
     })
 }
 
@@ -175,7 +190,7 @@ fn icon_rank(rel: &str, href: &str, sizes: Option<&str>) -> Option<u32> {
 /// but a body-level tag is still accepted).
 pub(super) fn extract(html: &str, page_url: &Url) -> PageMeta {
     // Commented-out or scripted tags must not win over the live ones.
-    let live = inert_re().replace_all(html, " ");
+    let live = live_html(html);
     let html = live.as_ref();
     let mut og_title = None;
     let mut twitter_title = None;

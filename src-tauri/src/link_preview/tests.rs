@@ -76,6 +76,18 @@ fn commented_out_and_scripted_tags_are_ignored() {
 }
 
 #[test]
+fn a_quoted_inert_tag_name_does_not_start_an_inert_region() {
+    let html =
+        r#"<meta property="og:title" content="Using <script> safely"><title>Fallback</title>"#;
+    assert_eq!(
+        extract(html, &page()).title.as_deref(),
+        Some("Using <script> safely")
+    );
+    let html = r#"<meta name="x" content="a <!-- b"><title>Fallback</title>"#;
+    assert_eq!(extract(html, &page()).title.as_deref(), Some("Fallback"));
+}
+
+#[test]
 fn no_metadata_yields_empty_meta() {
     let meta = extract("<html><body>hi</body></html>", &page());
     assert_eq!(meta.title, None);
