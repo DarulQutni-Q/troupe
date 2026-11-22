@@ -142,17 +142,22 @@ async fn get_bounded(
                 return None;
             }
         };
-        let room = limit.saturating_sub(body.len());
-        body.extend_from_slice(&chunk[..chunk.len().min(room)]);
-        if body.len() >= limit {
-            if !stop_at_head {
-                // An icon cut short is unusable.
+        if !stop_at_head {
+            // An icon is all or nothing: one that fits the cap exactly is
+            // fine; only a byte past it is refused.
+            if body.len() + chunk.len() > limit {
                 boundary_info(&format!(
                     "link preview icon refused oversized payload from {}",
                     host_of(url)
                 ));
                 return None;
             }
+            body.extend_from_slice(&chunk);
+            continue;
+        }
+        let room = limit.saturating_sub(body.len());
+        body.extend_from_slice(&chunk[..chunk.len().min(room)]);
+        if body.len() >= limit {
             break;
         }
         if stop_at_head && contains_head_end(&body) {
