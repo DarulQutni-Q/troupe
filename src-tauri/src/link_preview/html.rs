@@ -38,15 +38,57 @@ fn inert_re() -> &'static Regex {
     })
 }
 
-/// `html` with inert regions blanked out and every live tag kept as written.
-fn live_html(html: &str) -> std::borrow::Cow<'_, str> {
-    inert_re().replace_all(html, |caps: &regex::Captures<'_>| {
-        if caps.name("inert").is_some() {
-            " ".to_string()
-        } else {
-            caps[0].to_string()
-        }
+/// `<template ...>` opens and `</template>` closes, for nested template depth.
+fn template_edge_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"(?is)<template\b(?:[^>"']|"[^"]*"|'[^']*')*>|</template\s*>"#)
+            .expect("template edge regex")
     })
+}
+
+/// End offset of the template starting at `start`, counting nested
+/// templates; the end of `html` when it never closes.
+fn template_end(html: &str, start: usize) -> usize {
+    let mut depth = 0usize;
+    for edge in template_edge_re().find_iter(&html[start..]) {
+        if edge.as_str().starts_with("</") {
+            depth = depth.saturating_sub(1);
+            if depth == 0 {
+                return start + edge.end();
+            }
+        } else {
+            depth += 1;
+        }
+    }
+    html.len()
+}
+
+/// `html` with inert regions blanked out and every live tag kept as written.
+fn live_html(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut pos = 0;
+    while let Some(caps) = inert_re().captures_at(html, pos) {
+        let whole = caps.get(0).expect("match");
+        out.push_str(&html[pos..whole.start()]);
+        if caps.name("inert").is_none() {
+            out.push_str(whole.as_str());
+            pos = whole.end();
+            continue;
+        }
+        out.push(' ');
+        let is_template = whole
+            .as_str()
+            .get(..9)
+            .is_some_and(|p| p.eq_ignore_ascii_case("<template"));
+        pos = if is_template {
+            template_end(html, whole.start())
+        } else {
+            whole.end()
+        };
+    }
+    out.push_str(&html[pos..]);
+    out
 }
 
 fn meta_re() -> &'static Regex {
@@ -191,7 +233,7 @@ fn icon_rank(rel: &str, href: &str, sizes: Option<&str>) -> Option<u32> {
 pub(super) fn extract(html: &str, page_url: &Url) -> PageMeta {
     // Commented-out or scripted tags must not win over the live ones.
     let live = live_html(html);
-    let html = live.as_ref();
+    let html = live.as_str();
     let mut og_title = None;
     let mut twitter_title = None;
     let mut site_name = None;

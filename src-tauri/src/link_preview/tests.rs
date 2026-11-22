@@ -88,6 +88,16 @@ fn a_quoted_inert_tag_name_does_not_start_an_inert_region() {
 }
 
 #[test]
+fn nested_templates_stay_inert_to_their_matching_close() {
+    let html = r#"<template>
+          <template></template>
+          <meta property="og:title" content="Old">
+        </template>
+        <meta property="og:title" content="Current">"#;
+    assert_eq!(extract(html, &page()).title.as_deref(), Some("Current"));
+}
+
+#[test]
 fn no_metadata_yields_empty_meta() {
     let meta = extract("<html><body>hi</body></html>", &page());
     assert_eq!(meta.title, None);
