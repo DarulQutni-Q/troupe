@@ -11,7 +11,7 @@ use url::{Host, Url};
 
 use crate::mcp_catalog::icon::{guarded_resolver, is_public, sniff, system_lookup, Refused};
 
-use super::html::{extract, PageMeta};
+use super::html::{extract, has_live_head_end, PageMeta};
 use super::{boundary_info, boundary_warn, LinkPreview};
 
 /// Page bytes read at most; the head is almost always far smaller.
@@ -162,8 +162,11 @@ async fn get_bounded(
     Some((final_url, mime, body))
 }
 
+/// A `</head>` in the live markup; one written inside a script, style or
+/// comment does not end the read early.
 fn contains_head_end(body: &[u8]) -> bool {
     body.windows(7).any(|w| w.eq_ignore_ascii_case(b"</head>"))
+        && has_live_head_end(&String::from_utf8_lossy(body))
 }
 
 /// The MIME an icon payload actually is: the shared sniffer, plus ICO which

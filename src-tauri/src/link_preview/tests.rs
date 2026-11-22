@@ -117,6 +117,29 @@ fn script_spelled_inside_a_title_is_title_text() {
 }
 
 #[test]
+fn markup_spelled_inside_title_or_textarea_is_not_read_as_tags() {
+    let html = r#"<title>Docs <meta property="og:title" content="Fake"></title>
+        <textarea><link rel="icon" sizes="32x32" href="https://evil.example/i.png"></textarea>
+        <meta property="og:title" content="Real"><link rel="icon" href="/real.ico">"#;
+    let meta = extract(html, &page());
+    assert_eq!(meta.title.as_deref(), Some("Real"));
+    assert_eq!(meta.icons.len(), 1);
+    assert_eq!(meta.icons[0].as_str(), "https://example.com/real.ico");
+    let fallback = extract("<title>A <b> B</title>", &page());
+    assert_eq!(fallback.title.as_deref(), Some("A <b> B"));
+}
+
+#[test]
+fn a_head_end_inside_a_script_does_not_end_the_head() {
+    use super::html::has_live_head_end;
+    assert!(!has_live_head_end(
+        "<head><script>var s = '</head>';</script><title>x"
+    ));
+    assert!(!has_live_head_end("<head><!-- </head> -->"));
+    assert!(has_live_head_end("<head><title>x</title></HEAD><body>"));
+}
+
+#[test]
 fn nested_templates_stay_inert_to_their_matching_close() {
     let html = r#"<template>
           <template></template>

@@ -34,7 +34,7 @@ fn inert_re() -> &'static Regex {
     RE.get_or_init(|| {
         const ATTRS: &str = r#"(?:[^>"']|"[^"]*"|'[^']*')*"#;
         let pattern = format!(
-            r"(?is)(?P<inert><!--.*?(?:-->|\z)|<script\b{ATTRS}>.*?(?:</script\s*>|\z)|<style\b{ATTRS}>.*?(?:</style\s*>|\z)|<template\b{ATTRS}>.*?(?:</template\s*>|\z))|<title\b{ATTRS}>.*?(?:</title\s*>|\z)|<textarea\b{ATTRS}>.*?(?:</textarea\s*>|\z)|<[a-z]{ATTRS}>"
+            r"(?is)(?P<inert><!--.*?(?:-->|\z)|<script\b{ATTRS}>.*?(?:</script\s*>|\z)|<style\b{ATTRS}>.*?(?:</style\s*>|\z)|<template\b{ATTRS}>.*?(?:</template\s*>|\z))|(?P<title_open><title\b{ATTRS}>)(?P<title_body>.*?)(?P<title_close></title\s*>|\z)|(?P<textarea><textarea\b{ATTRS}>.*?(?:</textarea\s*>|\z))|<[a-z]{ATTRS}>"
         );
         Regex::new(&pattern).expect("inert regex")
     })
@@ -78,6 +78,25 @@ fn live_html(html: &str) -> String {
     while let Some(caps) = inert_re().captures_at(html, pos) {
         let whole = caps.get(0).expect("match");
         out.push_str(&html[pos..whole.start()]);
+        if let (Some(open), Some(body), Some(close)) = (
+            caps.name("title_open"),
+            caps.name("title_body"),
+            caps.name("title_close"),
+        ) {
+            // Title content is text: keep it for the fallback title, but
+            // escape `<` so the meta/link scans cannot read it as markup.
+            out.push_str(open.as_str());
+            out.push_str(&body.as_str().replace('<', "&lt;"));
+            out.push_str(close.as_str());
+            pos = whole.end();
+            continue;
+        }
+        if caps.name("textarea").is_some() {
+            // Textarea content is text no preview needs.
+            out.push(' ');
+            pos = whole.end();
+            continue;
+        }
         if caps.name("inert").is_none() {
             out.push_str(whole.as_str());
             pos = whole.end();
@@ -96,6 +115,13 @@ fn live_html(html: &str) -> String {
     }
     out.push_str(&html[pos..]);
     out
+}
+
+/// Whether the live markup (outside comments, scripts, styles, templates and
+/// text-only elements) has closed the head, so a page read can stop.
+pub(super) fn has_live_head_end(html: &str) -> bool {
+    let lower = html.to_ascii_lowercase();
+    lower.contains("</head") && live_html(&lower).contains("</head>")
 }
 
 fn meta_re() -> &'static Regex {
