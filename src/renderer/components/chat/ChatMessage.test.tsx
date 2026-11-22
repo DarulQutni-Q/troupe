@@ -387,13 +387,14 @@ describe('ChatMessage', () => {
       JSON.stringify({
         'termul-file-path': ['dataPath'],
         'termul-media': ['dataUrl', 'dataAlt', 'dataLinkPreview'],
-        'termul-gallery': ['dataItems']
+        'termul-gallery': ['dataItems'],
+        'termul-link': ['dataUrl']
       })
     )
     // The image rewrite is always on; the file-path plugin waits for a context.
     expect(bare).toHaveAttribute('data-has-image-component', 'true')
     expect(bare).toHaveAttribute('data-has-file-path-component', 'false')
-    expect(bare).toHaveAttribute('data-remark-plugins', '3')
+    expect(bare).toHaveAttribute('data-remark-plugins', '4')
     unmount()
 
     render(
@@ -402,7 +403,7 @@ describe('ChatMessage', () => {
     const withContext = screen.getByTestId('streamdown')
     expect(withContext).toHaveAttribute('data-has-file-path-component', 'true')
     expect(withContext).toHaveAttribute('data-has-image-component', 'true')
-    expect(withContext).toHaveAttribute('data-remark-plugins', '4')
+    expect(withContext).toHaveAttribute('data-remark-plugins', '5')
   })
 
   it('renders the muted alt-text chip for relative images without Tauri', () => {

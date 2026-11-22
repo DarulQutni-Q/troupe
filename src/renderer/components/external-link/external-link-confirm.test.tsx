@@ -142,7 +142,8 @@ const SURFACES: [string, () => Promise<HTMLElement>][] = [
           />
         )
       )
-      return screen.getByText(URL_)
+      // A bare URL renders as the favicon + title link chip.
+      return screen.getByTestId('link-chip')
     }
   ],
   [

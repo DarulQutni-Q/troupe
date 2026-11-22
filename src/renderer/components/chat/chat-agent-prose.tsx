@@ -18,6 +18,7 @@ import { cn } from '@/lib/utils'
 import { useColorTheme } from '@/stores/app-settings-store'
 import { ChatImageGallery, ChatMedia, MediaAltChip } from './ChatMedia'
 import { chatCodePlugin } from './chat-code-plugin'
+import { remarkBareLinkChips } from './chat-markdown-bare-links'
 import { ChatMarkdownCode } from './chat-markdown-code'
 import { remarkFilePathLinks } from './chat-markdown-file-links'
 import {
@@ -28,13 +29,19 @@ import {
 import { ChatMarkdownTable } from './chat-markdown-table'
 import { ChatMarkdownSpan } from './chat-markdown-word'
 import { chatMediaFromMarkdown } from './chat-media-source'
+import { LinkChip } from './LinkChip'
 
-const MEDIA_REMARK_PLUGINS = [...Object.values(defaultRemarkPlugins), remarkTermulMedia]
+const MEDIA_REMARK_PLUGINS = [
+  ...Object.values(defaultRemarkPlugins),
+  remarkTermulMedia,
+  remarkBareLinkChips
+]
 /** Adds prose file-path linkification when a `filePathContext` exists. */
 const FILE_PATH_REMARK_PLUGINS = [
   ...Object.values(defaultRemarkPlugins),
   remarkTermulMedia,
-  remarkFilePathLinks
+  remarkFilePathLinks,
+  remarkBareLinkChips
 ]
 
 /**
@@ -45,7 +52,8 @@ const FILE_PATH_REMARK_PLUGINS = [
 export const STREAMDOWN_ALLOWED_TAGS: AllowedTags = {
   'termul-file-path': ['dataPath'],
   'termul-media': ['dataUrl', 'dataAlt', 'dataLinkPreview'],
-  'termul-gallery': ['dataItems']
+  'termul-gallery': ['dataItems'],
+  'termul-link': ['dataUrl']
 }
 
 function stringProp(props: Record<string, unknown>, name: string): string | undefined {
@@ -265,6 +273,16 @@ export function AgentProse({
           filePathContext={filePathContext}
         />
       ),
+      // A bare URL (see `remarkBareLinkChips`) shows as favicon + page title
+      // once the reply settles; a streaming URL may still be incomplete.
+      'termul-link': (props: Record<string, unknown>) => {
+        const url = stringProp(props, 'data-url') ?? ''
+        return /^https?:\/\//i.test(url) ? (
+          <LinkChip url={url} resolve={!streaming} />
+        ) : (
+          <>{props.children as React.ReactNode}</>
+        )
+      },
       'termul-gallery': (props: Record<string, unknown>) => (
         <TermulMarkdownGallery
           items={stringProp(props, 'data-items')}
@@ -320,7 +338,7 @@ export function AgentProse({
       }
     }
     return merged
-  }, [filePathContext])
+  }, [filePathContext, streaming])
 
   return (
     <div

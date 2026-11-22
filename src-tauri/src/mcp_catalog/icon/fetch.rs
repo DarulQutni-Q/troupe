@@ -211,6 +211,19 @@ impl Resolve for GuardedResolver {
     }
 }
 
+/// A reqwest DNS resolver that hands back only addresses `allows` accepts —
+/// shared with other outbound fetchers (link previews) that need the same
+/// rebinding-safe public-address guard.
+pub(crate) fn guarded_resolver(allows: fn(IpAddr) -> bool, lookup: Lookup) -> Arc<dyn Resolve> {
+    Arc::new(GuardedResolver {
+        policy: Policy {
+            scheme: "https",
+            allows,
+        },
+        lookup,
+    })
+}
+
 pub(crate) struct IconClient {
     client: reqwest::Client,
     policy: Policy,

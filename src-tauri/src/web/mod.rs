@@ -47,6 +47,9 @@ pub mod mcp_catalog_api;
 #[cfg(test)]
 pub(crate) mod log_capture;
 pub mod mcp_oauth_api;
+pub mod link_preview_api;
+#[cfg(test)]
+mod link_preview_api_tests;
 pub mod mcp_probe_api;
 pub mod mcp_registry;
 pub mod openapi;

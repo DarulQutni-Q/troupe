@@ -712,6 +712,7 @@ fn requires_token_covers_api_prefixes_and_public_paths() {
         "/projects",
         "/projects/default",
         "/projects/p-1",
+        "/link/preview",
         "/mcp-servers",
         "/mcp-servers/probe",
         "/mcp-servers/oauth/start",

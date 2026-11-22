@@ -39,6 +39,7 @@ use crate::web::mcp_probe_api;
 use crate::web::openapi;
 use crate::web::host_allow::{self, HostAllowList};
 use crate::web::origin::{self, OriginPolicy};
+use crate::web::link_preview_api;
 use crate::web::project_icon_api;
 use crate::web::project_registry::ProjectRegistry;
 use crate::web::projects_api;
@@ -302,6 +303,10 @@ pub fn router(
         // `project_icon_resolve` command — same shared resolver, read-route
         // posture (boundary check, no write guard).
         .route("/project/icon", post(project_icon_api::resolve_icon))
+        // Link preview (favicon + title) for chat links. Mirrors the desktop
+        // `link_preview_resolve` command; the resolver only reaches public
+        // addresses.
+        .route("/link/preview", post(link_preview_api::resolve_preview))
         // Search web routes (CAP-2: Web & Mobile 1:1 Parity). Each mirrors a
         // desktop `#[tauri::command] search_*` handler; see `web/search_api.rs`.
         .route("/search/rg-info", get(search_api::rg_info))
@@ -573,6 +578,7 @@ pub fn router_with_static(
         .route("/github/edit-item", post(github_api::edit_item))
         .route("/github/item-state", post(github_api::set_item_state))
         .route("/project/icon", post(project_icon_api::resolve_icon))
+        .route("/link/preview", post(link_preview_api::resolve_preview))
         .route("/search/rg-info", get(search_api::rg_info))
         .route("/search/content", post(search_api::content))
         .route("/search/file-names", get(search_api::file_names))
