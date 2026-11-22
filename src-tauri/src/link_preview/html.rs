@@ -40,12 +40,17 @@ fn inert_re() -> &'static Regex {
     })
 }
 
-/// `<template ...>` opens and `</template>` closes, for nested template depth.
-fn template_edge_re() -> &'static Regex {
+/// Tokens inside a template: text-only regions (comments, scripts, styles,
+/// titles, textareas) and other start tags are skipped whole, so a template
+/// marker written inside one, or inside a quoted attribute, is never counted.
+fn template_token_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r#"(?is)<template\b(?:[^>"']|"[^"]*"|'[^']*')*>|</template\s*>"#)
-            .expect("template edge regex")
+        const ATTRS: &str = r#"(?:[^>"']|"[^"]*"|'[^']*')*"#;
+        let pattern = format!(
+            r"(?is)(?P<close></template\s*>)|(?P<open><template\b{ATTRS}>)|<!--.*?(?:-->|\z)|<script\b{ATTRS}>.*?(?:</script\s*>|\z)|<style\b{ATTRS}>.*?(?:</style\s*>|\z)|<title\b{ATTRS}>.*?(?:</title\s*>|\z)|<textarea\b{ATTRS}>.*?(?:</textarea\s*>|\z)|<[a-z]{ATTRS}>"
+        );
+        Regex::new(&pattern).expect("template token regex")
     })
 }
 
@@ -53,14 +58,14 @@ fn template_edge_re() -> &'static Regex {
 /// templates; the end of `html` when it never closes.
 fn template_end(html: &str, start: usize) -> usize {
     let mut depth = 0usize;
-    for edge in template_edge_re().find_iter(&html[start..]) {
-        if edge.as_str().starts_with("</") {
+    for caps in template_token_re().captures_iter(&html[start..]) {
+        if caps.name("open").is_some() {
+            depth += 1;
+        } else if let Some(close) = caps.name("close") {
             depth = depth.saturating_sub(1);
             if depth == 0 {
-                return start + edge.end();
+                return start + close.end();
             }
-        } else {
-            depth += 1;
         }
     }
     html.len()

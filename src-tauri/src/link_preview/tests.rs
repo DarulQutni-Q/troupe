@@ -88,6 +88,26 @@ fn a_quoted_inert_tag_name_does_not_start_an_inert_region() {
 }
 
 #[test]
+fn template_markers_in_comments_scripts_and_attributes_are_not_counted() {
+    for inner in [
+        "<!-- </template> -->",
+        "<script>document.write('</template>')</script>",
+        "<style>/* </template> */</style>",
+        r#"<div data-x="</template>"></div>"#,
+        "<!-- <template> -->",
+    ] {
+        let html = format!(
+            r#"<template>{inner}<meta property="og:title" content="Old"></template><meta property="og:title" content="Current">"#
+        );
+        assert_eq!(
+            extract(&html, &page()).title.as_deref(),
+            Some("Current"),
+            "{inner}"
+        );
+    }
+}
+
+#[test]
 fn script_spelled_inside_a_title_is_title_text() {
     let html = "<head><title>Using <script> safely</title><script>var t = '<title>x</title>';</script></head>";
     assert_eq!(
