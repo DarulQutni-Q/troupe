@@ -2497,7 +2497,25 @@ describe('SelectorPanelV2 set-up agents in the track, the rest grouped behind Mo
     ])
   })
 
-  it('shows More alone when no agent is set up, active on the chat agent behind it', () => {
+  it('shows More alone when no agent is set up', () => {
+    render(
+      <Panel
+        {...props({
+          source: chat({
+            currentConfigId: null,
+            agentConfigs: [],
+            entries: [notSetUp(CURSOR), ...TO_INSTALL]
+          })
+        })}
+      />
+    )
+    expect(tabNames()).toEqual(['More agents'])
+    fireEvent.click(screen.getByRole('tab', { name: 'More agents' }))
+    const panel = screen.getByRole('tabpanel', { name: 'More agents' })
+    expect(rowTexts(within(panel).getByRole('group', { name: 'Needs setup' }))).toEqual(['Cursor'])
+  })
+
+  it('gives the current agent a tab before its config is stored', () => {
     render(
       <Panel
         {...props({
@@ -2505,17 +2523,30 @@ describe('SelectorPanelV2 set-up agents in the track, the rest grouped behind Mo
         })}
       />
     )
-    expect(tabNames()).toEqual(['More agents'])
-    const more = screen.getByRole('tab', { name: 'More agents' })
-    expect(more).toHaveAttribute('aria-selected', 'true')
-    fireEvent.click(more)
-    const panel = screen.getByRole('tabpanel', { name: 'More agents' })
-    expect(rowTexts(within(panel).getByRole('group', { name: 'Needs setup' }))).toEqual(['Cursor'])
+    expect(tabNames()).toEqual(['Cursor', 'More agents'])
+    expect(screen.getByRole('tab', { name: 'Cursor' })).toHaveAttribute('aria-selected', 'true')
   })
 
-  it('gives a not-set-up agent a tab in the launcher, which can arm it', () => {
-    render(<Panel {...props({ source: chat({ selectAgent: () => {} }) })} />)
-    expect(tabNames()).toEqual(['amp', 'Claude Agent', 'Cursor', 'Gemini', 'More agents'])
+  it('shows the same tabs in the launcher as in chat, and sets up a Needs setup agent first', () => {
+    const selectAgent = vi.fn()
+    render(<Panel {...props({ source: chat({ selectAgent }) })} />)
+    expect(tabNames()).toEqual(['Claude Agent', 'Cursor', 'More agents'])
+    fireEvent.click(screen.getByRole('tab', { name: 'More agents' }))
+    const panel = screen.getByRole('tabpanel', { name: 'More agents' })
+    const needsSetupRows = within(panel).getByRole('group', { name: 'Needs setup' })
+    expect(rowTexts(needsSetupRows)).toEqual(['amp', 'Gemini'])
+
+    fireEvent.click(within(needsSetupRows).getByRole('button', { name: 'amp' }))
+
+    expect(screen.getByTestId('panel-agent-setup')).toBeInTheDocument()
+    expect(selectAgent).not.toHaveBeenCalled()
+  })
+
+  it('gives the launcher agent a tab before its config is stored', () => {
+    render(
+      <Panel {...props({ source: chat({ selectAgent: () => {}, currentConfigId: AMP.id }) })} />
+    )
+    expect(tabNames()).toEqual(['amp', 'Claude Agent', 'Cursor', 'More agents'])
   })
 
   /** Gemini as the host reports it: ready, with a derived config the chat has not stored. */
