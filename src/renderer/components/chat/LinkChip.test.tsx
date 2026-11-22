@@ -75,11 +75,6 @@ describe('LinkChip', () => {
     })
     expect(event.defaultPrevented).toBe(true)
   })
-
-  it('the static variant is not a link', () => {
-    render(<LinkChip url={ZOOM} variant="static" />)
-    expect(screen.getByTestId('link-chip').tagName).toBe('SPAN')
-  })
 })
 
 describe('chat surfaces embed bare links', () => {

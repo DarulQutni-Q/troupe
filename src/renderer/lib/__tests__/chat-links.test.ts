@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { hasLink, linkHostLabel, splitLinks, trimUrlCandidate } from '../chat-links'
+import { linkHostLabel, splitLinks, trimUrlCandidate } from '../chat-links'
 
 describe('splitLinks', () => {
   it('splits bare http(s) URLs out of text, keeping the text around them', () => {
@@ -23,6 +23,7 @@ describe('splitLinks', () => {
   })
 
   it('ignores non-http schemes, a bare scheme, and text without links', () => {
+    const hasLink = (text: string) => splitLinks(text).some((s) => s.kind === 'link')
     expect(hasLink('ftp://x.dev javascript:alert(1) mailto:a@b.c')).toBe(false)
     expect(hasLink('https:// nothing')).toBe(false)
     expect(splitLinks('plain words')).toEqual([{ kind: 'text', text: 'plain words' }])

@@ -6,11 +6,6 @@ import { cn } from '@/lib/utils'
 
 interface LinkChipProps {
   url: string
-  /**
-   * `link` (default) opens through the external-link confirm; `static` is the
-   * composer pill, where a click places the caret instead.
-   */
-  variant?: 'link' | 'static'
   /** `false` while a reply is still streaming: the URL may be incomplete. */
   resolve?: boolean
   className?: string
@@ -20,14 +15,11 @@ interface LinkChipProps {
  * A written link shown as favicon + page title (Open Graph title, else the
  * `<title>`). While the preview loads it shows the host; when the page has no
  * preview it falls back to the URL itself, so a link never loses its target
- * text. The full URL is always the tooltip.
+ * text. The full URL is always the tooltip. Shown in sent user bubbles and
+ * agent replies only; the composer keeps links as plain text. Clicks go
+ * through the external-link confirm.
  */
-export function LinkChip({
-  url,
-  variant = 'link',
-  resolve = true,
-  className
-}: LinkChipProps): React.JSX.Element {
+export function LinkChip({ url, resolve = true, className }: LinkChipProps): React.JSX.Element {
   const state = useLinkPreview(url, resolve)
   const preview = state.status === 'ready' ? state.preview : null
   const label =
@@ -57,13 +49,6 @@ export function LinkChip({
     'inline-flex max-w-full items-center gap-1 align-middle leading-none font-medium text-primary',
     className
   )
-  if (variant === 'static') {
-    return (
-      <span className={chipClass} title={url} data-testid="link-chip" data-url={url}>
-        {body}
-      </span>
-    )
-  }
   return (
     <ConfirmedExternalLink
       href={url}

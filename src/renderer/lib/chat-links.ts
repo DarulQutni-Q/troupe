@@ -1,6 +1,6 @@
 /**
- * Bare-URL detection for agent chat: the composer turns a written link into a
- * link pill, and the user bubble shows it as favicon + title. Only `http(s)`
+ * Bare-URL detection for agent chat: a sent user bubble shows a written link
+ * as favicon + title (the composer keeps plain text). Only `http(s)`
  * URLs count; trailing sentence punctuation and an unbalanced closing bracket
  * stay outside the link (`see https://x.dev/a).` → `https://x.dev/a`).
  */
@@ -8,7 +8,7 @@
 export type LinkSegment = { kind: 'text'; text: string } | { kind: 'link'; url: string }
 
 // Stops at whitespace, quotes, angle brackets and the private-use sentinel
-// range the composer tokens use (U+E000–U+E00F).
+// range the message tokens use (U+E000–U+E00F).
 const URL_RE = /\bhttps?:\/\/[^\s<>"'`\uE000-\uE00F]+/gi
 const TRAILING_PUNCT = /[.,;:!?…]+$/
 
@@ -58,11 +58,6 @@ export function splitLinks(text: string): LinkSegment[] {
   }
   if (last < text.length) out.push({ kind: 'text', text: text.slice(last) })
   return out
-}
-
-/** Whether `text` contains at least one bare `http(s)` URL. */
-export function hasLink(text: string): boolean {
-  return splitLinks(text).some((segment) => segment.kind === 'link')
 }
 
 /** The hostname without a leading `www.`, the chip label before a title loads. */

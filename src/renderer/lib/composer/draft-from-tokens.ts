@@ -13,7 +13,6 @@
  * crashes the editor. Unparseable segments become plain text (the spec's
  * "Resume draft" fallback: a draft always loads, even if partially garbled).
  */
-import { splitLinks } from '@/lib/chat-links'
 import {
   CMD_TOKEN_END,
   CMD_TOKEN_START,
@@ -30,7 +29,6 @@ import {
   CONTEXT_PILL_NODE,
   CONVERSATION_PILL_NODE,
   FILE_PILL_NODE,
-  LINK_PILL_NODE,
   SKILL_PILL_NODE,
   TOOL_PILL_NODE
 } from './doc-to-prompt'
@@ -233,21 +231,12 @@ export function draftFromTokens(
       paragraphs.at(-1)!.push({ type: TOOL_PILL_NODE, attrs: { id: seg.tool.id } })
       continue
     }
-    // Text segment: split on `\n` to open new paragraphs; bare URLs become
-    // link pills (they serialize back to the same URL text).
+    // Text segment: split on `\n` to open new paragraphs.
     const lines = seg.text.split('\n')
     for (let i = 0; i < lines.length; i++) {
       if (i > 0) paragraphs.push([])
       if (lines[i].length > 0) {
-        for (const part of splitLinks(lines[i])) {
-          paragraphs
-            .at(-1)!
-            .push(
-              part.kind === 'link'
-                ? { type: LINK_PILL_NODE, attrs: { url: part.url } }
-                : { type: 'text', text: part.text }
-            )
-        }
+        paragraphs.at(-1)!.push({ type: 'text', text: lines[i] })
       }
     }
   }

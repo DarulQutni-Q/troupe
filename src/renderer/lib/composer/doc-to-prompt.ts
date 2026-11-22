@@ -81,12 +81,6 @@ export const CONVERSATION_PILL_NODE = 'conversationPill'
 /** A Troupe tool pill. Its token (`\uE00C…\uE00D`) is owned by `tool-tokens.ts`. */
 export const TOOL_PILL_NODE = 'toolPill'
 
-/**
- * A written link shown as favicon + title. No sentinel token: it serializes
- * as the raw URL, so the wire text equals what was typed.
- */
-export const LINK_PILL_NODE = 'linkPill'
-
 type PillKind =
   | 'pill'
   | 'commandPill'
@@ -94,7 +88,6 @@ type PillKind =
   | 'contextPill'
   | 'conversationPill'
   | 'toolPill'
-  | 'linkPill'
 
 function isPillKind(kind: DocSegment['kind']): kind is PillKind {
   return kind !== 'text'
@@ -199,10 +192,6 @@ export function walkDocSegments(doc: PmNode): DocSegment[] {
         } else if (node.type.name === TOOL_PILL_NODE) {
           displayText = toolToken(String(node.attrs.id ?? '') as TermulToolId)
           kind = 'toolPill'
-          blockEndedInHardBreak = false
-        } else if (node.type.name === LINK_PILL_NODE) {
-          displayText = String(node.attrs.url ?? '')
-          kind = 'linkPill'
           blockEndedInHardBreak = false
         } else if (node.type.name === 'hardBreak') {
           displayText = '\n'
