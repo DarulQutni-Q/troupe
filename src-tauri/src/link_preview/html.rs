@@ -126,14 +126,17 @@ pub(super) fn has_live_head_end(html: &str) -> bool {
     }
     // Drop every live start tag (quote-aware) so a `</head>` written in an
     // attribute value does not count either.
+    // Complete start tags go first, so the unfinished-tag search below can
+    // never start inside a finished tag's attribute value.
     let live = live_html(&lower);
+    let text = start_tag_re().replace_all(&live, " ");
     // A read chunk can end inside a start tag; that unfinished tag is
     // attribute text too.
-    let live = match incomplete_tag_re().find(&live) {
-        Some(tail) => &live[..tail.start()],
-        None => live.as_str(),
+    let text = match incomplete_tag_re().find(&text) {
+        Some(tail) => &text[..tail.start()],
+        None => text.as_ref(),
     };
-    start_tag_re().replace_all(live, " ").contains("</head>")
+    text.contains("</head>")
 }
 
 /// A start tag still open at the end of the read so far (quote-aware).

@@ -146,6 +146,9 @@ fn a_head_end_inside_a_script_does_not_end_the_head() {
         "<head><meta name='d' content='a </head>"
     ));
     assert!(has_live_head_end("<head><title>x</title></HEAD><body>"));
+    assert!(has_live_head_end(
+        r#"<head><meta content="Example <b"></head>"#
+    ));
 }
 
 #[test]
