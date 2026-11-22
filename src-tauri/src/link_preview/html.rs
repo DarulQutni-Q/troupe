@@ -24,7 +24,9 @@ fn tag_re(name: &str) -> Regex {
 }
 
 /// Regions whose markup is not live (comments, scripts, styles, templates),
-/// plus any other start tag. Matching is leftmost-first, so a quoted
+/// plus whole `<title>`/`<textarea>` elements (their content is text, so a
+/// `<script>` spelled inside one is not an element) and any other start tag,
+/// all kept as written. Matching is leftmost-first, so a quoted
 /// `<script>` inside an attribute value is consumed by its enclosing tag and
 /// never mistaken for an element.
 fn inert_re() -> &'static Regex {
@@ -32,7 +34,7 @@ fn inert_re() -> &'static Regex {
     RE.get_or_init(|| {
         const ATTRS: &str = r#"(?:[^>"']|"[^"]*"|'[^']*')*"#;
         let pattern = format!(
-            r"(?is)(?P<inert><!--.*?(?:-->|\z)|<script\b{ATTRS}>.*?(?:</script\s*>|\z)|<style\b{ATTRS}>.*?(?:</style\s*>|\z)|<template\b{ATTRS}>.*?(?:</template\s*>|\z))|<[a-z]{ATTRS}>"
+            r"(?is)(?P<inert><!--.*?(?:-->|\z)|<script\b{ATTRS}>.*?(?:</script\s*>|\z)|<style\b{ATTRS}>.*?(?:</style\s*>|\z)|<template\b{ATTRS}>.*?(?:</template\s*>|\z))|<title\b{ATTRS}>.*?(?:</title\s*>|\z)|<textarea\b{ATTRS}>.*?(?:</textarea\s*>|\z)|<[a-z]{ATTRS}>"
         );
         Regex::new(&pattern).expect("inert regex")
     })

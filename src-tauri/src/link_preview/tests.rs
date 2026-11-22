@@ -88,6 +88,15 @@ fn a_quoted_inert_tag_name_does_not_start_an_inert_region() {
 }
 
 #[test]
+fn script_spelled_inside_a_title_is_title_text() {
+    let html = "<head><title>Using <script> safely</title><script>var t = '<title>x</title>';</script></head>";
+    assert_eq!(
+        extract(html, &page()).title.as_deref(),
+        Some("Using <script> safely")
+    );
+}
+
+#[test]
 fn nested_templates_stay_inert_to_their_matching_close() {
     let html = r#"<template>
           <template></template>
