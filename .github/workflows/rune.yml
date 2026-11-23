@@ -146,7 +146,8 @@ jobs:
             const m = JSON.parse(require('node:child_process').execSync('cargo metadata --format-version 1 --filter-platform wasm32-unknown-unknown', { encoding: 'utf8' }));
             const p = m.packages.find((p) => p.name === 'rune');
             const path = require('node:path');
-            console.log(path.dirname(path.dirname(p.manifest_path)));
+            // crates/rune/Cargo.toml -> the checkout's root.
+            console.log(path.dirname(path.dirname(path.dirname(p.manifest_path))));
           ")
           bash "$rune_root/scripts/web-build.sh" hello --out target/web
 
