@@ -95,8 +95,13 @@ describe('statusOf', () => {
     expect(statusOf(SURFACE, result([stepDiff('a', B)], 'react'), reviewed)).toBe('needs-review')
   })
 
+  test('a result saved under an older rule is classified again', () => {
+    const saved = { ...result([stepDiff('a', ONE_PIXEL)]), auto: 'ported' as const }
+    expect(statusOf(SURFACE, saved, {})).toBe('needs-review')
+  })
+
   test('a review cannot mark a broken run ported', () => {
-    const broken = { ...result([stepDiff('a', B)], 'tauri'), auto: 'broken' as const }
+    const broken = { ...result([stepDiff('a', B)], 'tauri'), candidate: run('tauri', false) }
     expect(statusOf(SURFACE, broken, reviewed)).toBe('broken')
   })
 })

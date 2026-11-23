@@ -22,13 +22,23 @@ export function autoStatus(reference: ClientRun, candidate: ClientRun, diffs: St
   return maxPerceptualPx(diffs) === 0 ? 'ported' : 'needs-review'
 }
 
+/**
+ * A saved result under this rule. The `auto` a run stored can come from an
+ * older rule, so a result that kept both runs is classified again.
+ */
+function measuredStatus(result: SurfaceResult): Status {
+  return result.reference && result.candidate
+    ? autoStatus(result.reference, result.candidate, result.diffs)
+    : result.auto
+}
+
 /** The review that covers this run of `surface`, if a person wrote one and the run differs by no more than they saw. */
 export function reviewOf(
   surface: Surface,
   result: SurfaceResult | undefined,
   reviews: Reviews = REVIEWS
 ): Review | undefined {
-  if (result?.auto !== 'needs-review' || !result.candidate) return undefined
+  if (!result?.candidate || measuredStatus(result) !== 'needs-review') return undefined
   const review = reviews[result.candidate.client]?.[surface.id]
   return review && maxPerceptualPx(result.diffs) <= review.acceptsPx ? review : undefined
 }
@@ -42,5 +52,5 @@ export function statusOf(
   if (surface.pending) return 'pending-unit'
   if (surface.blocked) return 'blocked'
   if (!result) return 'unverified'
-  return reviewOf(surface, result, reviews)?.status ?? result.auto
+  return reviewOf(surface, result, reviews)?.status ?? measuredStatus(result)
 }

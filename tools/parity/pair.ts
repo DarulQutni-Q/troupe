@@ -82,7 +82,9 @@ if (import.meta.main) {
   const crop = values.crop?.split(',').map(Number)
   for (const [id, result] of Object.entries(results.surfaces)) {
     if (positionals.length && !positionals.includes(id)) continue
-    for (const frame of result.reference?.frames ?? []) {
+    for (const [i, frame] of (result.reference?.frames ?? []).entries()) {
+      // A step the candidate never reached can hold an earlier run's candidate.png.
+      if (!result.candidate?.frames[i]) continue
       const file = writePair(path.dirname(frame), Number(values.scale), crop)
       if (file) console.log(file)
     }
