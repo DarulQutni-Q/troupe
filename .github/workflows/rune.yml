@@ -72,7 +72,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev libwayland-dev mesa-vulkan-drivers xvfb
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev mesa-vulkan-drivers libxkbcommon-x11-0 xvfb
 
       # Keep `toolchain` equal to apps/rune/rust-toolchain.toml's channel.
       - name: Setup Rust
