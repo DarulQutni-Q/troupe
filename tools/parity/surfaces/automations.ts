@@ -1,6 +1,6 @@
 import type { Surface } from '../types'
 import { AUTOMATION_NAME, seedAutomation } from '../world'
-import { click, css, DASHBOARD, label, see, step, txt, type } from './dsl'
+import { click, css, DASHBOARD, label, press, see, step, txt, type } from './dsl'
 
 const LIST = step(
   'b-list',
@@ -57,8 +57,12 @@ export const AUTOMATIONS: Surface[] = [
       DETAIL,
       EDITOR,
       INSPECTOR,
-      step('f-edit', [click(css('input[value="Fetch the feed"]')), type(' now')], []),
-      step('g-confirm', [click(txt('Discard'))], see('Discard unsaved changes'))
+      step(
+        'f-edit',
+        [click(css('input[value="Fetch the feed"]')), type(' now'), press('enter')],
+        see('Unsaved changes')
+      ),
+      step('g-confirm', [click(label('Close the editor'))], see('Discard unsaved changes'))
     ]
   ),
   automation(
