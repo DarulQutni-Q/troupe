@@ -12,7 +12,7 @@ name: Rune
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-    branches: [main, develop, dev]
+    branches: [main, develop, dev, "rune/r4b-fix-*"]
     paths:
       - '.github/workflows/rune.yml'
       - 'apps/rune/**'
@@ -186,7 +186,7 @@ jobs:
 
       - name: Check the theme crate (wasm32)
         working-directory: apps/rune
-        run: cargo check -p theme --target wasm32-unknown-unknown
+        run: cargo check -p theme -p ui --target wasm32-unknown-unknown
 
       # web-build.sh requires a wasm-bindgen CLI whose version equals the one in
       # this workspace's Cargo.lock.
