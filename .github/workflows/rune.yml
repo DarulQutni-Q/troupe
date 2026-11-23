@@ -203,7 +203,7 @@ jobs:
         working-directory: apps/rune
         run: |
           rune_root=$(node -e "
-            const m = JSON.parse(require('node:child_process').execSync('cargo metadata --format-version 1 --filter-platform wasm32-unknown-unknown', { encoding: 'utf8' }));
+            const m = JSON.parse(require('node:child_process').execSync('cargo metadata --format-version 1 --filter-platform wasm32-unknown-unknown', { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 }));
             const p = m.packages.find((p) => p.name === 'rune');
             const path = require('node:path');
             // crates/rune/Cargo.toml -> the checkout's root.
