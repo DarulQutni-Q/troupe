@@ -10,14 +10,14 @@ import { join } from 'node:path'
 import { isColor, parseColor, splitTopLevel, toHex8 } from './css-color'
 
 const ROOT = join(import.meta.dir, '..', '..')
-export const THEMES_DIR = join(ROOT, 'apps/rune/crates/theme/assets/themes')
-export const GENERATED_RS = join(ROOT, 'apps/rune/crates/theme/src/generated.rs')
+const THEMES_DIR = join(ROOT, 'apps/rune/crates/theme/assets/themes')
+const GENERATED_RS = join(ROOT, 'apps/rune/crates/theme/src/generated.rs')
 const INDEX_CSS = join(ROOT, 'src/renderer/index.css')
 const REM_PX = 16
 
 type Easing = [number, number, number, number]
 
-export interface ThemeData {
+interface ThemeData {
   id: string
   name: string
   family: string
@@ -185,7 +185,7 @@ function hexOf(value: string): string {
   return toHex8(parseColor(value))
 }
 
-export async function resolveThemes(): Promise<ThemeData[]> {
+async function resolveThemes(): Promise<ThemeData[]> {
   const { BUNDLED_COLOR_THEMES } = await import('../../src/renderer/lib/themes/bundled-themes')
   const { paletteToXtermTheme } = await import('../../src/renderer/lib/themes/apply-color-theme')
   const { resolveSyntaxColors } = await import('../../src/renderer/lib/themes/resolve-syntax')
@@ -236,7 +236,7 @@ export async function resolveThemes(): Promise<ThemeData[]> {
 }
 
 /** The theme file Rune's `Theme::from_json` reads: colours under the appearance's key. */
-export function themeJson(t: ThemeData): string {
+function themeJson(t: ThemeData): string {
   const doc = {
     id: t.id,
     name: t.name,
@@ -258,11 +258,14 @@ export function themeJson(t: ThemeData): string {
   return `${json}\n`
 }
 
+const RUST_KEYWORDS = new Set(['type', 'fn', 'match', 'move', 'ref', 'self', 'use', 'where'])
+
 function snake(name: string): string {
-  return name
+  const ident = name
     .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
     .replace(/-/g, '_')
     .toLowerCase()
+  return RUST_KEYWORDS.has(ident) ? `${ident}_` : ident
 }
 
 function sameKeys(themes: ThemeData[], section: keyof ThemeData): string[] {
@@ -314,7 +317,7 @@ ${fields}
 `
 }
 
-export function generatedRust(themes: ThemeData[]): string {
+function generatedRust(themes: ThemeData[]): string {
   const colors = sameKeys(themes, 'colors')
   const shadows = sameKeys(themes, 'shadows')
   const numbers = sameKeys(themes, 'numbers')
@@ -349,7 +352,7 @@ ${reader('Syntax', syntax, (k) => `src.section_color("syntax", "${k}")`)}`
 }
 
 /** Every generated file and its content. */
-export async function generateThemeFiles(): Promise<Map<string, string>> {
+async function generateThemeFiles(): Promise<Map<string, string>> {
   const themes = await resolveThemes()
   const files = new Map<string, string>()
   for (const t of themes) files.set(join(THEMES_DIR, `${t.id}.json`), themeJson(t))
@@ -358,7 +361,7 @@ export async function generateThemeFiles(): Promise<Map<string, string>> {
 }
 
 /** Paths whose committed content differs from a fresh run, plus stale theme files. */
-export async function staleThemeFiles(): Promise<string[]> {
+async function staleThemeFiles(): Promise<string[]> {
   const files = await generateThemeFiles()
   const stale = [...files].filter(([path, content]) => {
     return !existsSync(path) || readFileSync(path, 'utf8') !== content

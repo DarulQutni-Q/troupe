@@ -16,7 +16,7 @@ const FIXTURE = join(ROOT, 'apps/rune/crates/theme/tests/fixtures/chromium-token
  * fills, OKLCH round trips, color-mix() in oklab and oklch, and index.css
  * tokens the engine never writes.
  */
-export const SAMPLED_TOKENS = [
+const SAMPLED_TOKENS = [
   'background',
   'foreground',
   'card',

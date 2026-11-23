@@ -16,4 +16,16 @@ describe('Rune generated assets', () => {
     expect(output).not.toContain('stale:')
     expect(code).toBe(0)
   })
+
+  test('the icon catalog matches the icons the web client renders', () => {
+    const { code, output } = check('scripts/rune/gen-icons.ts')
+    expect(output).not.toContain('stale:')
+    expect(code).toBe(0)
+  })
+
+  test('the Rune fonts come from the fonts the web client bundles', () => {
+    const { code, output } = check('scripts/rune/gen-fonts.ts')
+    expect(output).not.toContain('stale:')
+    expect(code).toBe(0)
+  })
 })

@@ -982,7 +982,7 @@ pub struct Syntax {
     pub punctuation: Color,
     pub string: Color,
     pub tag: Color,
-    pub type: Color,
+    pub type_: Color,
     pub variable: Color,
 }
 
@@ -1026,7 +1026,7 @@ impl Syntax {
             "punctuation" => Some(&self.punctuation),
             "string" => Some(&self.string),
             "tag" => Some(&self.tag),
-            "type" => Some(&self.type),
+            "type" => Some(&self.type_),
             "variable" => Some(&self.variable),
             _ => None,
         }
@@ -1051,7 +1051,7 @@ impl Syntax {
             punctuation: src.section_color("syntax", "punctuation"),
             string: src.section_color("syntax", "string"),
             tag: src.section_color("syntax", "tag"),
-            type: src.section_color("syntax", "type"),
+            type_: src.section_color("syntax", "type"),
             variable: src.section_color("syntax", "variable"),
         }
     }
