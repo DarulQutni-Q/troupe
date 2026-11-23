@@ -9,7 +9,12 @@ license.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Links the live driver (`automation`): `RUNE_DRIVE_SOCK=<path> hello` serves its socket.
+tooling = ["dep:automation"]
+
 [dependencies]
+automation = { path = "../automation", features = ["tooling"], optional = true }
 # `tooling` keeps the headless agent flags (`--snap`, `--tree`, `--script`, ...)
 # linked into release builds; debug builds always have them.
 rune = { workspace = true, features = ["tooling"] }

@@ -2,6 +2,7 @@
 //! label changes on press. `cargo run -p hello` opens the window;
 //! `hello --snap hello.png` renders it headless, `hello --tree` prints the
 //! element tree. The same `start` is the wasm entrypoint (`wasm_bindgen(start)`).
+//! With the `tooling` feature, `RUNE_DRIVE_SOCK=<path>` serves the live driver.
 
 #![forbid(unsafe_code)]
 
@@ -60,5 +61,8 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen::prelude::wasm_bindgen(start))]
 pub fn start() {
-    rune::run(AppSpec::new("Hello", (360.0, 220.0), State::default, view));
+    let app = rune::App::new(AppSpec::new("Hello", (360.0, 220.0), State::default, view));
+    #[cfg(feature = "tooling")]
+    let app = automation::install(app);
+    app.run();
 }
