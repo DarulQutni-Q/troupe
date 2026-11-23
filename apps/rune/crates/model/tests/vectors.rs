@@ -6,7 +6,8 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
-use model::{Effect, Ids, workspace};
+use model::shortcuts::{self, KeyEvent, Platform, Shortcuts};
+use model::{Effect, Ids, overlay, prefs, projects, workspace};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -137,6 +138,124 @@ impl Store for Workspace {
     }
 }
 
+struct Shortcut;
+
+impl Store for Shortcut {
+    type State = shortcuts::State;
+    /// The platform's defaults: every vector checks them against `initial`.
+    fn setup(context: &Value, _: &Value) -> Result<Self::State, String> {
+        let platform: Platform = context
+            .get("platform")
+            .map(parse)
+            .transpose()?
+            .unwrap_or_default();
+        Ok(shortcuts::State::new(platform))
+    }
+    fn step(
+        state: &mut Self::State,
+        event: &Value,
+        _: &mut Replay,
+    ) -> Result<(Vec<Effect>, Option<Value>), String> {
+        shortcuts::step(state, call(event)?);
+        Ok((Vec::new(), None))
+    }
+    fn query(state: &Self::State, event: &Value) -> Result<Value, String> {
+        let args = &event["args"];
+        let platform = state.platform;
+        Ok(match event["action"].as_str().unwrap_or_default() {
+            "findConflictingShortcut" => {
+                let shortcuts: Shortcuts = parse(&args[0])?;
+                let key: String = parse(&args[1])?;
+                let exclude: String = parse(&args[2])?;
+                to_value(&shortcuts::find_conflicting_shortcut(
+                    &shortcuts, &key, &exclude,
+                ))
+            }
+            "normalizeKeyEvent" => {
+                let event: KeyEvent = parse(&args[0])?;
+                json!(shortcuts::normalize_key_event(&event, platform))
+            }
+            "formatKeyForDisplay" => json!(shortcuts::format_key_for_display(
+                args[0].as_str().unwrap_or_default(),
+                platform
+            )),
+            "matchesShortcut" => {
+                let event: KeyEvent = parse(&args[0])?;
+                json!(shortcuts::matches_shortcut(
+                    &event,
+                    args[1].as_str().unwrap_or_default(),
+                    platform
+                ))
+            }
+            other => return Err(format!("no shortcuts helper {other}")),
+        })
+    }
+}
+
+struct Overlay;
+
+impl Store for Overlay {
+    type State = overlay::State;
+    fn setup(_: &Value, initial: &Value) -> Result<Self::State, String> {
+        parse(initial)
+    }
+    fn step(
+        state: &mut Self::State,
+        event: &Value,
+        _: &mut Replay,
+    ) -> Result<(Vec<Effect>, Option<Value>), String> {
+        let out = overlay::step(state, call(event)?);
+        Ok((out.effects, out.closed.map(Value::Bool)))
+    }
+    fn query(_: &Self::State, event: &Value) -> Result<Value, String> {
+        Ok(json!(overlay::sentinel_depth(&event["args"][0])))
+    }
+}
+
+/// The project store with the prefs layout, as the recorder snapshots them.
+struct ProjectsAndPrefs(projects::Model);
+
+impl Serialize for ProjectsAndPrefs {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct View<'a> {
+            #[serde(flatten)]
+            store: &'a projects::State,
+            layout: &'a prefs::Layout,
+        }
+        View {
+            store: &self.0.store,
+            layout: &self.0.prefs.layout,
+        }
+        .serialize(serializer)
+    }
+}
+
+struct Projects;
+
+impl Store for Projects {
+    type State = ProjectsAndPrefs;
+    fn setup(_: &Value, initial: &Value) -> Result<Self::State, String> {
+        let mut model = projects::Model {
+            store: parse(initial)?,
+            ..Default::default()
+        };
+        model.prefs.layout = parse(&initial["layout"])?;
+        Ok(ProjectsAndPrefs(model))
+    }
+    fn step(
+        state: &mut Self::State,
+        event: &Value,
+        ids: &mut Replay,
+    ) -> Result<(Vec<Effect>, Option<Value>), String> {
+        let out = projects::step(&mut state.0, call(event)?, ids);
+        Ok((out.effects, out.reply))
+    }
+    fn query(_: &Self::State, _: &Value) -> Result<Value, String> {
+        Err("the projects store has no reads".into())
+    }
+}
+
 fn replay<S: Store>(vector: &Value) -> Result<usize, String> {
     let empty = json!({});
     let context = vector.get("context").unwrap_or(&empty);
@@ -199,20 +318,32 @@ fn replays_every_vector() {
     let mut failures = Vec::new();
     let mut total = 0;
     for (store, entry) in stores {
-        let files = entry["vectors"].as_array().expect("vector list");
-        for file in files {
-            let file = file.as_str().expect("vector path");
-            let vector = read_json(&out_dir().join(file));
+        let names = entry["vectors"].as_array().expect("vector list");
+        let file = format!("{store}.json");
+        let vectors = read_json(&out_dir().join(&file));
+        let vectors = vectors.as_array().unwrap_or_else(|| {
+            panic!("{file}: want an array of vectors");
+        });
+        let recorded: Vec<&Value> = vectors.iter().map(|vector| &vector["name"]).collect();
+        let listed: Vec<&Value> = names.iter().collect();
+        if recorded != listed {
+            failures.push(format!("{file}: vector names differ from the manifest"));
+        }
+        for vector in vectors {
+            let name = vector["name"].as_str().unwrap_or("?");
             let result = match store.as_str() {
-                "workspace" => replay::<Workspace>(&vector),
+                "workspace" => replay::<Workspace>(vector),
+                "shortcuts" => replay::<Shortcut>(vector),
+                "overlay" => replay::<Overlay>(vector),
+                "projects" => replay::<Projects>(vector),
                 other => Err(format!("no replay for store {other}")),
             };
             match result {
                 Ok(steps) => total += steps,
-                Err(problem) => failures.push(format!("{file}: {problem}")),
+                Err(problem) => failures.push(format!("{file} {name}: {problem}")),
             }
         }
-        println!("{store}: {} vectors", files.len());
+        println!("{store}: {} vectors", vectors.len());
     }
     println!("{total} steps replayed");
     assert!(

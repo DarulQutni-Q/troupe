@@ -12,7 +12,7 @@
 
 import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 
 /** One store action: `getState()[action](...args)` on a Zustand store. */
 export interface VectorEvent {
@@ -28,7 +28,7 @@ export interface VectorStep {
   ids: string[]
   /** Calls the store made outside itself (route, log, host command). */
   effects: unknown[]
-  /** What the action returned; omitted when it returned nothing. */
+  /** What the action returned; omitted when a state change returned nothing. */
   result?: unknown
   state: unknown
 }
@@ -63,6 +63,9 @@ export interface StoreRecorder {
   snapshot(): unknown
   dispatch(event: VectorEvent): unknown
 }
+
+/** What a mocked read returns, keyed by the read (e.g. `project-prefs`). */
+export const reads = new Map<string, unknown>()
 
 const sink = { effects: [] as unknown[], ids: [] as string[], counter: 0 }
 
@@ -106,7 +109,7 @@ export async function recordVector(recorder: StoreRecorder, scenario: Scenario):
       ...(query ? { query } : {}),
       ids,
       effects,
-      ...(returned === undefined ? {} : { result: plain(returned) }),
+      ...(returned === undefined && !query ? {} : { result: plain(returned) }),
       state: plain(recorder.snapshot())
     })
   }
@@ -129,6 +132,7 @@ export function sourceHash(repoPath: string): string {
 }
 
 export interface Manifest {
+  /** Per store: the hashes of its sources and its vector names, in `out/<store>.json`. */
   stores: Record<string, { sources: Record<string, string>; vectors: string[] }>
 }
 
@@ -138,21 +142,21 @@ export function manifestEntry(
 ): Manifest['stores'][string] {
   return {
     sources: Object.fromEntries(recorder.sources.map((path) => [path, sourceHash(path)])),
-    vectors: vectors.map((vector) => `${vector.store}/${vector.name}.json`)
+    vectors: vectors.map((vector) => vector.name)
   }
 }
 
-export function vectorText(vector: Vector): string {
-  return `${JSON.stringify(vector, null, 2)}\n`
+/** One store's vectors: `out/<store>.json` holds them as an array. */
+export function storeText(vectors: Vector[]): string {
+  return `${JSON.stringify(vectors, null, 1)}\n`
 }
 
-/** Replace `out/` with these vectors and their manifest. */
-export function writeOut(manifest: Manifest, vectors: Vector[]): void {
+/** Replace `out/` with these stores' vectors and their manifest. */
+export function writeOut(manifest: Manifest, byStore: Map<string, Vector[]>): void {
   rmSync(OUT_DIR, { recursive: true, force: true })
-  for (const vector of vectors) {
-    const path = join(OUT_DIR, vector.store, `${vector.name}.json`)
-    mkdirSync(dirname(path), { recursive: true })
-    writeFileSync(path, vectorText(vector))
+  mkdirSync(OUT_DIR, { recursive: true })
+  for (const [store, vectors] of byStore) {
+    writeFileSync(join(OUT_DIR, `${store}.json`), storeText(vectors))
   }
   writeFileSync(join(OUT_DIR, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`)
 }
