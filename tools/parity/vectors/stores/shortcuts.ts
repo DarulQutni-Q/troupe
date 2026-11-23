@@ -131,7 +131,11 @@ type Globals = { __TAURI_INTERNALS__?: unknown }
 
 export const shortcutsRecorder: StoreRecorder = {
   store: 'shortcuts',
-  sources: ['src/renderer/stores/keyboard-shortcuts-store.ts', 'src/renderer/types/settings.ts'],
+  sources: [
+    'src/renderer/stores/keyboard-shortcuts-store.ts',
+    'src/renderer/types/settings.ts',
+    'src/renderer/lib/platform.ts'
+  ],
   reset(context) {
     // `getDefaultKeyboardShortcuts` reads this global to pick the desktop set.
     const platform = context.platform as { desktop?: boolean } | undefined

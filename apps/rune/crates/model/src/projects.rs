@@ -145,6 +145,8 @@ pub enum Event {
     LoadProjectPrefs(Option<prefs::Record>),
     RememberProjectPrefs(String, ClientFields),
     PersistProjectPrefs,
+    /// A `WritePrefs` effect failed; carries its `signature`.
+    PrefsWriteFailed(String),
     ForgetProjectPrefs(String),
 }
 
@@ -290,13 +292,14 @@ pub fn step(model: &mut Model, event: Event, ids: &mut dyn Ids) -> Out {
         }
         Event::RememberProjectPrefs(id, fields) => model.prefs.remember(&id, fields),
         Event::PersistProjectPrefs => {
-            if let Some(record) = model
+            if let Some((record, signature)) = model
                 .prefs
                 .persist(&model.store.projects, &model.store.groups)
             {
-                fx.push(Effect::WritePrefs { record });
+                fx.push(Effect::WritePrefs { record, signature });
             }
         }
+        Event::PrefsWriteFailed(signature) => model.prefs.write_failed(&signature),
         Event::ForgetProjectPrefs(id) => model.prefs.forget(&id),
     }
     out
@@ -337,7 +340,7 @@ fn update_project(store: &mut State, id: &str, updates: ProjectUpdates, fx: &mut
     let root = updates
         .path
         .as_deref()
-        .map(str::trim)
+        .map(crate::js_trim)
         .filter(|root| !root.is_empty())
         .map(str::to_owned);
     let patch = HostPatch {

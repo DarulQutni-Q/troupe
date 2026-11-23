@@ -139,9 +139,14 @@ export const workspaceScenarios: Scenario[] = [
     steps: [
       ev('moveTabToNewSplit', 'edit-/b.ts', 'b', 'c', 'right'),
       ev('moveTabToNewSplit', 'term-1', 'a', 'c', 'top'),
-      ev('moveTabToNewSplit', 'chat-s9', 'c', 'a', 'center'),
+      ev('moveTabToNewSplit', 'chat-s9', 'c', 'id-2', 'center'),
       ev('moveTabToNewSplit', 'chat-s9', 'id-2', 'id-2', 'left')
     ]
+  },
+  {
+    name: 'move_tab_to_stale_pane',
+    initial: threePanes,
+    steps: [ev('moveTabToNewSplit', 'chat-s9', 'c', 'gone', 'center')]
   },
   {
     name: 'move_tab_to_new_split_same_direction',
@@ -267,8 +272,8 @@ export const workspaceScenarios: Scenario[] = [
       ev('openAgentBrowserTab', 'ag1', 'https://example.com'),
       ev('openAgentBrowserTab', 'ag2'),
       ev('openAgentBrowserTab', 'ag1'),
-      ev('closeTab', 'id-2', 'browser-ag1'),
-      ev('closeTab', 'id-2', 'browser-ag2'),
+      ev('closeTab', 'id-1', 'browser-ag1'),
+      ev('closeTab', 'id-1', 'browser-ag2'),
       ev('togglePaneFullscreen', 'b'),
       ev('openAgentBrowserTab', 'ag3')
     ]
@@ -470,7 +475,7 @@ export const workspaceScenarios: Scenario[] = [
   },
   {
     name: 'project_trees',
-    initial: { ...twoPanes, activeProjectId: '' },
+    initial: { ...twoPanes, activeProjectId: 'p1' },
     steps: [
       ev('activateProject', 'p1'),
       q('hasProjectTree', 'p1'),

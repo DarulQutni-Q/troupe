@@ -3,8 +3,9 @@
 //!
 //! The visible project's tree is [`State::tree`]; every other visited
 //! project's tree is parked in [`State::parked_trees`]. [`Event`] mirrors the
-//! store's actions one to one (same names, same argument order), so a
-//! recorded `{action, args}` deserializes straight into it.
+//! store's actions one to one (same names, same argument order). A recorded
+//! `{action, args}` is not its serde form: `tests/vectors.rs` (`call`)
+//! rewrites it as `{action: args}`, `{action: arg}` or `"action"` first.
 
 mod ids;
 mod pane;
@@ -481,6 +482,6 @@ fn next_tab_id(state: &State, direction: i8) -> Option<String> {
         return Some(leaf.tabs[0].id().to_owned());
     };
     let len = leaf.tabs.len() as i64;
-    let next = (current as i64 + i64::from(direction) + len) % len;
+    let next = (current as i64 + i64::from(direction)).rem_euclid(len);
     Some(leaf.tabs[next as usize].id().to_owned())
 }

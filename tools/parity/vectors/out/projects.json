@@ -1108,6 +1108,92 @@
     "event": {
      "action": "updateProject",
      "args": [
+      "a",
+      {
+       "path": "﻿/work/a"
+      }
+     ]
+    },
+    "ids": [],
+    "effects": [],
+    "state": {
+     "projects": [
+      {
+       "id": "a",
+       "name": "Project a",
+       "color": "blue",
+       "path": "/work/a",
+       "defaultShell": "/bin/zsh",
+       "gitBranch": "main"
+      },
+      {
+       "id": "b",
+       "name": "Project b",
+       "color": "blue",
+       "path": "/work/b"
+      }
+     ],
+     "groups": [],
+     "activeProjectId": "a",
+     "isLoaded": true,
+     "isWorktreeOperationLocked": false,
+     "layout": {
+      "groups": [],
+      "order": []
+     }
+    }
+   },
+   {
+    "event": {
+     "action": "updateProject",
+     "args": [
+      "a",
+      {
+       "path": "/work/a"
+      }
+     ]
+    },
+    "ids": [],
+    "effects": [
+     {
+      "kind": "updateProjectOnHost",
+      "projectId": "a",
+      "patch": {
+       "path": "/work/a"
+      }
+     }
+    ],
+    "state": {
+     "projects": [
+      {
+       "id": "a",
+       "name": "Project a",
+       "color": "blue",
+       "path": "/work/a",
+       "defaultShell": "/bin/zsh",
+       "gitBranch": "main"
+      },
+      {
+       "id": "b",
+       "name": "Project b",
+       "color": "blue",
+       "path": "/work/b"
+      }
+     ],
+     "groups": [],
+     "activeProjectId": "a",
+     "isLoaded": true,
+     "isWorktreeOperationLocked": false,
+     "layout": {
+      "groups": [],
+      "order": []
+     }
+    }
+   },
+   {
+    "event": {
+     "action": "updateProject",
+     "args": [
       "b",
       {
        "color": "green",

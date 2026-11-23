@@ -217,21 +217,26 @@ impl Shortcut {
     }
 }
 
-/// Shortcuts by id, in insertion order (the order conflicts are searched in).
+/// Shortcuts by their key in the settings object, in insertion order (the
+/// order conflicts are searched in). Updates address the key, as the
+/// TypeScript store does; the key and `Shortcut::id` agree in valid settings.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Shortcuts(pub Vec<Shortcut>);
+pub struct Shortcuts(pub Vec<(String, Shortcut)>);
 
 impl Shortcuts {
-    fn get_mut(&mut self, id: &str) -> Option<&mut Shortcut> {
-        self.0.iter_mut().find(|shortcut| shortcut.id == id)
+    fn get_mut(&mut self, key: &str) -> Option<&mut Shortcut> {
+        self.0
+            .iter_mut()
+            .find(|(slot, _)| slot == key)
+            .map(|(_, shortcut)| shortcut)
     }
 }
 
 impl Serialize for Shortcuts {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut map = serializer.serialize_map(Some(self.0.len()))?;
-        for shortcut in &self.0 {
-            map.serialize_entry(&shortcut.id, shortcut)?;
+        for (slot, shortcut) in &self.0 {
+            map.serialize_entry(slot, shortcut)?;
         }
         map.end()
     }
@@ -247,8 +252,8 @@ impl<'de> Deserialize<'de> for Shortcuts {
             }
             fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Shortcuts, A::Error> {
                 let mut shortcuts = Vec::new();
-                while let Some((_, shortcut)) = map.next_entry::<String, Shortcut>()? {
-                    shortcuts.push(shortcut);
+                while let Some(entry) = map.next_entry::<String, Shortcut>()? {
+                    shortcuts.push(entry);
                 }
                 Ok(Shortcuts(shortcuts))
             }
@@ -283,12 +288,15 @@ pub fn defaults(platform: Platform) -> Shortcuts {
     Shortcuts(
         DEFAULTS
             .iter()
-            .map(|(id, label, description, desktop, web)| Shortcut {
-                id: (*id).to_owned(),
-                label: (*label).to_owned(),
-                description: (*description).to_owned(),
-                default_key: (if platform.desktop { desktop } else { web }).to_string(),
-                custom_key: None,
+            .map(|(id, label, description, desktop, web)| {
+                let shortcut = Shortcut {
+                    id: (*id).to_owned(),
+                    label: (*label).to_owned(),
+                    description: (*description).to_owned(),
+                    default_key: (if platform.desktop { desktop } else { web }).to_string(),
+                    custom_key: None,
+                };
+                ((*id).to_owned(), shortcut)
             })
             .collect(),
     )
@@ -348,6 +356,7 @@ pub fn find_conflicting_shortcut<'a>(
     shortcuts
         .0
         .iter()
+        .map(|(_, shortcut)| shortcut)
         .find(|shortcut| shortcut.id != exclude_id && shortcuts_equal(shortcut.active_key(), key))
 }
 

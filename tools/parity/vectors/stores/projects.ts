@@ -96,6 +96,9 @@ export const projectScenarios: Scenario[] = [
       ev('setProjects', [project('a'), project('b')], 'a'),
       ev('updateProject', 'a', { defaultShell: '/bin/zsh', gitBranch: 'main' }),
       ev('updateProject', 'a', { name: 'Alpha', color: 'blue', path: '  /work/a ' }),
+      // JavaScript's trim drops U+FEFF and keeps U+0085, unlike Rust's.
+      ev('updateProject', 'a', { path: '\uFEFF/work/a' }),
+      ev('updateProject', 'a', { path: '/work/a\u0085' }),
       ev('updateProject', 'b', { color: 'green', path: '  /elsewhere  ', symlinkDirs: ['x'] }),
       ev('updateProject', 'b', { path: '   ' }),
       ev('updateProject', 'missing', { name: 'Ghost' })
@@ -202,6 +205,8 @@ export const projectsRecorder: StoreRecorder = {
     })
   },
   seed(initial) {
+    // The layout lives in the prefs module, not the store.
+    if ('layout' in initial) throw new Error('seed the layout with a loadProjectPrefs step')
     useProjectStore.setState(structuredClone(initial))
   },
   snapshot() {

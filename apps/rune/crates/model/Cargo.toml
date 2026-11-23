@@ -11,5 +11,6 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 sha1 = "0.10"
-# Exact float parsing, so recorded sizes compare bit for bit.
-serde_json = { workspace = true, features = ["float_roundtrip"] }
+# Exact float parsing, so recorded sizes compare bit for bit; recorded key
+# order kept, so object order (shortcut conflicts) matches JavaScript.
+serde_json = { workspace = true, features = ["float_roundtrip", "preserve_order"] }

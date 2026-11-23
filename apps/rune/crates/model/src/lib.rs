@@ -61,8 +61,13 @@ pub enum Effect {
     },
     /// Start the delete flow of one project (canvases first, then the host).
     DeleteProject { project_id: String },
-    /// Write the device's `project-prefs` record.
-    WritePrefs { record: prefs::Record },
+    /// Write the device's `project-prefs` record. On failure, send
+    /// `prefsWriteFailed` with `signature` so the next persist retries.
+    WritePrefs {
+        record: prefs::Record,
+        #[serde(skip_serializing)]
+        signature: String,
+    },
     /// Run the owner's close of an overlay.
     CloseOverlay { id: String },
 }
@@ -75,6 +80,12 @@ impl Effect {
             message,
         }
     }
+}
+
+/// `String.prototype.trim`: JavaScript's whitespace includes U+FEFF and
+/// excludes U+0085, unlike Rust's `str::trim`.
+fn js_trim(text: &str) -> &str {
+    text.trim_matches(|c: char| c == '\u{feff}' || (c.is_whitespace() && c != '\u{85}'))
 }
 
 /// A number the way JavaScript prints it in a template string, for log text.

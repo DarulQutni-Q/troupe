@@ -146,9 +146,9 @@ impl State {
         }
     }
 
-    /// The record for the store's projects and groups, or `None` when
-    /// nothing it covers changed since the last write.
-    pub fn persist(&mut self, projects: &[Project], groups: &[Group]) -> Option<Record> {
+    /// The record for the store's projects and groups and the signature it
+    /// claims, or `None` when nothing it covers changed since the last write.
+    pub fn persist(&mut self, projects: &[Project], groups: &[Group]) -> Option<(Record, String)> {
         for project in projects {
             self.remember(&project.id, ClientFields::of(project));
         }
@@ -169,12 +169,12 @@ impl State {
         if self.last_signature.as_ref() == Some(&signature) {
             return None;
         }
-        self.last_signature = Some(signature);
+        self.last_signature = Some(signature.clone());
         self.layout = Layout {
             groups: groups.to_vec(),
             order: order.clone(),
         };
-        Some(Record {
+        let record = Record {
             projects: self
                 .known
                 .iter()
@@ -182,12 +182,16 @@ impl State {
                 .collect(),
             groups: groups.to_vec(),
             order,
-        })
+        };
+        Some((record, signature))
     }
 
-    /// A write failed: the next persist writes the same record again.
-    pub fn write_failed(&mut self) {
-        self.last_signature = None;
+    /// The write that claimed `signature` failed: release the claim so the
+    /// next persist writes again, unless a newer persist claimed since.
+    pub fn write_failed(&mut self, signature: &str) {
+        if self.last_signature.as_deref() == Some(signature) {
+            self.last_signature = None;
+        }
     }
 
     /// Drop everything kept for a project this device deleted.
@@ -200,3 +204,7 @@ impl State {
         self.last_signature = None;
     }
 }
+
+#[cfg(test)]
+#[path = "prefs_tests.rs"]
+mod tests;
