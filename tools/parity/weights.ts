@@ -29,9 +29,14 @@ export const AREA_WEIGHTS: Record<AreaId, number> = {
   snapshots: 0.5
 }
 
-/** Ported counts fully, partial counts half, everything else counts zero. */
+/**
+ * Ported counts fully, partial counts half, everything else counts zero. An
+ * unreviewed difference counts half too: it is not ported, and it should not
+ * score below a surface a person judged partial.
+ */
 export const STATUS_SCORE: Record<Status, number> = {
   ported: 1,
+  'needs-review': 0.5,
   partial: 0.5,
   broken: 0,
   blocked: 0,
