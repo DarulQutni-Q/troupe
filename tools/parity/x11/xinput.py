@@ -3,7 +3,7 @@
 Usage: uv run --with python-xlib==0.33 python -I xinput.py CMD...  (DISPLAY from the environment)
   click X Y     move the pointer to root X,Y and press button 1
   move X Y      move the pointer only
-  type TEXT     type ASCII letters, digits, spaces, : / . - _ and \\n (Return)
+  type TEXT     type ASCII letters, digits, spaces, the punctuation in `names` and \\n (Return)
   key COMBO     press a keysym combination, as Control_L+a or Escape
   clipboard     print the CLIPBOARD selection as text
   focus         print the X input focus window id
@@ -29,11 +29,17 @@ if cmd in ("click", "move"):
         xtest.fake_input(dpy, X.ButtonRelease, 1)
     dpy.sync()
 elif cmd == "type":
-    names = {" ": "space", ":": "colon", "/": "slash", ".": "period", "-": "minus", "_": "underscore", "\n": "Return"}
+    names = {
+        " ": "space", ":": "colon", "/": "slash", ".": "period", "-": "minus", "_": "underscore",
+        "@": "at", ",": "comma", "!": "exclam", "#": "numbersign", "$": "dollar", "(": "parenleft",
+        ")": "parenright", "*": "asterisk", "=": "equal", "'": "apostrophe", '"': "quotedbl", "\n": "Return",
+    }
     shift = dpy.keysym_to_keycode(XK.string_to_keysym("Shift_L"))
     for ch in sys.argv[2]:
         sym = XK.string_to_keysym(names.get(ch, ch))
         code = dpy.keysym_to_keycode(sym)
+        if not code:
+            sys.exit(f"no keycode for {ch!r}")
         shifted = dpy.keycode_to_keysym(code, 0) != sym
         if shifted:
             xtest.fake_input(dpy, X.KeyPress, shift)
