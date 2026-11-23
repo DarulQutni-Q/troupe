@@ -161,7 +161,19 @@ export interface StepDiff {
   diffPng: string
 }
 
-export type Status = 'ported' | 'partial' | 'broken' | 'blocked' | 'unverified' | 'pending-unit'
+/**
+ * `ported` is earned two ways: every step's frames match with no perceptual
+ * difference outside the surface's masks, or a person reviewed the frames
+ * (`reviews.ts`). Any other difference reads `needs-review` until then.
+ */
+export type Status =
+  | 'ported'
+  | 'needs-review'
+  | 'partial'
+  | 'broken'
+  | 'blocked'
+  | 'unverified'
+  | 'pending-unit'
 
 /** A failed attempt the matrix reran, and why it failed. */
 export interface Rerun {

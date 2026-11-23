@@ -27,6 +27,7 @@ import { reactClient } from './drivers/react'
 import { tauriClient } from './drivers/tauri'
 import { maxPixels, renderReport, summaryLine } from './report'
 import { pickPort, REPO_DIR } from './server'
+import { autoStatus } from './status'
 import { SURFACES } from './surfaces'
 import { killTerminals } from './terminals'
 import {
@@ -35,7 +36,6 @@ import {
   type ClientRun,
   type Rerun,
   type SavedResults,
-  type Status,
   type StepDiff,
   type Surface,
   type SurfaceResult
@@ -69,9 +69,6 @@ const MAX_RERUNS = Number(values.reruns)
 if (!Number.isInteger(MAX_RERUNS) || MAX_RERUNS < 0) {
   throw new Error(`--reruns must be a whole number of 0 or more, not ${values.reruns}`)
 }
-/** A region whose perceptual mismatch is at or under this counts as visually matching. */
-const PORTED_PERCEPTUAL_PCT = 2
-
 type Role = 'reference' | 'candidate'
 
 function parseClient(name: string): Client {
@@ -226,14 +223,6 @@ function diffSurface(surface: Surface, reference: Steps, candidate: Steps): Step
     out.push(entry)
   }
   return out
-}
-
-function autoStatus(reference: ClientRun, candidate: ClientRun, diffs: StepDiff[]): Status {
-  if (!reference.ok) return 'unverified'
-  if (!candidate.ok) return 'broken'
-  const last = diffs.at(-1)
-  const percent = last ? (last.roi?.diff ?? last.full).perceptual.percent : 100
-  return percent <= PORTED_PERCEPTUAL_PCT ? 'ported' : 'partial'
 }
 
 /** Why an attempt failed, from its first failed action, check or crash. */

@@ -6,22 +6,26 @@
  */
 
 import { type DiffResult, PARTS } from './diff'
+import { REVIEWS, type Reviews } from './reviews'
+import { reviewOf, statusOf } from './status'
 import type { AreaId, ClientRun, Status, Surface, SurfaceResult } from './types'
 import { AREA_WEIGHTS, type Scored, unweightedScore, weightedScore } from './weights'
 
-const STATUSES: Status[] = ['ported', 'partial', 'broken', 'blocked', 'unverified', 'pending-unit']
+const STATUSES: Status[] = [
+  'ported',
+  'needs-review',
+  'partial',
+  'broken',
+  'blocked',
+  'unverified',
+  'pending-unit'
+]
 
 const pct = (n: number) => `${n.toFixed(1)}%`
 const cell = (text: string) => text.replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\n/g, ' ')
 
 const unmeasured = (status: Status) =>
   status === 'pending-unit' || status === 'blocked' || status === 'unverified'
-
-export function statusOf(surface: Surface, result?: SurfaceResult): Status {
-  if (surface.pending) return 'pending-unit'
-  if (surface.blocked) return 'blocked'
-  return result?.auto ?? 'unverified'
-}
 
 function passed(run?: ClientRun): string {
   if (!run) return 'n/a'
@@ -66,11 +70,18 @@ export function summaryLine(result: SurfaceResult): string {
 export function renderReport(
   surfaces: Surface[],
   results: Record<string, SurfaceResult>,
-  comparison: string
+  comparison: string,
+  reviews: Reviews = REVIEWS
 ): string {
   const rows = surfaces.map((surface) => {
     const result = results[surface.id]
-    return { surface, result, area: surface.area, status: statusOf(surface, result) }
+    return {
+      surface,
+      result,
+      area: surface.area,
+      status: statusOf(surface, result, reviews),
+      review: reviewOf(surface, result, reviews)
+    }
   })
   const measured = rows.filter((r) => !unmeasured(r.status))
   const zero = (kind: 'exact' | 'perceptual') =>
@@ -88,15 +99,15 @@ export function renderReport(
     '',
     '## By area',
     '',
-    '| Area | Weight | Surfaces | Ported | Partial | Broken | Not measured | Area score |',
-    '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |'
+    '| Area | Weight | Surfaces | Ported | Needs review | Partial | Broken | Not measured | Area score |',
+    '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |'
   ]
   const byArea = new Map<AreaId, Scored[]>()
   for (const row of rows) byArea.set(row.area, [...(byArea.get(row.area) ?? []), row])
   for (const [area, list] of [...byArea].sort((a, b) => AREA_WEIGHTS[b[0]] - AREA_WEIGHTS[a[0]])) {
     const n = (status: Status) => list.filter((r) => r.status === status).length
     out.push(
-      `| ${area} | ${AREA_WEIGHTS[area]} | ${list.length} | ${n('ported')} | ${n('partial')} | ${n('broken')} | ${list.filter((r) => unmeasured(r.status)).length} | ${pct(unweightedScore(list))} |`
+      `| ${area} | ${AREA_WEIGHTS[area]} | ${list.length} | ${n('ported')} | ${n('needs-review')} | ${n('partial')} | ${n('broken')} | ${list.filter((r) => unmeasured(r.status)).length} | ${pct(unweightedScore(list))} |`
     )
   }
 
@@ -104,23 +115,24 @@ export function renderReport(
     '',
     '## Surfaces',
     '',
-    'Reference and candidate count passed actions plus checks over the total. Mismatch is exact / perceptual for the last step, over the full 1280x800 frame and over the region the surface names. Text, icons and boxes are the perceptual mismatch within the pixels of each part, over the region when there is one. Max exact and max perceptual are the most mismatched pixels in the full frame of any step.',
+    'Status is `ported` only when no step differs perceptually, or when a review in `tools/parity/reviews.ts` covers the difference (marked reviewed). Any other difference reads `needs-review`. Reference and candidate count passed actions plus checks over the total. Mismatch is exact / perceptual for the last step, over the full 1280x800 frame and over the region the surface names. Text, icons and boxes are the perceptual mismatch within the pixels of each part, over the region when there is one. Max exact and max perceptual are the most mismatched pixels in the full frame of any step.',
     '',
     '| Surface | Area | Status | Reference | Candidate | Full | Region | Text | Icons | Boxes | Max exact px | Max perceptual px |',
     '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |'
   )
-  for (const { surface, result, status } of rows) {
+  for (const { surface, result, status, review } of rows) {
     const last = result?.diffs.at(-1)
     const parts = last ? partCells(last.roi?.diff ?? last.full) : ['', '', '']
     out.push(
-      `| \`${surface.id}\` ${cell(surface.title)} | ${surface.area} | ${status} | ${passed(result?.reference)} | ${passed(result?.candidate)} | ${last ? counts(last.full) : ''} | ${last?.roi ? counts(last.roi.diff) : ''} | ${parts.join(' | ')} | ${maxPixels(result, 'exact') ?? ''} | ${maxPixels(result, 'perceptual') ?? ''} |`
+      `| \`${surface.id}\` ${cell(surface.title)} | ${surface.area} | ${review ? `${status} (reviewed)` : status} | ${passed(result?.reference)} | ${passed(result?.candidate)} | ${last ? counts(last.full) : ''} | ${last?.roi ? counts(last.roi.diff) : ''} | ${parts.join(' | ')} | ${maxPixels(result, 'exact') ?? ''} | ${maxPixels(result, 'perceptual') ?? ''} |`
     )
   }
 
   out.push('', '## Differences', '')
   const differing = rows.filter((r) => (maxPixels(r.result, 'perceptual') ?? 0) > 0)
   if (differing.length === 0) out.push('No step of any surface differs perceptually.')
-  for (const { surface, result } of differing) {
+  for (const { surface, result, review } of differing) {
+    if (review) out.push(`- \`${surface.id}\` reviewed ${review.status}: ${cell(review.note)}`)
     for (const d of result?.diffs ?? []) {
       if (!d.full.changed) continue
       const { x, y, width, height } = d.full.changed

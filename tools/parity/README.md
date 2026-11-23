@@ -17,6 +17,7 @@ The server binary comes from `TROUPE_SERVER_BIN`, or from `--server-bin`, or fro
 - `world.ts` seeds the server: four projects, a git repo with staged, unstaged and untracked changes, a chat from the scripted agent in `agent/`, one skill, and a fixed page clock.
 - `drivers/` holds the clients. `react` is the web client in Playwright Chromium, and is the reference capture. `tauri` is the desktop app under Xvfb, driven with XTEST at the points the reference recorded, and read only through pixels.
 - `diff.ts` counts the pixels that differ (exact and perceptual), in total and in three parts: text, icons and boxes. The reference DOM names the parts.
+- `status.ts` decides each surface's status. A surface is `ported` only when no step differs perceptually. Any difference, however small, reads `needs-review`, and only a person's verdict in `reviews.ts` turns it into `ported`, `partial` or `broken`. A review records the largest difference it saw (`acceptsPx`) and stops applying when a later run differs by more.
 - `weights.ts` holds the area weights and the two scores. `report.ts` renders the report.
 
 ## Add a client

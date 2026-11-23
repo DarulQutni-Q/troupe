@@ -11,7 +11,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
 import { blankImage, blit, type Image, readPng, writePng } from './png'
-import type { SurfaceResult } from './types'
+import type { SavedResults } from './types'
 
 const GAP = 8
 
@@ -78,11 +78,13 @@ if (import.meta.main) {
   })
   const results = JSON.parse(
     readFileSync(path.join(path.resolve(values.out as string), 'results.json'), 'utf8')
-  ) as Record<string, SurfaceResult>
+  ) as SavedResults
   const crop = values.crop?.split(',').map(Number)
-  for (const [id, result] of Object.entries(results)) {
+  for (const [id, result] of Object.entries(results.surfaces)) {
     if (positionals.length && !positionals.includes(id)) continue
-    for (const frame of result.reference?.frames ?? []) {
+    for (const [i, frame] of (result.reference?.frames ?? []).entries()) {
+      // A step the candidate never reached can hold an earlier run's candidate.png.
+      if (!result.candidate?.frames[i]) continue
       const file = writePair(path.dirname(frame), Number(values.scale), crop)
       if (file) console.log(file)
     }
