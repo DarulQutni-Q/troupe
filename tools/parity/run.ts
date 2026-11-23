@@ -43,7 +43,13 @@ import {
   type Surface,
   type SurfaceResult
 } from './types'
-import { createWorld, prepareDevice, resetSharedSettings, type World } from './world'
+import {
+  closeSpareAgents,
+  createWorld,
+  prepareDevice,
+  resetSharedSettings,
+  type World
+} from './world'
 
 const ROOT = process.env.TROUPE_PARITY_ROOT ?? '/tmp/troupe-parity'
 
@@ -192,6 +198,8 @@ async function runClient(
   try {
     const killed = await killTerminals(world)
     if (killed > 0) console.error(`[parity] closed ${killed} terminals an earlier run left open`)
+    const stopped = await closeSpareAgents(world)
+    if (stopped > 0) console.error(`[parity] stopped ${stopped} agents an earlier run left running`)
     // A fresh device per attempt: device-scoped layout (open tabs) would carry a failed attempt's state.
     const deviceId = `matrix-${slug(surface.id)}-${role}-${attemptNumber}`
     await prepareDevice(world, deviceId)

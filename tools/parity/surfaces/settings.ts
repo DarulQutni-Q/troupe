@@ -4,7 +4,7 @@ import { click, css, DASHBOARD, label, press, rclick, see, step, type } from './
 
 const openPreferences = click(label('Settings'))
 const page = (name: string) =>
-  click(css(`nav[aria-label="Settings pages"] button:text-is("${name}")`))
+  click(css(`nav[aria-label="Settings pages"] >> role=button[name="${name}"s]`))
 const PREFERENCES = step('b-preferences', [openPreferences], see('Preferences', 'Interface zoom'))
 
 /** An App Preferences page: its nav label and a text only that page paints. */
@@ -36,7 +36,7 @@ const projectPage = (id: string, name: string, text: string): Surface => ({
   steps: [
     DASHBOARD,
     PROJECT_SETTINGS,
-    step('c-page', [click(css(`nav button:text-is("${name}")`))], see(text))
+    step('c-page', [click(css(`nav >> role=button[name="${name}"s]`))], see(text))
   ]
 })
 
@@ -206,7 +206,11 @@ export const SETTINGS: Surface[] = [
       DASHBOARD,
       PREFERENCES,
       step('c-page', [page('MCP servers')], see('MCP catalog')),
-      step('d-dialog', [click(css('[role="dialog"] button:text-is("Install")'))], see('Cancel'))
+      step(
+        'd-dialog',
+        [click(css('[role="dialog"] >> role=button[name="Install"s]'))],
+        see('Cancel')
+      )
     ]
   },
   {

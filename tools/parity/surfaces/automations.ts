@@ -60,7 +60,7 @@ export const AUTOMATIONS: Surface[] = [
       step(
         'f-edit',
         [click(css('input[value="Fetch the feed"]')), type(' now'), press('enter')],
-        see('Unsaved changes')
+        see('1 unsaved change')
       ),
       step('g-confirm', [click(label('Close the editor'))], see('Discard unsaved changes'))
     ]

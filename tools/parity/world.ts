@@ -351,6 +351,18 @@ export async function seedAutomation(world: World): Promise<void> {
   })
 }
 
+/**
+ * Stop every agent but the seeded chat's. Each client run starts the scripted
+ * agent for its fresh device, and the host keeps it until the idle timeout,
+ * so a full run would otherwise hold hundreds of agent processes.
+ */
+export async function closeSpareAgents(world: World): Promise<number> {
+  const agents = await world.ws.request<{ id: string }[]>('list_agents', {})
+  const spare = agents.filter((agent) => agent.id !== world.chat.agentId)
+  for (const agent of spare) await world.ws.request('kill_agent', { agentId: agent.id })
+  return spare.length
+}
+
 /** Re-add `key` when an earlier run removed it, and restore its seeded name and colour. */
 export async function ensureProject(world: World, key: ProjectKey): Promise<void> {
   const project = PROJECTS[key]
