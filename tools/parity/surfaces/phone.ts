@@ -15,7 +15,11 @@ const openProjectSheet = click(label('alpha · main, switch project'))
 const openPhoneChat = [openDrawer, click(txt(CHAT_TITLE, false)), wait(1500)]
 const DRAWER = step('b-drawer', [openDrawer], see('Recents', 'Search chats', 'Import chats'))
 const MORE = step('b-more', [openMore], see('Git changes', 'Command palette', 'Project settings'))
-const CHAT = step('b-chat', openPhoneChat, see('Where else is the chat route parsed?'))
+const CHAT = step('b-chat', openPhoneChat, [
+  ...see('Where else is the chat route parsed?'),
+  // The scroller's button: gone once the transcript rests at its end.
+  { text: 'Scroll to latest', gone: true, timeoutMs: 15_000 }
+])
 const TERMINAL = step('c-terminal', [click(txt('New terminal')), wait(2500)], see('Paste'))
 const GIT_SHEET = step(
   'c-git',
