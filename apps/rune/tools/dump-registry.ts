@@ -8,7 +8,8 @@
 // Without --server it starts the design-system Vite dev server on --port.
 // --registry writes the entry list (id, name, frame size) the Rune gallery checks its scenes
 // against.
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { chromium } from 'playwright'
 
@@ -20,7 +21,7 @@ function arg(name: string, fallback: string): string {
 }
 
 const port = Number(arg('port', '8197'))
-const out = arg('out', '/tmp/registry-dump')
+const out = arg('out', '') || mkdtempSync(join(tmpdir(), 'rune-registry-'))
 const scale = Number(arg('scale', '2'))
 const theme = arg('theme', 'termul')
 const only = arg('ids', '')
