@@ -7,18 +7,23 @@ bun run build:web
 bun run parity:matrix --client react --against react     # self-check: reads zero difference
 bun run parity:matrix --only rail.project-menu --client-dist /tmp/scratch/dist-web
 bun run parity rail.project-menu                         # writes pair.png next to each step
+bun run parity:matrix --profile phone --client react --against react   # the 390x844 touch profile
 ```
+
+A run drives one profile. `desktop` (the default) is a 1280x800 window with a mouse. `phone` is a 390x844 window with touch and `isMobile`, which puts the web client on its phone shell, and only web clients run it. A phone run writes `report-phone.md` and `results-phone.json` beside the desktop files. Run one profile at a time per `--out`.
 
 The server binary comes from `TROUPE_SERVER_BIN`, or from `--server-bin`, or from this checkout's release build. Each run seeds a fresh world under `--state` and writes frames, `results.json` and `report.md` under `--out`. Both default to directories under `/tmp/troupe-parity`.
 
 ## Files
 
-- `surfaces/` lists the surfaces, one file per area. Each surface step is a list of actions and checks, written with `surfaces/dsl.ts`.
+- `surfaces/` lists the surfaces, one file per area. Each surface step is a list of actions and checks, written with `surfaces/dsl.ts`. A check passes on painted text: rendered text, or the placeholder of an empty field.
+- `surfaces/inventory.ts` measures the UI from `src/renderer`: every overlay mount site and every screen (route, gate, pane tab, side-panel tab, settings page). Each surface names its `source`, and `__tests__/surfaces.test.ts` fails when a mount site or a screen has no surface, so a new dialog needs a surface in the same PR. A surface that a seeded world cannot open stays in the list as `blocked`, with the reason.
+- `surfaces/phone.ts` holds the phone profile: the phone-only overlays and one journey per `tests/e2e/mobile-*.spec.ts`.
 - `world.ts` seeds the server: four projects, a git repo with staged, unstaged and untracked changes, a chat from the scripted agent in `agent/`, one skill, and a fixed page clock.
 - `drivers/` holds the clients. `react` is the web client in Playwright Chromium, and is the reference capture. `tauri` is the desktop app under Xvfb, driven with XTEST at the points the reference recorded, and read only through pixels.
 - `diff.ts` counts the pixels that differ (exact and perceptual), in total and in three parts: text, icons and boxes. The reference DOM names the parts.
 - `status.ts` decides each surface's status. A surface is `ported` only when no step differs perceptually. Any difference, however small, reads `needs-review`, and only a person's verdict in `reviews.ts` turns it into `ported`, `partial` or `broken`. A review records the largest difference it saw (`acceptsPx`) and stops applying when a later run differs by more.
-- `weights.ts` holds the area weights and the two scores. `report.ts` renders the report.
+- `weights.ts` holds the area weights and the two scores. An unreviewed difference (`needs-review`) scores 0, so a run alone never raises the score. `report.ts` renders the report.
 
 ## Add a client
 
