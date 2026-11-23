@@ -122,12 +122,16 @@ function probeCommand(script: string, env: Record<string, string | number>): str
   return `sh ${script}`
 }
 
+/**
+ * Finished = JSON content; the probe writes a bare `started` marker first so
+ * the caller can tell "probe running" from "the typed command never ran".
+ */
 async function waitForFile(file: string, timeoutMs: number): Promise<unknown> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     if (existsSync(file)) {
       const text = readFileSync(file, 'utf8')
-      if (text) return JSON.parse(text)
+      if (text.startsWith('{')) return JSON.parse(text)
     }
     await sleep(200)
   }
@@ -143,15 +147,20 @@ async function ptyFlood({ driver, clock, flags, seed, scratch }: ScenarioEnv): P
     rmSync(out, { force: true })
     outs.push(out)
     await driver.openTerminal()
-    await driver.runInTerminal(
-      probeCommand(path.join(scratch, `p${i}.sh`), {
-        MODE: 'paced',
-        RATE: flags['lines-per-sec'],
-        SECONDS: pacedSeconds,
-        SEED: seed + i,
-        OUT: out
-      })
-    )
+    const cmd = probeCommand(path.join(scratch, `p${i}.sh`), {
+      MODE: 'paced',
+      RATE: flags['lines-per-sec'],
+      SECONDS: pacedSeconds,
+      SEED: seed + i,
+      OUT: out
+    })
+    // Keystrokes typed before the terminal's WS session attaches are dropped
+    // silently; retype until the probe's `started` marker says it ran.
+    for (let attempt = 0; attempt < 4 && !existsSync(out); attempt++) {
+      await driver.runInTerminal(cmd)
+      for (let j = 0; j < 40 && !existsSync(out); j++) await sleep(300)
+    }
+    if (!existsSync(out)) throw new Error(`terminal ${i} never started the probe`)
   }
   await clock.phase('warmup', async () => {
     await startPaced(0)
@@ -168,14 +177,17 @@ async function ptyFlood({ driver, clock, flags, seed, scratch }: ScenarioEnv): P
   const burstOut = path.join(scratch, 'burst.json')
   rmSync(burstOut, { force: true })
   await clock.phase('burst', async () => {
-    await driver.runInTerminal(
-      probeCommand(path.join(scratch, 'b.sh'), {
-        MODE: 'burst',
-        LINES: flags['burst-lines'],
-        SEED: seed,
-        OUT: burstOut
-      })
-    )
+    const cmd = probeCommand(path.join(scratch, 'b.sh'), {
+      MODE: 'burst',
+      LINES: flags['burst-lines'],
+      SEED: seed,
+      OUT: burstOut
+    })
+    for (let attempt = 0; attempt < 4 && !existsSync(burstOut); attempt++) {
+      await driver.runInTerminal(cmd)
+      for (let j = 0; j < 40 && !existsSync(burstOut); j++) await sleep(300)
+    }
+    if (!existsSync(burstOut)) throw new Error('the burst probe never started')
     clock.note('burst', await waitForFile(burstOut, 180_000))
   })
 }

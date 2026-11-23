@@ -29,6 +29,9 @@ const env = (name: string, fallback: number) => {
 }
 const mode = Bun.env.PERF_PROBE_MODE ?? 'burst'
 const outPath = Bun.env.PERF_PROBE_OUT
+// Mark the out file at once: the harness retries the command while no file
+// exists, and treats only JSON content as a finished run.
+if (outPath) writeFileSync(outPath, 'started')
 const rng = mulberry32(env('PERF_PROBE_SEED', 42))
 const encoder = new TextEncoder()
 

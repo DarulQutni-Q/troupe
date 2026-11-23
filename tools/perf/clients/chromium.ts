@@ -2,12 +2,7 @@ import { existsSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { type Browser, chromium, type Locator, type Page } from 'playwright'
 import { createCollector, type PerfCollector } from '../metrics/cdp-collector.ts'
-import {
-  LAUNCHER_COMPOSER,
-  NEW_CHAT_SELECTOR,
-  START_CHAT_SELECTOR,
-  waitForLauncher
-} from '../runner/scenario-ui.ts'
+import { LAUNCHER_COMPOSER, START_CHAT_SELECTOR, waitForLauncher } from '../runner/scenario-ui.ts'
 import { descendants, readCmdline } from '../sampling/proc-sampler.ts'
 import { PERF_AGENT_NAME, PERF_DEVICE_ID, PERF_PROJECT_NAME, PERF_TOKEN } from '../server.ts'
 import type { ChatStartPart, ClientDriver, ClientHandle, ClientLaunchOptions } from './client.ts'
@@ -117,6 +112,7 @@ const CHAT_TAB = '[data-chat-tab-state]'
 const PROJECT_ROW = `[aria-label^="Project: ${PERF_PROJECT_NAME}"]`
 const VISIBLE_TERMINAL = '.xterm:visible'
 const SHOW_CHATS = `button[aria-label="Show chats in ${PERF_PROJECT_NAME}"]`
+const RAIL_NEW_CHAT = `button[aria-label="New chat in ${PERF_PROJECT_NAME}"]`
 
 /**
  * The launcher's editor can remount while agent config loads, which drops
@@ -159,7 +155,24 @@ export function chromiumDriver(handle: ChromiumHandle): ClientDriver {
     startChat: async (prompt) => {
       const composer = page.locator(LAUNCHER_COMPOSER).first()
       if (!(await composer.isVisible())) {
-        await page.locator(NEW_CHAT_SELECTOR).first().click({ timeout: ACTION_MS })
+        // The rail project row's "+" shows only while the row is hovered;
+        // hover the row first, then fall back to the pane toolbar's
+        // New tab → New chat menu when it never appears.
+        const railNew = page.locator(RAIL_NEW_CHAT).first()
+        await page
+          .locator(PROJECT_ROW)
+          .first()
+          .hover({ timeout: ACTION_MS })
+          .catch(() => undefined)
+        if (await railNew.isVisible().catch(() => false)) {
+          await railNew.click({ timeout: ACTION_MS })
+        } else {
+          await page.locator('button[aria-label="New tab"]').first().click({ timeout: ACTION_MS })
+          await page
+            .locator('[role=menuitem]:has-text("New chat")')
+            .first()
+            .click({ timeout: ACTION_MS })
+        }
         await composer.waitFor({ timeout: ACTION_MS })
       }
       await page

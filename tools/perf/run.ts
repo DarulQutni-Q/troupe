@@ -110,7 +110,7 @@ export function parseRunArgs(argv: string[]): Options {
     runs: Number(take('runs', '3')),
     clients: take('clients', 'chromium').split(',').map(parseClientSpec),
     gl: take('gl', 'lavapipe') as 'lavapipe' | 'swiftshader' | 'cpu',
-    serverBin: serverUrl ? null : take('server-bin', defaultServerBinary()),
+    serverBin: serverUrl ? null : take('server-bin', '') || defaultServerBinary(),
     serverUrl,
     token: take('token', 'perf-token'),
     port: Number(take('port', serverUrl ? new URL(serverUrl).port || '8190' : '8196')),
