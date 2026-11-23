@@ -4,7 +4,7 @@
 # `rune` dependency and every `[patch.crates-io]` entry below.
 [workspace]
 resolver = "3"
-members = ["crates/automation", "crates/hello"]
+members = ["crates/automation", "crates/client", "crates/hello", "crates/probe"]
 
 [workspace.package]
 edition = "2024"
@@ -12,6 +12,9 @@ license = "MIT"
 
 [workspace.dependencies]
 rune = { git = "https://github.com/anomalyco/rune.git", rev = "9d4b4636f1f7e6d172053a0b6469a334c0bfc227" }
+# `rune::machine` without the UI stack, for crates that must not link a renderer
+# (the client transport). Bump the rev with the `rune` pin above.
+rune-core = { git = "https://github.com/anomalyco/rune.git", rev = "9d4b4636f1f7e6d172053a0b6469a334c0bfc227" }
 # Pinned to the wasm-bindgen in Rune's own Cargo.lock at the rev above;
 # web-build.sh wants the CLI at this workspace's resolved version.
 wasm-bindgen = "=0.2.129"
