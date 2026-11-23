@@ -213,7 +213,7 @@ class Socket {
         this.notify(event)
       }
     }
-    this.waiters = this.waiters.filter((waiter) => !waiter.match(frame) || waiter.resolve(frame))
+    this.waiters = this.waiters.filter((waiter) => !waiter.accept(frame) || waiter.resolve(frame))
   }
 
   waitFor(match, timeoutMs = 15_000, label = 'frame') {
@@ -222,7 +222,7 @@ class Socket {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), timeoutMs)
       this.waiters.push({
-        match,
+        accept: match,
         resolve: (frame) => {
           clearTimeout(timer)
           resolve(frame)
