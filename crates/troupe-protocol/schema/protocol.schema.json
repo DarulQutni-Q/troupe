@@ -2201,12 +2201,14 @@
       "description": "One change after the state.",
       "properties": {
         "delta": true,
+        "reset": false,
         "revision": {
           "$ref": "#/$defs/WsWatchRevision"
         },
         "scope": {
           "type": "string"
         },
+        "state": false,
         "type": {
           "const": "watch",
           "type": "string"
@@ -2268,6 +2270,7 @@
     "WsWatchStateFrame": {
       "description": "The full state of a watch.",
       "properties": {
+        "delta": false,
         "reset": {
           "const": true,
           "type": "boolean"

@@ -106,7 +106,8 @@ fn every_ws_request_round_trips() {
     }
 }
 
-/// The typed reply payload of a request, where the contract names one.
+/// The typed reply payload of a request, where the contract names one. A
+/// fixture named `<request>.<case>` is a second reply to the same request.
 fn check_reply_payload(name: &str, label: &str, body: &Value) {
     match name {
         "authenticate" => drop(round_trip::<AcpAuthenticateReply>(label, body)),
@@ -143,7 +144,8 @@ fn every_ws_reply_round_trips() {
         match round_trip::<WsReply>(&label, frame) {
             WsReply::Ok(reply) => {
                 if let Some(body) = &reply.payload {
-                    check_reply_payload(name, &label, body);
+                    let request = name.split('.').next().unwrap_or(name);
+                    check_reply_payload(request, &label, body);
                 }
             }
             WsReply::Err(reply) => {

@@ -1266,8 +1266,10 @@ export type WsTerminalSetEntry = {
 /** One change after the state. */
 export type WsWatchDeltaFrame = {
   delta: unknown
+  reset?: never
   revision: WsWatchRevision
   scope: string
+  state?: never
   type: 'watch'
   watch: WsWatchName
 }
@@ -1317,6 +1319,7 @@ export type WsWatchRevision = {
 
 /** The full state of a watch. */
 export type WsWatchStateFrame = {
+  delta?: never
   reset: true
   revision: WsWatchRevision
   scope: string

@@ -294,5 +294,37 @@
       "terminalId": "term-fixture",
       "lastSeq": 41
     }
+  },
+  {
+    "file": "ws-reply.json",
+    "name": "list_persisted_sessions.quick_chat",
+    "_handwritten": true,
+    "source": "src-tauri/src/acp/session_persistence/types.rs SessionIndexEntry",
+    "frame": {
+      "id": "req-38",
+      "ok": true,
+      "payload": [
+        {
+          "storageKey": "5b0f6d1e-3c2a-4f7e-9a41-0c8d2e7f1a90",
+          "sessionId": "sess-quick",
+          "stableAgentNamespace": "config:fake-longrun",
+          "runtimeAgentId": "e57cf051-ca37-42f1-ba67-7be8bfeb93c0",
+          "projectId": "fixture-proj-a",
+          "cwd": "/fixture/home/.troupe/quick-chats/qc-fixture",
+          "title": "Quick question",
+          "titleSource": "derived_first_message",
+          "createdAt": 1795449252177,
+          "lastActivityAt": 1795449259976,
+          "status": "active",
+          "messageCount": 2,
+          "toolCount": 0,
+          "lastSeq": 8,
+          "discovered": false,
+          "resumeEligible": true,
+          "kind": "quick",
+          "quickChatId": "qc-fixture"
+        }
+      ]
+    }
   }
 ]

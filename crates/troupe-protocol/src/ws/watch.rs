@@ -3,9 +3,9 @@
 
 use std::collections::BTreeMap;
 
-use schemars::JsonSchema;
+use schemars::{JsonSchema, Schema};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use super::names::WsWatchName;
 use crate::literal::present;
@@ -36,6 +36,7 @@ pub enum WsWatchFrame {
 
 /// The full state of a watch.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(transform = forbid_delta)]
 pub struct WsWatchStateFrame {
     #[serde(rename = "type")]
     pub kind: WatchTag,
@@ -48,6 +49,7 @@ pub struct WsWatchStateFrame {
 
 /// One change after the state.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(transform = forbid_state)]
 pub struct WsWatchDeltaFrame {
     #[serde(rename = "type")]
     pub kind: WatchTag,
@@ -55,6 +57,29 @@ pub struct WsWatchDeltaFrame {
     pub scope: String,
     pub revision: WsWatchRevision,
     pub delta: Value,
+}
+
+fn forbid_delta(schema: &mut Schema) {
+    forbid(schema, &["delta"]);
+}
+
+fn forbid_state(schema: &mut Schema) {
+    forbid(schema, &["reset", "state"]);
+}
+
+/// The host writes exactly one of `state` and `delta`. Each branch of
+/// [`WsWatchFrame`] gives the other branch's fields the `false` schema, so a
+/// frame with both payloads matches neither branch.
+fn forbid(schema: &mut Schema, names: &[&str]) {
+    let properties = schema
+        .ensure_object()
+        .entry("properties")
+        .or_insert_with(|| Value::Object(Map::new()));
+    if let Value::Object(properties) = properties {
+        for name in names {
+            properties.insert((*name).to_owned(), Value::Bool(false));
+        }
+    }
 }
 
 /// `watch` reply payload.

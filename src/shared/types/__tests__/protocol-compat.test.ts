@@ -248,11 +248,31 @@ describe('troupe-protocol fixtures', () => {
         null
       ])
     }
-    const sessions = replies.list_persisted_sessions.payload as unknown[]
+    const sessions = [
+      replies.list_persisted_sessions,
+      replies['list_persisted_sessions.quick_chat']
+    ].flatMap((reply) => reply.payload as G.PersistedSessionSummary[])
     expect(sessions.length).toBeGreaterThan(0)
     for (const session of sessions) {
       expect(mismatch(session, schema.$defs.PersistedSessionSummary)).toBeNull()
     }
+    expect(sessions.map((session) => session.quickChatId).filter(Boolean)).toEqual(['qc-fixture'])
+  })
+
+  it('a watch frame carries exactly one of state and delta', () => {
+    const base = {
+      type: 'watch',
+      watch: 'projects',
+      scope: '',
+      revision: { hostEpoch: 'epoch', n: 1 }
+    }
+    const frame = schema.$defs.WsWatchFrame
+    expect(mismatch({ ...base, reset: true, state: {} }, frame)).toBeNull()
+    expect(mismatch({ ...base, delta: {} }, frame)).toBeNull()
+    expect(mismatch({ ...base, reset: true, state: {}, delta: {} }, frame)).toBe(
+      '$: matches no variant'
+    )
+    expect(mismatch(base, frame)).toBe('$: matches no variant')
   })
 
   it('the checker rejects a frame of the wrong shape', () => {

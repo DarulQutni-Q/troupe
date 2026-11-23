@@ -68,6 +68,7 @@ function objectType(schema, indent) {
 
 function toType(schema, indent = '') {
   if (schema === true) return 'unknown'
+  if (schema === false) return 'never'
   if (schema.$ref) return refName(schema.$ref)
   if ('const' in schema) return literal(schema.const)
   if (schema.enum) return union(schema.enum.map(literal))
