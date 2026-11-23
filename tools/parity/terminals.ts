@@ -36,9 +36,10 @@ export async function killTerminals(world: World): Promise<number> {
   let next = 0
   socket.onmessage = (event) => {
     const frame = JSON.parse(String(event.data)) as Partial<Reply>
-    if (typeof frame.id !== 'string') return
-    pending.get(frame.id)?.(frame as Reply)
+    const settle = typeof frame.id === 'string' ? pending.get(frame.id) : undefined
+    if (typeof settle !== 'function' || typeof frame.id !== 'string') return
     pending.delete(frame.id)
+    settle(frame as Reply)
   }
   const request = async <T>(type: string, payload: unknown, command?: string): Promise<T> => {
     const id = `t-${next++}`

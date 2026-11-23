@@ -13,7 +13,7 @@
  * `<out>/report.md` and prints a line per surface.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -290,6 +290,16 @@ async function runSurface(
   }
 }
 
+/** The results an earlier run merged into `results.json`, or none. */
+function readResults(): Record<string, SurfaceResult> {
+  try {
+    return JSON.parse(readFileSync(RESULTS, 'utf8'))
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}
+    throw error
+  }
+}
+
 function writeReport(results: Record<string, SurfaceResult>): void {
   const file = path.join(OUT, 'report.md')
   writeFileSync(file, renderReport(SURFACES, results, { client: CLIENT, against: AGAINST }))
@@ -298,9 +308,7 @@ function writeReport(results: Record<string, SurfaceResult>): void {
 
 async function main(): Promise<void> {
   mkdirSync(OUT, { recursive: true })
-  const results: Record<string, SurfaceResult> = existsSync(RESULTS)
-    ? JSON.parse(readFileSync(RESULTS, 'utf8'))
-    : {}
+  const results = readResults()
   if (values['report-only']) {
     writeReport(results)
     return

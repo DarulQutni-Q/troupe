@@ -12,7 +12,7 @@ import { AREA_WEIGHTS, type Scored, unweightedScore, weightedScore } from './wei
 const STATUSES: Status[] = ['ported', 'partial', 'broken', 'blocked', 'unverified', 'pending-unit']
 
 const pct = (n: number) => `${n.toFixed(1)}%`
-const cell = (text: string) => text.replace(/\|/g, '\\|').replace(/\n/g, ' ')
+const cell = (text: string) => text.replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\n/g, ' ')
 
 const unmeasured = (status: Status) =>
   status === 'pending-unit' || status === 'blocked' || status === 'unverified'
