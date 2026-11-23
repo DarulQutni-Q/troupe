@@ -13,7 +13,7 @@
  * `<out>/report.md` and prints a line per surface.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -34,6 +34,7 @@ import {
   type Client,
   type ClientRun,
   type Rerun,
+  type SavedResults,
   type Status,
   type StepDiff,
   type Surface,
@@ -64,6 +65,10 @@ const { values } = parseArgs({
 const OUT = path.resolve(values.out as string)
 const STATE = path.resolve(values.state as string)
 const RESULTS = path.join(OUT, 'results.json')
+const MAX_RERUNS = Number(values.reruns)
+if (!Number.isInteger(MAX_RERUNS) || MAX_RERUNS < 0) {
+  throw new Error(`--reruns must be a whole number of 0 or more, not ${values.reruns}`)
+}
 /** A region whose perceptual mismatch is at or under this counts as visually matching. */
 const PORTED_PERCEPTUAL_PCT = 2
 
@@ -105,6 +110,24 @@ async function runSteps(
   const run: ClientRun = { client, ok: true, ms: 0, actions: [], checks: [], frames: [] }
   const rois: (Rect | null)[] = []
   const parts: (PartRects | null)[] = []
+  try {
+    await driveSteps(surface, role, driver, run, rois, parts)
+  } catch (error) {
+    run.ok = false
+    run.error = errorLine(error)
+  }
+  run.ms = Math.round(performance.now() - started)
+  return { run, rois, parts }
+}
+
+async function driveSteps(
+  surface: Surface,
+  role: Role,
+  driver: Driver,
+  run: ClientRun,
+  rois: (Rect | null)[],
+  parts: (PartRects | null)[]
+): Promise<void> {
   for (const step of surface.steps) {
     for (const [i, action] of step.actions.entries()) {
       const log = await driver.act(step.name, i, action)
@@ -127,8 +150,6 @@ async function runSteps(
     rois.push(surface.roi && driver.measure ? await driver.measure(surface.roi) : null)
     parts.push(driver.parts ? await driver.parts() : null)
   }
-  run.ms = Math.round(performance.now() - started)
-  return { run, rois, parts }
 }
 
 function failedSteps(client: Client, error: unknown, started: number): Steps {
@@ -278,40 +299,58 @@ async function runSurface(
     reference: launcher(surface.reference ?? AGAINST, 'reference'),
     candidate: launcher(CLIENT, 'candidate')
   }
-  const maxReruns = Number(values.reruns)
   const reruns: Rerun[] = []
   for (let n = 0; ; n++) {
     const result = await attempt(surface, world, launchers, n)
     const failed = result.auto === 'broken' || result.auto === 'unverified'
-    if (!failed || n >= maxReruns) return { ...result, reruns }
+    if (!failed || n >= MAX_RERUNS) return { ...result, reruns }
     const cause = failureCause(result)
     console.error(`[parity] ${surface.id} attempt ${n} failed (${cause}); rerunning`)
     reruns.push({ attempt: n, cause })
   }
 }
 
-/** The results an earlier run merged into `results.json`, or none. */
-function readResults(): Record<string, SurfaceResult> {
+/** What this run compares: results of another comparison are never merged into it. */
+function comparison(): string {
+  const side = (client: Client, dist: string) =>
+    client === 'react' ? `react (${path.resolve(dist)})` : client
+  return `${side(CLIENT, values['client-dist'] as string)} against ${side(AGAINST, values['against-dist'] as string)}`
+}
+
+/** The results an earlier run saved in `results.json`, or null. */
+function readResults(): SavedResults | null {
   try {
-    return JSON.parse(readFileSync(RESULTS, 'utf8'))
+    return JSON.parse(readFileSync(RESULTS, 'utf8')) as SavedResults
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
     throw error
   }
 }
 
-function writeReport(results: Record<string, SurfaceResult>): void {
+/** Replace `results.json` whole, so a crash mid-write never leaves half a file. */
+function saveResults(saved: SavedResults): void {
+  writeFileSync(`${RESULTS}.tmp`, JSON.stringify(saved, null, 2))
+  renameSync(`${RESULTS}.tmp`, RESULTS)
+}
+
+function writeReport(saved: SavedResults): void {
   const file = path.join(OUT, 'report.md')
-  writeFileSync(file, renderReport(SURFACES, results, { client: CLIENT, against: AGAINST }))
+  writeFileSync(file, renderReport(SURFACES, saved.surfaces, saved.comparison))
   console.error(`[parity] wrote ${file}`)
 }
 
 async function main(): Promise<void> {
   mkdirSync(OUT, { recursive: true })
-  const results = readResults()
+  const previous = readResults()
   if (values['report-only']) {
-    writeReport(results)
+    if (!previous) throw new Error(`${RESULTS} is missing: run the matrix first`)
+    writeReport(previous)
     return
+  }
+  const saved: SavedResults =
+    previous?.comparison === comparison() ? previous : { comparison: comparison(), surfaces: {} }
+  if (previous && previous !== saved) {
+    console.error(`[parity] ${RESULTS} holds ${previous.comparison}; starting a new comparison`)
   }
   const surfaces = selected()
   const port = await pickPort(values.port ? Number(values.port) : undefined)
@@ -335,8 +374,8 @@ async function main(): Promise<void> {
     const launcher = (client: Client, role: Role) => launchers[client](role)
     for (const surface of surfaces) {
       const result = await runSurface(surface, world, launcher)
-      results[surface.id] = result
-      writeFileSync(RESULTS, JSON.stringify(results, null, 2))
+      saved.surfaces[surface.id] = result
+      saveResults(saved)
       console.log(summaryLine(result))
     }
   } finally {
@@ -344,7 +383,7 @@ async function main(): Promise<void> {
     world.ws.close()
     await world.server.stop()
   }
-  const ran = surfaces.map((s) => results[s.id]).filter((r): r is SurfaceResult => !!r)
+  const ran = surfaces.map((s) => saved.surfaces[s.id]).filter((r): r is SurfaceResult => !!r)
   const zero = (kind: 'exact' | 'perceptual') => ran.filter((r) => maxPixels(r, kind) === 0).length
   const minutes = ((performance.now() - started) / 60_000).toFixed(1)
   const load = os
@@ -354,7 +393,7 @@ async function main(): Promise<void> {
   console.log(
     `[parity] ${ran.length} surfaces in ${minutes} min: zero difference exact ${zero('exact')}, perceptual ${zero('perceptual')}; ${ran.filter((r) => r.reruns.length).length} rerun; load average ${load}`
   )
-  writeReport(results)
+  writeReport(saved)
 }
 
 await main()

@@ -31,7 +31,10 @@ export async function startXvfb(
   const deadline = Date.now() + 5000
   while (!existsSync(socket)) {
     if (child.exitCode !== null) throw new Error(`Xvfb ${display} exited with ${child.exitCode}`)
-    if (Date.now() > deadline) throw new Error(`Xvfb ${display} did not come up`)
+    if (Date.now() > deadline) {
+      child.kill()
+      throw new Error(`Xvfb ${display} did not come up`)
+    }
     await Bun.sleep(50)
   }
   return { display, stop: () => child.kill() }

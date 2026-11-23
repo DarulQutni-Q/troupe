@@ -145,7 +145,7 @@ function intercept(frame: Frame): boolean {
     .map((block) => block.text ?? '')
     .join('')
     .trim()
-  const handler = HANDLERS[text]
+  const handler = Object.hasOwn(HANDLERS, text) ? HANDLERS[text] : undefined
   if (!handler) return false
   void answer(frame.id, frame.params?.sessionId ?? '', handler)
   return true

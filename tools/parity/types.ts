@@ -169,6 +169,13 @@ export interface Rerun {
   cause: string
 }
 
+/** `results.json`: one comparison and the surfaces it ran, by id. */
+export interface SavedResults {
+  /** The clients compared, as `<candidate> against <reference>`. */
+  comparison: string
+  surfaces: Record<string, SurfaceResult>
+}
+
 export interface SurfaceResult {
   id: string
   ranAt: string

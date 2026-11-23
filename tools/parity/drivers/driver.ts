@@ -120,9 +120,10 @@ export function ordered(haystack: string, texts: string[]): boolean {
   const flat = normalize(haystack)
   let from = 0
   for (const text of texts) {
-    const at = flat.indexOf(normalize(text), from)
+    const needle = normalize(text)
+    const at = flat.indexOf(needle, from)
     if (at < 0) return false
-    from = at + text.length
+    from = at + needle.length
   }
   return true
 }

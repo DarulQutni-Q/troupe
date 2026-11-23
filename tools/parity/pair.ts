@@ -18,7 +18,11 @@ const GAP = 8
 /** `file` (or its `crop` part) box-downscaled by `scale`. */
 function scaled(file: string, scale: number, crop?: number[]): Image {
   const src = readPng(file)
-  const [cx = 0, cy = 0, cw = src.width, ch = src.height] = crop ?? []
+  const [left = 0, top = 0, w = src.width, h = src.height] = crop ?? []
+  const cx = Math.min(Math.max(0, left), src.width - 1)
+  const cy = Math.min(Math.max(0, top), src.height - 1)
+  const cw = Math.min(w, src.width - cx)
+  const ch = Math.min(h, src.height - cy)
   const width = Math.max(1, Math.round(cw * scale))
   const height = Math.max(1, Math.round(ch * scale))
   const out = blankImage(width, height)

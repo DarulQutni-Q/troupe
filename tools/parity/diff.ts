@@ -188,13 +188,15 @@ export function diffPngs(
   return result
 }
 
-/** Write the `rect` part of a PNG to `outPath`, clamped to the image. Returns the clamped rect. */
+/** Write the part of `rect` inside a PNG to `outPath`. Returns that part. */
 export function cropPng(inPath: string, rect: Rect, outPath: string): Rect {
   const src = readPng(inPath)
-  const x = Math.max(0, Math.round(rect.x))
-  const y = Math.max(0, Math.round(rect.y))
-  const width = Math.min(src.width - x, Math.round(rect.width))
-  const height = Math.min(src.height - y, Math.round(rect.height))
+  const x = Math.min(src.width, Math.max(0, Math.round(rect.x)))
+  const y = Math.min(src.height, Math.max(0, Math.round(rect.y)))
+  const width = Math.max(0, Math.min(src.width, Math.round(rect.x + rect.width)) - x)
+  const height = Math.max(0, Math.min(src.height, Math.round(rect.y + rect.height)) - y)
+  if (width === 0 || height === 0)
+    throw new Error(`crop ${JSON.stringify(rect)} is outside ${inPath}`)
   const out = blankImage(width, height)
   blit(src, out, x, y, width, height, 0, 0)
   writePng(outPath, out)

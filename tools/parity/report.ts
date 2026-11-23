@@ -66,7 +66,7 @@ export function summaryLine(result: SurfaceResult): string {
 export function renderReport(
   surfaces: Surface[],
   results: Record<string, SurfaceResult>,
-  run: { client: string; against: string }
+  comparison: string
 ): string {
   const rows = surfaces.map((surface) => {
     const result = results[surface.id]
@@ -76,7 +76,7 @@ export function renderReport(
   const zero = (kind: 'exact' | 'perceptual') =>
     rows.filter((r) => maxPixels(r.result, kind) === 0).length
   const out: string[] = [
-    `# Parity matrix: ${run.client} against ${run.against}`,
+    `# Parity matrix: ${comparison}`,
     '',
     `Surfaces: ${rows.length} (${STATUSES.map((s) => `${s} ${rows.filter((r) => r.status === s).length}`).join(', ')}).`,
     `Zero difference on every step: exact ${zero('exact')} of ${rows.length}, perceptual ${zero('perceptual')} of ${rows.length}.`,

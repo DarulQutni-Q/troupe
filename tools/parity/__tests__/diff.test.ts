@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { cropRects, diffPngs } from '../diff'
+import { cropPng, cropRects, diffPngs } from '../diff'
 
 const FIXTURES = path.join(import.meta.dir, '../fixtures')
 // frame-b differs from frame-a in the 32x32 block at 16,16: 1,024 pixels.
@@ -55,5 +55,16 @@ describe('cropRects', () => {
         crop
       )
     ).toEqual({ text: [{ x: 10, y: 10, width: 10, height: 10 }], icons: [] })
+  })
+})
+
+describe('cropPng', () => {
+  test('crops the part of the rect inside the image', () => {
+    expect(cropPng(A, { x: -5, y: 60, width: 10, height: 10 }, out())).toEqual({
+      x: 0,
+      y: 60,
+      width: 5,
+      height: 4
+    })
   })
 })

@@ -27,7 +27,7 @@ def find(window):
     # GTK maps and destroys short-lived windows while the dialog starts, so a
     # window listed by query_tree can be gone by the time it is read.
     try:
-        if window.get_wm_name() == title:
+        if window.get_wm_name() == title and window.get_attributes().map_state == X.IsViewable:
             return window
         children = window.query_tree().children
     except error.BadWindow:
