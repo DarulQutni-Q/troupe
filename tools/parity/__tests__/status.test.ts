@@ -40,7 +40,13 @@ const run = (client: Client = 'react', ok = true): ClientRun => ({
   frames: []
 })
 
-const SURFACE: Surface = { id: 'rail.project-settings', area: 'rail', title: 'Settings', steps: [] }
+const SURFACE: Surface = {
+  id: 'rail.project-settings',
+  area: 'rail',
+  title: 'Settings',
+  source: { journey: 'starter' },
+  steps: []
+}
 
 const result = (diffs: StepDiff[], client: Client = 'react'): SurfaceResult => ({
   id: SURFACE.id,

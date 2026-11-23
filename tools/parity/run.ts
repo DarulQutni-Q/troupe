@@ -1,9 +1,10 @@
 /**
- * `bun run parity:matrix [--client react] [--against react] [--only id,id] [--area a,b]
- *   [--client-dist DIR] [--against-dist DIR] [--port N] [--out DIR] [--state DIR]
+ * `bun run parity:matrix [--client react] [--against react] [--profile desktop|phone]
+ *   [--only id,id] [--area a,b] [--client-dist DIR] [--against-dist DIR] [--port N] [--out DIR] [--state DIR]
  *   [--server-bin FILE] [--reruns N] [--report-only]`
  *
  * Seeds one troupe-server (`world.ts`), then drives every selected surface
+ * of the profile (`desktop` by default, or the 390x844 touch `phone`)
  * in the reference client (`--against`, or the surface's own reference) and
  * the candidate client (`--client`), each from a fresh device on the
  * dashboard. Records every action and check, grabs one frame per step,
@@ -34,6 +35,8 @@ import {
   CLIENTS,
   type Client,
   type ClientRun,
+  PROFILES,
+  type Profile,
   type Rerun,
   type SavedResults,
   type StepDiff,
@@ -49,12 +52,13 @@ const { values } = parseArgs({
   options: {
     client: { type: 'string', default: 'react' },
     against: { type: 'string', default: 'react' },
+    profile: { type: 'string', default: 'desktop' },
     only: { type: 'string' },
     area: { type: 'string' },
     'client-dist': { type: 'string', default: path.join(REPO_DIR, 'dist-web') },
     'against-dist': { type: 'string', default: path.join(REPO_DIR, 'dist-web') },
     port: { type: 'string' },
-    out: { type: 'string', default: path.join(ROOT, 'out') },
+    out: { type: 'string' },
     state: { type: 'string', default: path.join(ROOT, 'state') },
     'server-bin': { type: 'string' },
     reruns: { type: 'string', default: '2' },
@@ -62,7 +66,16 @@ const { values } = parseArgs({
   }
 })
 
-const OUT = path.resolve(values.out as string)
+function parseProfile(name: string): Profile {
+  if (!(PROFILES as readonly string[]).includes(name))
+    throw new Error(`unknown profile ${name}; one of ${PROFILES.join(', ')}`)
+  return name as Profile
+}
+
+const PROFILE = parseProfile(values.profile as string)
+const OUT = path.resolve(
+  values.out ?? path.join(ROOT, PROFILE === 'desktop' ? 'out' : `out-${PROFILE}`)
+)
 const STATE = path.resolve(values.state as string)
 const RESULTS = path.join(OUT, 'results.json')
 const MAX_RERUNS = Number(values.reruns)
@@ -79,14 +92,19 @@ function parseClient(name: string): Client {
 
 const CLIENT = parseClient(values.client as string)
 const AGAINST = parseClient(values.against as string)
+if (PROFILE === 'phone' && (CLIENT === 'tauri' || AGAINST === 'tauri')) {
+  throw new Error('the phone profile runs only web clients; tauri has no phone shell')
+}
+/** The surfaces of this run's profile. */
+const PROFILE_SURFACES = SURFACES.filter((s) => (s.profile ?? 'desktop') === PROFILE)
 const slug = (id: string) => id.replace(/[^a-z0-9-]/gi, '-')
 
 function selected(): Surface[] {
   const only = values.only?.split(',').filter(Boolean)
   const areas = values.area?.split(',').filter(Boolean)
-  const ids = new Set(SURFACES.map((s) => s.id))
-  for (const id of only ?? []) if (!ids.has(id)) throw new Error(`unknown surface ${id}`)
-  return SURFACES.filter(
+  const ids = new Set(PROFILE_SURFACES.map((s) => s.id))
+  for (const id of only ?? []) if (!ids.has(id)) throw new Error(`unknown ${PROFILE} surface ${id}`)
+  return PROFILE_SURFACES.filter(
     (s) => (!only || only.includes(s.id)) && (!areas || areas.includes(s.area))
   )
 }
@@ -303,7 +321,7 @@ async function runSurface(
 function comparison(): string {
   const side = (client: Client, dist: string) =>
     client === 'react' ? `react (${path.resolve(dist)})` : client
-  return `${side(CLIENT, values['client-dist'] as string)} against ${side(AGAINST, values['against-dist'] as string)}`
+  return `${side(CLIENT, values['client-dist'] as string)} against ${side(AGAINST, values['against-dist'] as string)}, ${PROFILE} profile`
 }
 
 /** The results an earlier run saved in `results.json`, or null. */
@@ -324,7 +342,7 @@ function saveResults(saved: SavedResults): void {
 
 function writeReport(saved: SavedResults): void {
   const file = path.join(OUT, 'report.md')
-  writeFileSync(file, renderReport(SURFACES, saved.surfaces, saved.comparison))
+  writeFileSync(file, renderReport(PROFILE_SURFACES, saved.surfaces, saved.comparison))
   console.error(`[parity] wrote ${file}`)
 }
 

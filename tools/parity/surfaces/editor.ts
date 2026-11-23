@@ -7,6 +7,7 @@ export const EDITOR: Surface[] = [
     id: 'editor.code',
     area: 'editor',
     title: 'Code editor on a TypeScript file',
+    source: { screen: 'pane', name: 'editor' },
     steps: [
       DASHBOARD,
       step('b-tree', [openExplorer, click(txt('src'))], see('app.ts')),
@@ -17,6 +18,7 @@ export const EDITOR: Surface[] = [
     id: 'editor.markdown',
     area: 'editor',
     title: 'Markdown editor',
+    source: { journey: 'starter' },
     steps: [
       DASHBOARD,
       step('b-tree', [openExplorer, click(txt('docs'))], see('guide.md')),

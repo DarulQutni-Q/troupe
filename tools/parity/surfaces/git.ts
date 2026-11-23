@@ -9,6 +9,7 @@ export const GIT: Surface[] = [
     id: 'git.changes',
     area: 'git',
     title: 'Changes panel: staged, unstaged, untracked, history',
+    source: { screen: 'side-panel', name: 'changes' },
     prepare: resetAlpha,
     steps: [
       DASHBOARD,
@@ -19,6 +20,7 @@ export const GIT: Surface[] = [
     id: 'git.diff',
     area: 'git',
     title: 'Diff view of an unstaged file',
+    source: { screen: 'pane', name: 'diff' },
     prepare: resetAlpha,
     steps: [
       DASHBOARD,

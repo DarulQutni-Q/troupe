@@ -7,6 +7,7 @@ export const CHROME: Surface[] = [
     id: 'theme.picker',
     area: 'theme',
     title: 'Colour theme picker',
+    source: { overlay: ['components/ThemePicker.tsx'] },
     steps: [
       DASHBOARD,
       step('b-picker', [click(label('Color themes'))], see('Color Themes', 'Catppuccin Light'))
@@ -16,6 +17,7 @@ export const CHROME: Surface[] = [
     id: 'shortcuts.menu',
     area: 'shortcuts',
     title: 'Keyboard shortcuts menu',
+    source: { overlay: ['components/TitleBarShortcutsPopover.tsx'] },
     steps: [
       DASHBOARD,
       step(
@@ -29,6 +31,7 @@ export const CHROME: Surface[] = [
     id: 'palette.open',
     area: 'palette',
     title: 'Command palette from Search',
+    source: { overlay: ['components/CommandPalette.tsx'] },
     steps: [
       DASHBOARD,
       step(
