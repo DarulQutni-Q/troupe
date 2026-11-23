@@ -129,3 +129,25 @@ fn an_idle_terminal_socket_is_not_replaced() {
     assert_eq!(out, vec![]);
     assert_eq!(host.closed, vec![]);
 }
+
+#[test]
+fn a_call_handle_already_in_use_is_refused() {
+    let mut host = Host::new();
+    host.connect();
+    let call = || {
+        Event::Command(Command::Call {
+            call: 2,
+            kind: troupe_protocol::terminal::WebTerminalRequestType::GetCwd,
+            payload: json!({ "terminalId": "term-1" }),
+            ledgered: false,
+        })
+    };
+    host.step(call());
+
+    let out = host.step(call());
+
+    assert!(
+        matches!(&out[..], [Output::Reply { call: 2, result: Err(e) }] if e.code == "DUPLICATE_CALL"),
+        "{out:?}"
+    );
+}

@@ -560,3 +560,61 @@ fn a_watch_retry_gives_up_after_a_few_tries() {
         1 + crate::ws::WATCH_RETRIES as usize
     );
 }
+
+#[test]
+fn an_authenticate_reply_after_the_handshake_budget_is_not_reported() {
+    let mut host = Host::new();
+    host.step(Event::Start);
+    host.step(Event::Socket(SocketEvent::Opened(host.socket.unwrap())));
+    host.now = crate::link::HANDSHAKE_S + 1.0;
+
+    let out = host.reply("authenticate", json!({ "historyMode": "server" }));
+
+    assert!(
+        !out.iter().any(|o| matches!(o, Output::Authenticated(_))),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn a_turn_the_snapshot_completed_is_not_completed_again() {
+    let mut host = Host::new();
+    host.follow();
+    host.frame(batch(&[5]));
+    let done = |seq: u64| json!({ "sid": "s1", "seq": seq, "type": "prompt_complete", "payload": { "turnId": "t1" } });
+    let snapshot = json!({
+        "sessionId": "s1", "watermark": 5, "headSeq": 5, "logEpoch": "e1",
+        "events": [chunk(1), chunk(2), chunk(3), done(4), chunk(5)]
+    });
+    host.reply("recover_session_snapshot", snapshot);
+
+    assert_eq!(seqs(&host.frame(done(6))), Vec::<u64>::new());
+}
+
+#[test]
+fn a_call_handle_already_in_use_is_refused_and_the_first_call_kept() {
+    let mut host = Host::new();
+    host.connect();
+    let call = |text: &str| Command::Call {
+        call: 5,
+        kind: troupe_protocol::ws::WsRequestType::ListPersistedSessions,
+        payload: json!({ "text": text }),
+        ledgered: false,
+    };
+    host.command(call("first"));
+
+    let out = host.command(call("second"));
+
+    assert!(
+        matches!(&out[..], [Output::Reply { call: 5, result: Err(e) }] if e.code == "duplicate_call"),
+        "{out:?}"
+    );
+    assert_eq!(host.requests("list_persisted_sessions").len(), 1);
+    assert_eq!(
+        host.reply("list_persisted_sessions", json!({ "sessions": [] })),
+        vec![Output::Reply {
+            call: 5,
+            result: Ok(Some(json!({ "sessions": [] })))
+        }]
+    );
+}

@@ -102,7 +102,14 @@ impl<M: Machine> Driver<M> {
                 continue;
             }
             if now >= deadline {
-                return None;
+                // A zero or spent timeout still takes an event that is ready.
+                match self.events.try_recv() {
+                    Ok(event) => {
+                        self.apply(Event::Socket(event));
+                        continue;
+                    }
+                    Err(_) => return None,
+                }
             }
             let until = self.wakes.iter().copied().fold(deadline, f64::min);
             match self

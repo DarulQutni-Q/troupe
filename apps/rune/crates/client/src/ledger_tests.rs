@@ -6,7 +6,7 @@ use crate::reconnect_tests::config;
 
 fn first_command_id(config: &Config, carrier: Carrier) -> String {
     let mut ledger = Ledger::new(config, carrier);
-    ledger.add(1, (), json!({}), true);
+    assert!(ledger.add(1, (), json!({}), true));
     ledger.get(1).unwrap().command_id.clone().unwrap()
 }
 
@@ -20,8 +20,8 @@ fn with_id(client_instance_id: &str) -> Config {
 #[test]
 fn due_calls_keep_the_order_the_app_made_them_in() {
     let mut ledger = Ledger::new(&config(), Carrier::Terminal);
-    ledger.add(20, (), json!("first"), true);
-    ledger.add(10, (), json!("second"), true);
+    assert!(ledger.add(20, (), json!("first"), true));
+    assert!(ledger.add(10, (), json!("second"), true));
 
     assert_eq!(ledger.due(0.0), vec![20, 10]);
 }

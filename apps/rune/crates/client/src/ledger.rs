@@ -85,8 +85,13 @@ impl<K: Clone> Ledger<K> {
         }
     }
 
-    /// Queue a request. A ledgered one gets its `commandId` now.
-    pub fn add(&mut self, call: CallId, kind: K, payload: Value, ledgered: bool) {
+    /// Queue a request. A ledgered one gets its `commandId` now. Returns
+    /// `false`, and keeps the earlier request, when `call` is already in use.
+    #[must_use]
+    pub fn add(&mut self, call: CallId, kind: K, payload: Value, ledgered: bool) -> bool {
+        if self.calls.contains_key(&call) {
+            return false;
+        }
         self.added += 1;
         let command_id = ledgered.then(|| format!("{}-{}", self.prefix, self.added));
         self.calls.insert(
@@ -99,6 +104,7 @@ impl<K: Clone> Ledger<K> {
                 state: CallState::Queued,
             },
         );
+        true
     }
 
     /// The requests to put on the wire now, in the order the app made them.

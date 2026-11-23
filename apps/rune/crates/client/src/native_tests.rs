@@ -76,3 +76,38 @@ fn a_close_from_the_host_is_answered_before_the_socket_drops() {
     );
     assert_eq!(events.recv().unwrap(), SocketEvent::Opened(Attempt(1)));
 }
+
+struct Echo;
+
+impl crate::machine::Machine for Echo {
+    type Command = ();
+    type Output = SocketEvent;
+    const PATH: &'static str = "/echo";
+
+    fn step(
+        &mut self,
+        event: crate::machine::Event<()>,
+        _now: f64,
+    ) -> rune_core::machine::Effects<crate::machine::Effect<SocketEvent>> {
+        match event {
+            crate::machine::Event::Socket(e) => {
+                rune_core::machine::Effects::one(crate::machine::Effect::Output(e))
+            }
+            _ => rune_core::machine::Effects::none(),
+        }
+    }
+}
+
+#[test]
+fn a_zero_timeout_still_takes_a_ready_socket_event() {
+    let mut driver = super::Driver::new(Echo);
+    driver
+        .events_tx
+        .send(SocketEvent::Opened(Attempt(3)))
+        .unwrap();
+
+    assert_eq!(
+        driver.next(Duration::ZERO),
+        Some(SocketEvent::Opened(Attempt(3)))
+    );
+}

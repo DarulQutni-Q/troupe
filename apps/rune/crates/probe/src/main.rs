@@ -54,7 +54,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         ),
         "chat" => {
             let id = args.next().ok_or("session id required")?;
-            let follow = args.any(|a| a == "--follow");
+            let mut follow = false;
+            for arg in args.by_ref() {
+                match arg.as_str() {
+                    "--follow" => follow = true,
+                    _ => return Err(format!("unknown chat option {arg}").into()),
+                }
+            }
             let mut driver = Driver::new(ws::WsClient::new(config));
             driver.command(ws::Command::Subscribe {
                 session_id: id,
@@ -125,6 +131,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             driver.start();
             loop {
                 match driver.next(IDLE) {
+                    Some(Output::Replay {
+                        terminal_id,
+                        gap: true,
+                        bytes,
+                        ..
+                    }) => {
+                        eprintln!("troupe-probe: terminal {terminal_id} replay lost output");
+                        std::io::stdout().write_all(&bytes)?;
+                        std::io::stdout().flush()?;
+                    }
                     Some(Output::Replay { bytes, .. } | Output::Data { bytes, .. }) => {
                         std::io::stdout().write_all(&bytes)?;
                         std::io::stdout().flush()?;

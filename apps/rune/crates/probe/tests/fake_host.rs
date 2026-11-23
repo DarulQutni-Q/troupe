@@ -33,8 +33,14 @@ fn host(answer: impl Fn(&Value) -> Vec<Value> + Send + 'static) -> String {
     url
 }
 
-/// Runs the probe, killing it if it outlives `limit`.
+/// Runs the probe, killing it if it outlives `limit`; `None` when it had to.
 fn probe(args: &[&str], limit: Duration) -> Option<Output> {
+    let (out, exited) = run(args, limit);
+    exited.then_some(out)
+}
+
+/// Runs the probe for at most `limit`; the flag says whether it exited itself.
+fn run(args: &[&str], limit: Duration) -> (Output, bool) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_troupe-probe"))
         .args(args)
         .stdout(Stdio::piped())
@@ -44,13 +50,12 @@ fn probe(args: &[&str], limit: Duration) -> Option<Output> {
     let started = Instant::now();
     while started.elapsed() < limit {
         if child.try_wait().unwrap().is_some() {
-            return Some(child.wait_with_output().unwrap());
+            return (child.wait_with_output().unwrap(), true);
         }
         thread::sleep(Duration::from_millis(20));
     }
     let _ = child.kill();
-    let _ = child.wait();
-    None
+    (child.wait_with_output().unwrap(), false)
 }
 
 fn ws_refuse_token(request: &Value) -> Vec<Value> {
@@ -125,4 +130,38 @@ fn chat_without_follow_exits_once_the_replay_is_printed() {
         })
         .collect();
     assert_eq!(seqs, vec![1, 3]);
+}
+
+#[test]
+fn chat_refuses_an_unknown_option() {
+    let out = probe(
+        &["--url", "http://127.0.0.1:9", "chat", "s1", "--folow"],
+        Duration::from_secs(10),
+    )
+    .expect("the probe exited");
+
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--folow"));
+}
+
+#[test]
+fn a_terminal_replay_with_a_gap_is_reported_on_stderr() {
+    let url = host(|request| match request["type"].as_str() {
+        Some("authenticate") => vec![json!({ "id": request["id"], "success": true, "data": {} })],
+        Some("attach") => vec![json!({
+            "type": "replay", "terminalId": "t1", "chunks": [{ "seq": 7, "data": [104, 105] }],
+            "gap": true, "reset": true, "logEpoch": "e1", "latestSeq": 7,
+            "snapshot": { "exited": false }
+        })],
+        _ => vec![],
+    });
+
+    let (out, _) = run(
+        &["--url", &url, "terminal", "t1", "--attach", "--claim", "c1"],
+        Duration::from_secs(3),
+    );
+
+    assert_eq!(out.stdout, b"hi");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("t1 replay lost output"), "{stderr}");
 }

@@ -295,7 +295,15 @@ impl TerminalClient {
                 payload,
                 ledgered,
             } => {
-                self.ledger.add(call, kind, payload, ledgered);
+                if !self.ledger.add(call, kind, payload, ledgered) {
+                    log::error!("[client] call handle {call} is already in use");
+                    let error = TermError {
+                        code: "DUPLICATE_CALL".into(),
+                        message: format!("call handle {call} is already in use"),
+                    };
+                    let result = Err(error);
+                    return fx.push(Effect::Output(Output::Reply { call, result }));
+                }
                 self.flush_calls(now, fx);
             }
         }

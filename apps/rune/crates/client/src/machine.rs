@@ -37,7 +37,8 @@ impl Config {
 }
 
 /// The app's handle for one request it asked a machine to send. The app mints
-/// it, so it can match the reply before the machine has said anything.
+/// it, so it can match the reply before the machine has said anything. A
+/// handle still in use is refused with a `duplicate_call` reply.
 pub type CallId = u64;
 
 /// What happened to a socket the machine opened, tagged with the attempt that

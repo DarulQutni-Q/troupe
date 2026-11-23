@@ -344,7 +344,16 @@ impl WsClient {
                 payload,
                 ledgered,
             } => {
-                self.ledger.add(call, kind, payload, ledgered);
+                if !self.ledger.add(call, kind, payload, ledgered) {
+                    log::error!("[client] call handle {call} is already in use");
+                    let error = WsError {
+                        code: "duplicate_call".into(),
+                        message: format!("call handle {call} is already in use"),
+                        details: None,
+                    };
+                    let result = Err(error);
+                    return fx.push(Effect::Output(Output::Reply { call, result }));
+                }
                 self.flush_calls(now, fx);
             }
         }
@@ -459,9 +468,18 @@ impl WsClient {
                             runtime_policy: None,
                             protocol_version: None,
                         });
-                    self.history = reply.history_mode;
-                    fx.push(Effect::Output(Output::Authenticated(reply)));
-                    self.link_step(LinkEvent::AuthOk(socket), now, fx);
+                    // The link may refuse a reply past the handshake budget;
+                    // report it only once the socket went live. `Up`
+                    // resubscribes with the negotiated history mode.
+                    let before = std::mem::replace(&mut self.history, reply.history_mode);
+                    let mut up = Effects::none();
+                    self.link_step(LinkEvent::AuthOk(socket), now, &mut up);
+                    if self.link.live() == Some(socket) {
+                        fx.push(Effect::Output(Output::Authenticated(reply)));
+                    } else {
+                        self.history = before;
+                    }
+                    fx.extend(up);
                 }
                 Err(e) => {
                     let fatal = [
@@ -657,6 +675,13 @@ impl WsClient {
             last_seq: snapshot.watermark,
             head_seq: snapshot.head_seq,
         };
+        session.turns = snapshot
+            .events
+            .iter()
+            .filter(|e| e.kind == WsEventType::PromptComplete)
+            .filter_map(|e| e.payload.get("turnId").and_then(Value::as_str))
+            .map(str::to_owned)
+            .collect();
         session.sync = Sync::Live;
         fx.push(Effect::Output(Output::Snapshot(snapshot)));
         self.release(&session_id, held, fx);
