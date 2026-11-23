@@ -1,4 +1,4 @@
-import type { Surface } from '../types'
+import type { Check, Surface } from '../types'
 import { ensureProject } from '../world'
 import { click, css, DASHBOARD, label, press, rclick, see, step, type } from './dsl'
 
@@ -8,12 +8,12 @@ const page = (name: string) =>
 const PREFERENCES = step('b-preferences', [openPreferences], see('Preferences', 'Interface zoom'))
 
 /** An App Preferences page: its nav label and a text only that page paints. */
-const pref = (id: string, name: string, text: string): Surface => ({
+const pref = (id: string, name: string, text: string, settled: Check[] = []): Surface => ({
   id: `settings.app-${id}`,
   area: 'settings',
   title: `App preferences: ${name}`,
   source: { screen: 'settings', name: `app:${id}` },
-  steps: [DASHBOARD, PREFERENCES, step('c-page', [page(name)], see(text))]
+  steps: [DASHBOARD, PREFERENCES, step('c-page', [page(name)], [...see(text), ...settled])]
 })
 
 const openProjectSettings = [
@@ -82,7 +82,9 @@ export const SETTINGS: Surface[] = [
   pref('ai-agents', 'Agent chats', 'Time limits for agent chats, and the agents Troupe can start.'),
   pref('skills', 'Skills', 'Skills in your home folder and in the open project.'),
   pref('provider', 'Accounts', 'The Claude and Codex accounts that agent chats use'),
-  pref('mcp-servers', 'MCP servers', 'No MCP servers configured'),
+  pref('mcp-servers', 'MCP servers', 'No MCP servers configured', [
+    { text: 'Loading the catalog', gone: true, timeoutMs: 15_000 }
+  ]),
   pref('browser', 'Browser', "Browser rules aren't available on this host."),
   pref('shortcuts', 'Keyboard shortcuts', 'Reset all shortcuts'),
   pref('server', 'Server', 'Where this Troupe server can be reached, and how it updates.'),
@@ -205,7 +207,11 @@ export const SETTINGS: Surface[] = [
     steps: [
       DASHBOARD,
       PREFERENCES,
-      step('c-page', [page('MCP servers')], see('MCP catalog')),
+      step(
+        'c-page',
+        [page('MCP servers')],
+        [...see('MCP catalog'), { text: 'Loading the catalog', gone: true, timeoutMs: 15_000 }]
+      ),
       step(
         'd-dialog',
         [click(css('[role="dialog"] >> role=button[name="Install"s]'))],
