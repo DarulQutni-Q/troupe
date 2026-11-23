@@ -817,7 +817,13 @@ impl PtyManager {
                 crate::pty::env_refresh::apply_fresh_path(&mut env_map);
             }
             if let Some(custom) = custom_env {
-                for (key, value) in custom {
+                // Project env values arrive unexpanded (the renderer has no
+                // process env): expand `$VAR`/`${VAR}`/`%VAR%` against the
+                // base map before upserting, so e.g. `PATH=$HOME/bin:$PATH`
+                // keeps the real inherited PATH instead of going empty.
+                let expanded =
+                    crate::pty::env_expand::expand_custom_env(custom, &env_map, true);
+                for (key, value) in expanded {
                     upsert_windows_env_var(&mut env_map, &key, value);
                 }
             }
@@ -848,7 +854,11 @@ impl PtyManager {
             }
 
             if let Some(custom) = custom_env {
-                for (key, value) in custom {
+                // See the Windows branch: expand references against the
+                // base process env before merging.
+                let expanded =
+                    crate::pty::env_expand::expand_custom_env(custom, &env, false);
+                for (key, value) in expanded {
                     env.insert(key, value);
                 }
             }
