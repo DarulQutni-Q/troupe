@@ -48,7 +48,8 @@ const phone = (
   title,
   source,
   profile: 'phone',
-  steps: [DASHBOARD, ...steps],
+  // A surface that starts on another route opens there, not on the dashboard.
+  steps: extra.start ? steps : [DASHBOARD, ...steps],
   ...extra
 })
 
@@ -211,7 +212,10 @@ const JOURNEYS: Surface[] = [
     'mobile-back-stack-tail',
     'snapshots',
     'Snapshot modals on the phone',
-    [step('b-modal', [click(txt('Create New Snapshot'))], see('Create Snapshot'))],
+    [
+      step('a-list', [], see(SNAPSHOT_NAME, 'Restore')),
+      step('b-modal', [click(txt('New'))], see('Create Snapshot'))
+    ],
     { start: { hash: '#/snapshots', ready: SNAPSHOT_NAME }, prepare: seedSnapshot }
   ),
   journey('mobile-drawer-and-files-gaps', 'explorer', 'Files from the More sheet', [MORE, FILES]),
@@ -219,7 +223,7 @@ const JOURNEYS: Surface[] = [
     'mobile-git-history-layout',
     'git',
     'Git history rows on the phone',
-    [MORE, GIT_SHEET, step('d-history', [click(txt('History', false))], see('initial commit'))],
+    [DRAWER, step('c-history', [click(label('Git history'))], see('initial commit', 'add utils'))],
     { prepare: resetAlpha }
   ),
   journey('mobile-header-palette-parity', 'palette', 'Command palette from the header', [
@@ -244,7 +248,7 @@ const JOURNEYS: Surface[] = [
       [click(css('button[aria-label^="More actions for How does"]'))],
       see('Copy chat reference')
     ),
-    step('d-toast', [click(txt('Copy chat reference'))], see('Copied'))
+    step('d-toast', [click(txt('Copy chat reference'))], see('Chat reference copied'))
   ]),
   journey('native-text-selection', 'chat', 'Chat prose on the phone', [CHAT]),
   journey('overlay-back-stack', 'settings', 'Drawer to project settings in one tap', [

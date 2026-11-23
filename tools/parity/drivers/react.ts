@@ -290,6 +290,8 @@ export function reactClient(opts: { browser: Browser; dist: string }): ClientLau
         viewport: phone ? PHONE_VIEWPORT : VIEWPORT,
         isMobile: phone,
         hasTouch: phone,
+        // Copy buttons write the clipboard; headless Chromium leaves that promise pending without the grant.
+        permissions: ['clipboard-read', 'clipboard-write'],
         deviceScaleFactor: 1,
         colorScheme: 'dark',
         reducedMotion: 'reduce',
