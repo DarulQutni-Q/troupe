@@ -96,8 +96,7 @@ export const CHROME: Surface[] = [
     area: 'dialogs',
     title: "What's new after an update",
     source: { overlay: ['components/WhatsNewModal.tsx'] },
-    blocked:
-      'opens once after an update, with release notes fetched from GitHub; the seeded world is offline and never updates',
+    blocked: 'opens once after the app updates to a newer version; the seeded world never updates',
     steps: []
   },
   {

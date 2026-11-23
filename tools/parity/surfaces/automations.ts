@@ -101,8 +101,17 @@ export const AUTOMATIONS: Surface[] = [
     title: 'Add a step sheet (phone)',
     source: { overlay: ['components/automations/canvas/palette/AddNodeMenu.tsx'] },
     profile: 'phone',
-    blocked:
-      'the phone shell opens automations in a read-only view; the editor that hosts this sheet is desktop-sized',
-    steps: []
+    prepare: seedAutomation,
+    steps: [
+      DASHBOARD,
+      step(
+        'b-list',
+        [click(label('Open menu')), click(label('Automations'))],
+        see(AUTOMATION_NAME, 'Needs approval')
+      ),
+      step('c-detail', [click(txt(AUTOMATION_NAME))], see('Approve and arm', 'Secrets')),
+      step('d-editor', [click(txt('Edit'))], see('No unsaved changes')),
+      step('e-sheet', [click(label('Add a step'))], see('Add a step', 'Actions', 'Logic'))
+    ]
   }
 ]

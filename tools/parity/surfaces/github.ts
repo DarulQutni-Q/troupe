@@ -2,7 +2,7 @@ import type { Surface } from '../types'
 import { click, DASHBOARD, label, see, step } from './dsl'
 
 const NO_GITHUB =
-  'needs a project with a GitHub remote and a signed-in gh; the seeded repo has no remote and the world is offline'
+  'needs a project with a GitHub remote and a signed-in gh; the seeded repo has no remote and the host has no gh sign-in'
 
 const github = (id: string, title: string, file: string, profile?: 'phone'): Surface => ({
   id: `github.${id}`,
