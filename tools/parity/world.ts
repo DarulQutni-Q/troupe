@@ -319,8 +319,11 @@ export async function seedAutomation(world: World): Promise<void> {
   const json = async (res: Response) => ((await res.json()) as { data: unknown }).data
   const list = (await json(
     await serverFetch(world.server, `${route}?project_id=${PROJECTS.alpha.id}`)
-  )) as { name: string }[]
-  if (list.some((row) => row.name === AUTOMATION_NAME)) return
+  )) as { id: string; name: string; graph: { nodes: { id: string }[] } }[]
+  const existing = list.find((row) => row.name === AUTOMATION_NAME)
+  if (existing?.graph.nodes.some((node) => node.id === 'fetch')) return
+  // A seed whose step request failed: start it over.
+  if (existing) await serverFetch(world.server, `${route}/${existing.id}`, { method: 'DELETE' })
   const created = (await json(
     await serverFetch(world.server, route, {
       method: 'POST',

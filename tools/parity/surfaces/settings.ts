@@ -215,7 +215,11 @@ export const SETTINGS: Surface[] = [
       step(
         'd-dialog',
         [click(css('[role="dialog"] >> role=button[name="Install"s]'))],
-        see('Cancel')
+        [
+          ...see('Cancel'),
+          { text: 'Loading what this server needs', gone: true, timeoutMs: 15_000 },
+          { text: 'Checking…', gone: true, timeoutMs: 15_000 }
+        ]
       )
     ]
   },

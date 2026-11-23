@@ -209,6 +209,7 @@ export const CHAT: Surface[] = [
     area: 'chat',
     title: 'Chat header selector (phone modal)',
     source: { overlay: ['components/chat/AgentHeader.tsx'] },
+    profile: 'phone',
     blocked: NO_OPTIONS,
     steps: []
   },
