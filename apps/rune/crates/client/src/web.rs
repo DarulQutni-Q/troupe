@@ -12,7 +12,9 @@ use serde_json::Value;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::{Closure, JsValue};
 use wasm_bindgen_futures::JsFuture;
-use web_sys::{CloseEvent, Headers, MessageEvent, Request, RequestInit, Response, WebSocket};
+use web_sys::{
+    AbortSignal, CloseEvent, Headers, MessageEvent, Request, RequestInit, Response, WebSocket,
+};
 
 use crate::http::{COMMAND_ID_HEADER, HttpError, HttpRequest, Method, parse_body};
 use crate::machine::{Config, Effect, Event, Machine, SocketEvent};
@@ -68,8 +70,12 @@ impl Socket {
             _on_close: on_close,
         })
     }
+}
 
-    fn close(self) {
+/// Dropping a socket (an explicit close or the driver going away) detaches its
+/// handlers before their closures are freed, and closes it.
+impl Drop for Socket {
+    fn drop(&mut self) {
         self.ws.set_onopen(None);
         self.ws.set_onmessage(None);
         self.ws.set_onclose(None);
@@ -154,9 +160,7 @@ impl<M: Machine> WebDriver<M> {
                     }
                 }
                 Effect::Close { socket } => {
-                    if let Some(s) = self.sockets.remove(&socket) {
-                        s.close();
-                    }
+                    self.sockets.remove(&socket);
                 }
                 Effect::WakeAt(due) => self.wakes.push(due),
                 Effect::Output(output) => outputs.push(output),
@@ -164,6 +168,9 @@ impl<M: Machine> WebDriver<M> {
         }
     }
 }
+
+/// One request, body included, may take this long, as on native.
+const HTTP_BUDGET_MS: u32 = 30_000;
 
 /// Send one HTTP request with `fetch` and read the Troupe body.
 pub async fn http_send(config: &Config, request: &HttpRequest) -> Result<Value, HttpError> {
@@ -188,6 +195,8 @@ pub async fn http_send(config: &Config, request: &HttpRequest) -> Result<Value, 
         init.set_body(&JsValue::from_str(&body.to_string()));
     }
     init.set_headers(&headers);
+    // The signal also aborts the body read below.
+    init.set_signal(Some(&AbortSignal::timeout_with_u32(HTTP_BUDGET_MS)));
     let req = Request::new_with_str_and_init(&url, &init).map_err(js)?;
     let window = web_sys::window().ok_or_else(|| HttpError::Network("no window".into()))?;
     let response: Response = JsFuture::from(window.fetch_with_request(&req))

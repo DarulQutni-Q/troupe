@@ -11,10 +11,12 @@ pub struct Config {
     pub token: Option<String>,
     /// Per install or browser profile. Not a credential.
     pub device_id: String,
-    /// Per window or tab. Not a credential. Also the prefix of every
-    /// `commandId` this client mints, so ids never collide across clients.
+    /// Per window or tab. Not a credential. Every `commandId` this client
+    /// mints starts with it (see [`crate::ledger`]).
     pub client_instance_id: String,
-    /// Seeds the backoff jitter.
+    /// Random and fresh for each client built: it seeds the backoff jitter and
+    /// is part of every `commandId`, so a client rebuilt for the same window
+    /// never reuses an earlier client's ids.
     pub seed: u64,
 }
 

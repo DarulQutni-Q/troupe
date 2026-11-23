@@ -19,8 +19,8 @@ use troupe_protocol::terminal::{
 use troupe_protocol::version::WS_PROTOCOL_VERSION;
 use troupe_protocol::ws::AcpAuthenticatePayload;
 
-use crate::ledger::{Ledger, is_in_progress_receipt};
-use crate::link::{LinkEffect, LinkEvent, LinkMachine, Status};
+use crate::ledger::{Carrier, Ledger, is_in_progress_receipt};
+use crate::link::{LinkEffect, LinkEvent, LinkMachine, Liveness, Status};
 use crate::machine::{CallId, Config, Effect, Event, Machine, SocketEvent};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -155,8 +155,8 @@ impl TerminalClient {
     #[must_use]
     pub fn new(config: Config) -> Self {
         Self {
-            link: LinkMachine::new(config.seed ^ 0x7465_726d),
-            ledger: Ledger::new(&config.client_instance_id),
+            link: LinkMachine::new(config.seed ^ 0x7465_726d, Liveness::CloseOnly),
+            ledger: Ledger::new(&config, Carrier::Terminal),
             config,
             next_request: 0,
             inflight: BTreeMap::new(),
@@ -195,8 +195,7 @@ impl TerminalClient {
                         fx,
                     );
                 }
-                // The terminal socket has no ping request; the host's frames
-                // and the socket's own pings keep it judged.
+                // `Liveness::CloseOnly` never probes: the protocol has no ping.
                 LinkEffect::Ping(_) => {}
                 LinkEffect::WakeAt(due) => fx.push(Effect::WakeAt(due)),
                 LinkEffect::Up(socket) => {
@@ -275,6 +274,7 @@ impl TerminalClient {
                 }
             }
             Command::Detach { terminal_id } => {
+                self.forget_attach(&terminal_id);
                 if self.terminals.remove(&terminal_id).is_some()
                     && let Some(socket) = self.link.live()
                 {
@@ -327,6 +327,7 @@ impl TerminalClient {
         {
             payload["logEpoch"] = json!(epoch);
         }
+        self.forget_attach(terminal_id);
         let purpose = Purpose::Attach(terminal_id.to_owned());
         self.send(
             socket,
@@ -336,6 +337,13 @@ impl TerminalClient {
             None,
             fx,
         );
+    }
+
+    /// A newer attach or a detach replaces any attach still in flight, so its
+    /// late reply is ignored.
+    fn forget_attach(&mut self, terminal_id: &str) {
+        self.inflight
+            .retain(|_, p| !matches!(p, Purpose::Attach(id) if id == terminal_id));
     }
 
     fn frame(&mut self, text: &str, now: f64, fx: &mut Fx) {

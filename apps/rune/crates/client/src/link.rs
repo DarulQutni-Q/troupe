@@ -13,7 +13,8 @@ pub const BACKOFF_MAX_S: f64 = 8.0;
 pub const BACKOFF_JITTER: f64 = 0.25;
 /// A connection that stayed up this long reconnects at the base delay.
 pub const STABLE_S: f64 = 20.0;
-/// The host writes a heartbeat every 10 s; this much silence starts a probe.
+/// The `/ws` host writes a heartbeat every 10 s; this much silence starts a
+/// probe. `/terminal/ws` has no heartbeat (see [`Liveness::CloseOnly`]).
 pub const SILENCE_S: f64 = 25.0;
 /// How long a probe `ping` may go unanswered before the socket is replaced.
 pub const PROBE_S: f64 = 5.0;
@@ -112,19 +113,32 @@ pub enum LinkEffect {
     Status(Status),
 }
 
+/// How a live socket is judged alive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Liveness {
+    /// The host writes a heartbeat (`/ws`): silence starts a `ping` probe, and
+    /// an unanswered probe replaces the socket.
+    Heartbeat,
+    /// The host writes nothing on a timer (`/terminal/ws`): only a close or a
+    /// failed read or write ends the socket.
+    CloseOnly,
+}
+
 /// The lifecycle state with its attempt counter and jitter source.
 #[derive(Clone, Debug)]
 pub struct LinkMachine {
     pub state: Link,
+    liveness: Liveness,
     seq: Seq,
     rng: u64,
 }
 
 impl LinkMachine {
     #[must_use]
-    pub fn new(seed: u64) -> Self {
+    pub fn new(seed: u64, liveness: Liveness) -> Self {
         Self {
             state: Link::Idle,
+            liveness,
             seq: Seq::default(),
             rng: seed | 1,
         }
@@ -173,18 +187,21 @@ impl LinkMachine {
                 fx.push(LinkEffect::Status(Status::Stopped));
                 fx
             }
-            (Link::Opening { socket, tries, .. }, LinkEvent::Opened(s)) if *socket == s => {
-                let (socket, tries) = (*socket, *tries);
-                let deadline = now + HANDSHAKE_S;
+            (
+                Link::Opening {
+                    socket,
+                    tries,
+                    deadline,
+                },
+                LinkEvent::Opened(s),
+            ) if *socket == s => {
+                let (socket, tries, deadline) = (*socket, *tries, *deadline);
                 self.state = Link::Authenticating {
                     socket,
                     tries,
                     deadline,
                 };
-                Effects::two(
-                    LinkEffect::Authenticate(socket),
-                    LinkEffect::WakeAt(deadline),
-                )
+                Effects::one(LinkEffect::Authenticate(socket))
             }
             (
                 Link::Live {
@@ -199,7 +216,18 @@ impl LinkMachine {
                 *probe = Probe::Quiet;
                 Effects::none()
             }
-            (Link::Authenticating { socket, tries, .. }, LinkEvent::AuthOk(s)) if *socket == s => {
+            (
+                Link::Authenticating {
+                    socket,
+                    tries,
+                    deadline,
+                },
+                LinkEvent::AuthOk(s),
+            ) if *socket == s => {
+                if now >= *deadline {
+                    log::info!("[client] handshake did not finish within {HANDSHAKE_S}s");
+                    return self.fail(now);
+                }
                 let (socket, tries) = (*socket, *tries);
                 let next_ping = now + PING_EVERY_S;
                 self.state = Link::Live {
@@ -213,7 +241,9 @@ impl LinkMachine {
                 let mut fx = Effects::none();
                 fx.push(LinkEffect::Status(Status::Live));
                 fx.push(LinkEffect::Up(socket));
-                fx.push(LinkEffect::WakeAt(next_ping.min(now + SILENCE_S)));
+                if self.liveness == Liveness::Heartbeat {
+                    fx.push(LinkEffect::WakeAt(next_ping.min(now + SILENCE_S)));
+                }
                 fx
             }
             (
@@ -261,7 +291,7 @@ impl LinkMachine {
                 next_ping,
                 probe,
                 ..
-            } => {
+            } if self.liveness == Liveness::Heartbeat => {
                 let socket = *socket;
                 let mut fx = Effects::none();
                 match *probe {

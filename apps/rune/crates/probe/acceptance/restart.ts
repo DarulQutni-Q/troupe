@@ -6,6 +6,9 @@
  *
  *   bun apps/rune/crates/probe/acceptance/restart.ts [--port 8193] [--out DIR]
  *
+ * The run writes to DIR/accept-PORT (DIR defaults to /tmp/rune-r2a) and clears
+ * only that directory.
+ *
  * TROUPE_SERVER_BIN picks the server (default: this checkout's release build),
  * TROUPE_PROBE_BIN the probe (default: $CARGO_TARGET_DIR/debug/troupe-probe).
  */
@@ -23,7 +26,7 @@ const { values } = parseArgs({
 })
 const PORT = Number(values.port)
 const PROXY_PORT = PORT + 1
-const ROOT = values.out ?? `/tmp/rune-r2a/accept-${PORT}`
+const ROOT = path.join(values.out ?? '/tmp/rune-r2a', `accept-${PORT}`)
 const STATE = path.join(ROOT, 'state')
 const TOKEN = 'rune-probe-acceptance'
 const BASE = `http://127.0.0.1:${PORT}`
@@ -66,8 +69,10 @@ function startServer(): Bun.Subprocess {
 }
 
 async function healthy(): Promise<void> {
-  for (let i = 0; i < 150; i++) {
-    const ok = await fetch(`${BASE}/health`).then(
+  const deadline = Date.now() + 15_000
+  while (Date.now() < deadline) {
+    const signal = AbortSignal.timeout(Math.max(1, deadline - Date.now()))
+    const ok = await fetch(`${BASE}/health`, { signal }).then(
       (r) => r.ok,
       () => false
     )
@@ -116,6 +121,7 @@ rmSync(ROOT, { recursive: true, force: true })
 mkdirSync(ROOT, { recursive: true })
 let server = startServer()
 let probe: Bun.Subprocess<'ignore', 'pipe', 'inherit'> | null = null
+let reader: Promise<void> | null = null
 try {
   await healthy()
   for (const key of ['a', 'b', 'c']) {
@@ -152,7 +158,7 @@ try {
   const follower = Bun.spawn([PROBE, '--token', TOKEN, '--url', ...follow], { stdout: 'pipe' })
   probe = follower
   log(`probe pid ${follower.pid}`)
-  void (async () => {
+  reader = (async () => {
     let buffer = ''
     for await (const chunk of follower.stdout.pipeThrough(new TextDecoderStream())) {
       buffer += chunk
@@ -199,7 +205,11 @@ try {
   await waitFor('turn 2 to stream', () => count('message_chunk') >= before + 10)
   await stopServer(server)
   marks.stopped = Date.now()
-  log(`turn 2 request: ${await turn2}`)
+  const turn2Outcome = await turn2
+  log(`turn 2 request: ${turn2Outcome}`)
+  if (turn2Outcome === 'completed') {
+    throw new Error('turn 2 completed before the server stopped; the restart was not mid-stream')
+  }
   await Bun.sleep(2000)
   server = startServer()
   await healthy()
@@ -211,6 +221,9 @@ try {
   ws.close()
   const lastSeq = serverTranscript?.metadata.lastSeq
   // Reconnect backoff reaches 8 s.
+  await waitFor('the probe to reconnect after the restart', () =>
+    lines.some((l) => l.at > marks.stopped && l.frame.type === 'auth_required')
+  )
   await waitFor(`the probe to print seq ${lastSeq}`, () =>
     lines.some((l) => l.frame.seq === lastSeq)
   )
@@ -219,6 +232,7 @@ try {
   if (probe) {
     probe.kill('SIGTERM')
     await probe.exited
+    await reader
   }
   await stopServer(server)
   proxy.close()
@@ -266,23 +280,35 @@ const identity = (r: LogRecord) => {
   return tool ? canon([r.type, tool.toolCallId, tool.status]) : canon([r.type, r.payload])
 }
 
+// Mirrors the server's `fold_session_records`: a tool card, a finished turn
+// (not an `interrupted` marker), a prompt or an agent switch closes the open
+// chunk run; `tool_call_update` and the other events do not.
 const fold = (records: LogRecord[]): Message[] => {
   const out: Message[] = []
   let open = null as Message | null
   for (const r of records) {
-    const content = r.payload.content as { text?: string } | Array<{ text?: string }>
-    if (r.type === 'message_chunk' && !Array.isArray(content)) {
-      const role = String(r.payload.role)
+    type Block = { type?: string; text?: string }
+    const content = r.payload.content as Block | Block[] | null
+    if (r.type === 'message_chunk') {
+      if (r.payload.parentToolCallId || content == null || Array.isArray(content)) continue
+      const role = r.payload.role === 'thought' ? 'thought' : 'agent'
       if (open?.role !== role) {
+        if (content.type === 'text' && !content.text) continue
         open = { role, seq: r.seq, text: '' }
         out.push(open)
       }
       open.text += content.text ?? ''
-    } else {
+    } else if (r.type === 'user_prompt') {
       open = null
-      if (r.type === 'user_prompt' && Array.isArray(content)) {
+      if (Array.isArray(content)) {
         out.push({ role: 'user', seq: r.seq, text: content.map((c) => c.text ?? '').join('') })
       }
+    } else if (
+      r.type === 'agent_switch' ||
+      r.type === 'tool_call' ||
+      (r.type === 'prompt_complete' && r.payload.stopReason !== 'interrupted')
+    ) {
+      open = null
     }
   }
   return out
@@ -307,6 +333,19 @@ const connections = lines.flatMap((l, i) => {
   ]
 })
 
+// The restart counts only when the probe reconnected to the new server and
+// then received the turn's tail, or had every seq before the stop.
+const sessionLines = lines.filter((l) => l.frame.sid === sessionId && l.frame.seq > 0)
+const seqBeforeStop = Math.max(
+  0,
+  ...sessionLines.filter((l) => l.at <= marks.stopped).map((l) => l.frame.seq)
+)
+const restart = {
+  reconnected: lines.some((l) => l.at > marks.stopped && l.frame.type === 'auth_required'),
+  seqBeforeStop,
+  sessionEventsAfterStop: sessionLines.filter((l) => l.at > marks.stopped).length
+}
+
 const result = {
   session: sessionId,
   printed: events.length,
@@ -330,6 +369,7 @@ const result = {
   },
   cutMs: marks.restored - marks.cut,
   serverDownMs: marks.restarted - marks.stopped,
+  restart,
   connections
 }
 console.log(JSON.stringify(result, null, 2))
@@ -340,6 +380,8 @@ const clean =
   result.extra.length === 0 &&
   result.payloadMismatches.length === 0 &&
   result.transcript.equal &&
-  result.serverLastSeq === diskSeqs.at(-1)
+  result.serverLastSeq === diskSeqs.at(-1) &&
+  restart.reconnected &&
+  (restart.sessionEventsAfterStop > 0 || seqBeforeStop === result.serverLastSeq)
 log(clean ? 'PASS' : 'FAIL')
 process.exit(clean ? 0 : 1)

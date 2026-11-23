@@ -6,19 +6,20 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io::ErrorKind;
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use rune_core::machine::Attempt;
-use rustls::ClientConfig;
+use rustls::pki_types::ServerName;
+use rustls::{ClientConfig, ClientConnection, StreamOwned};
 use rustls_platform_verifier::BuilderVerifierExt;
 use serde_json::Value;
 use tungstenite::client::IntoClientRequest;
 use tungstenite::stream::MaybeTlsStream;
-use tungstenite::{Connector, Message, WebSocket};
+use tungstenite::{Message, WebSocket};
 
 use crate::http::{COMMAND_ID_HEADER, HttpError, HttpRequest, Method, parse_body};
 use crate::machine::{Config, Effect, Event, Machine, SocketEvent};
@@ -26,6 +27,11 @@ use crate::machine::{Config, Effect, Event, Machine, SocketEvent};
 /// How long a socket thread blocks on a read before it checks for frames to
 /// write. It bounds the delay of an outgoing frame.
 const READ_SLICE: Duration = Duration::from_millis(5);
+/// The budget of the TCP connect and of each read or write of the upgrade, as
+/// in [`crate::link::HANDSHAKE_S`].
+const HANDSHAKE: Duration = Duration::from_secs(10);
+/// How long one write may block on a peer that stopped reading.
+const WRITE_BUDGET: Duration = Duration::from_secs(10);
 
 enum Outgoing {
     Text(String),
@@ -151,7 +157,7 @@ fn run_socket(
     events: &Sender<SocketEvent>,
     outgoing: &Receiver<Outgoing>,
 ) {
-    let mut ws = match connect(url) {
+    let mut ws = match connect(url, HANDSHAKE) {
         Ok(ws) => ws,
         Err(e) => {
             log::info!("[client] connect {url} failed: {e}");
@@ -164,33 +170,54 @@ fn run_socket(
     let _ = events.send(SocketEvent::Closed { socket, code });
 }
 
-/// Open `ws://` or `wss://`, then make reads return every [`READ_SLICE`] so
-/// the pump can write between them.
-fn connect(url: &str) -> Result<WebSocket<MaybeTlsStream<TcpStream>>, String> {
+/// Open `ws://` or `wss://` within `budget` per step, then make reads return
+/// every [`READ_SLICE`] so the pump can write between them.
+fn connect(url: &str, budget: Duration) -> Result<WebSocket<MaybeTlsStream<TcpStream>>, String> {
     let request = url.into_client_request().map_err(|e| e.to_string())?;
     let secure = request.uri().scheme_str() == Some("wss");
-    let connector = if secure {
-        Some(Connector::Rustls(tls_config()?))
-    } else {
-        None
-    };
     let host = request.uri().host().ok_or("no host in url")?;
-    let host = host.trim_start_matches('[').trim_end_matches(']');
+    // An IPv6 literal keeps its brackets in the URI and the `Host` header,
+    // but neither the TCP connect nor the TLS server name takes them.
+    let host = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_owned();
     let port = request
         .uri()
         .port_u16()
         .unwrap_or(if secure { 443 } else { 80 });
-    let stream = TcpStream::connect((host, port)).map_err(|e| e.to_string())?;
-    let (ws, _) = tungstenite::client_tls_with_config(request, stream, None, connector)
+    let tcp = connect_tcp(&host, port, budget)?;
+    tcp.set_read_timeout(Some(budget))
+        .and_then(|()| tcp.set_write_timeout(Some(budget)))
         .map_err(|e| e.to_string())?;
+    let stream = if secure {
+        let name = ServerName::try_from(host).map_err(|e| e.to_string())?;
+        let tls = ClientConnection::new(tls_config()?, name).map_err(|e| e.to_string())?;
+        MaybeTlsStream::Rustls(StreamOwned::new(tls, tcp))
+    } else {
+        MaybeTlsStream::Plain(tcp)
+    };
+    let (ws, _) = tungstenite::client(request, stream).map_err(|e| e.to_string())?;
     let tcp = match ws.get_ref() {
         MaybeTlsStream::Plain(tcp) => tcp,
         MaybeTlsStream::Rustls(tls) => tls.get_ref(),
         _ => return Err("unexpected socket stream".into()),
     };
     tcp.set_read_timeout(Some(READ_SLICE))
+        .and_then(|()| tcp.set_write_timeout(Some(WRITE_BUDGET)))
         .map_err(|e| e.to_string())?;
     Ok(ws)
+}
+
+fn connect_tcp(host: &str, port: u16, budget: Duration) -> Result<TcpStream, String> {
+    let mut last = format!("{host} resolved to no address");
+    for addr in (host, port).to_socket_addrs().map_err(|e| e.to_string())? {
+        match TcpStream::connect_timeout(&addr, budget) {
+            Ok(tcp) => return Ok(tcp),
+            Err(e) => last = e.to_string(),
+        }
+    }
+    Err(last)
 }
 
 /// One rustls config for every `wss://` socket, on ring with the OS verifier.
@@ -241,7 +268,11 @@ fn pump(
                     return None;
                 }
             }
-            Ok(Message::Close(frame)) => return frame.map(|f| u16::from(f.code)),
+            Ok(Message::Close(frame)) => {
+                // Sends the close reply tungstenite queued.
+                let _ = ws.flush();
+                return frame.map(|f| u16::from(f.code));
+            }
             Ok(_) => {}
             Err(tungstenite::Error::Io(e))
                 if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
@@ -312,3 +343,7 @@ pub fn http_send(config: &Config, request: &HttpRequest) -> Result<Value, HttpEr
     let bytes = response.body_mut().read_to_vec().map_err(network)?;
     parse_body(status, &bytes)
 }
+
+#[cfg(test)]
+#[path = "native_tests.rs"]
+mod native_tests;

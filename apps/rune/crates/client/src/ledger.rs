@@ -5,12 +5,29 @@
 //! socket resends it with the same `commandId`, so the host runs it at most
 //! once (AD-5). An unledgered request that was on the wire fails with
 //! `closed` instead, because resending it could run it twice.
+//!
+//! The host keeps one ledger for every client and carrier, so a `commandId`
+//! is `{client}-{carrier}{seed}-{n}`. `client` is the `client_instance_id`
+//! when it is short and plain, else `_` and a hash of it, so two clients never
+//! share it. `carrier` keeps `/ws` and `/terminal/ws` apart, and `seed`
+//! ([`Config::seed`]) keeps apart two clients built for one window.
 
 use std::collections::BTreeMap;
 
 use serde_json::Value;
 
-use crate::machine::CallId;
+use crate::machine::{CallId, Config};
+
+/// The socket a ledger mints for; the host keeps one ledger for both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Carrier {
+    Ws,
+    Terminal,
+}
+
+/// The longest `client_instance_id` used as is; the id stays within the host's
+/// 128-byte `commandId` limit.
+const PLAIN_CLIENT_MAX: usize = 64;
 
 /// How long to wait before asking again about a command the host reports
 /// still running (`{ "receipt": "in_progress" }`).
@@ -29,6 +46,8 @@ pub enum CallState {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Call<K> {
+    /// Submission order: calls go on the wire in the order the app made them.
+    order: u64,
     pub kind: K,
     pub payload: Value,
     pub command_id: Option<String>,
@@ -39,35 +58,41 @@ pub struct Call<K> {
 pub struct Ledger<K> {
     calls: BTreeMap<CallId, Call<K>>,
     prefix: String,
-    minted: u64,
+    added: u64,
 }
 
 impl<K: Clone> Ledger<K> {
-    /// `client_instance_id` prefixes every minted `commandId`; characters the
-    /// host refuses are dropped.
     #[must_use]
-    pub fn new(client_instance_id: &str) -> Self {
-        let prefix: String = client_instance_id
-            .chars()
-            .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-            .take(96)
-            .collect();
+    pub fn new(config: &Config, carrier: Carrier) -> Self {
+        let id = &config.client_instance_id;
+        let plain = !id.is_empty()
+            && id.len() <= PLAIN_CLIENT_MAX
+            && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+        let client = if plain {
+            id.clone()
+        } else {
+            format!("_{:016x}", fnv1a(id.as_bytes()))
+        };
+        let carrier = match carrier {
+            Carrier::Ws => 'w',
+            Carrier::Terminal => 't',
+        };
+        let prefix = format!("{client}-{carrier}{:x}", config.seed);
         Self {
             calls: BTreeMap::new(),
             prefix,
-            minted: 0,
+            added: 0,
         }
     }
 
     /// Queue a request. A ledgered one gets its `commandId` now.
     pub fn add(&mut self, call: CallId, kind: K, payload: Value, ledgered: bool) {
-        let command_id = ledgered.then(|| {
-            self.minted += 1;
-            format!("{}-c{}", self.prefix, self.minted)
-        });
+        self.added += 1;
+        let command_id = ledgered.then(|| format!("{}-{}", self.prefix, self.added));
         self.calls.insert(
             call,
             Call {
+                order: self.added,
                 kind,
                 payload,
                 command_id,
@@ -79,15 +104,18 @@ impl<K: Clone> Ledger<K> {
     /// The requests to put on the wire now, in the order the app made them.
     #[must_use]
     pub fn due(&self, now: f64) -> Vec<CallId> {
-        self.calls
+        let mut due: Vec<(u64, CallId)> = self
+            .calls
             .iter()
             .filter(|(_, c)| match c.state {
                 CallState::Queued => true,
                 CallState::InProgress { retry_at } => now >= retry_at,
                 CallState::Sent { .. } => false,
             })
-            .map(|(id, _)| *id)
-            .collect()
+            .map(|(id, c)| (c.order, *id))
+            .collect();
+        due.sort_unstable();
+        due.into_iter().map(|(_, id)| id).collect()
     }
 
     #[must_use]
@@ -131,6 +159,13 @@ impl<K: Clone> Ledger<K> {
             .filter_map(|id| self.calls.remove(&id).map(|c| (id, c)))
             .collect()
     }
+}
+
+/// 64-bit FNV-1a: stable on every target, enough to keep client ids apart.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3)
+    })
 }
 
 /// The host's answer to a resend whose first run is still going.

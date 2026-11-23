@@ -15,13 +15,17 @@ use troupe_protocol::version::WS_PROTOCOL_VERSION;
 use troupe_protocol::ws::{
     AcpAuthenticatePayload, AcpAuthenticateReply, HistoryMode, SessionSnapshotEvent,
     SessionSubscribeReply, WsError, WsErrorCode, WsEvent, WsEventType, WsReply, WsRequest,
-    WsRequestType, WsServerFrame, WsWatchFrame, WsWatchName, WsWatchRevision,
+    WsRequestType, WsServerFrame, WsWatchName, WsWatchRevision,
 };
 
 use crate::cursor::{Cursor, Held, HeldItem, Verdict};
-use crate::ledger::{Ledger, is_in_progress_receipt};
-use crate::link::{LinkEffect, LinkEvent, LinkMachine, Status};
+use crate::ledger::{Carrier, Ledger, is_in_progress_receipt};
+use crate::link::{LinkEffect, LinkEvent, LinkMachine, Liveness, Status};
 use crate::machine::{CallId, Config, Effect, Event, Machine, SocketEvent};
+
+#[path = "ws_watch.rs"]
+mod watch;
+pub use watch::{WATCH_RETRIES, WATCH_RETRY_S};
 
 /// A request from the app.
 #[derive(Clone, Debug, PartialEq)]
@@ -123,8 +127,16 @@ struct Session {
 #[derive(Clone, Debug, PartialEq)]
 enum WatchSync {
     Offline,
-    Requesting,
+    /// A request is in flight after `tries` passing refusals.
+    Requesting {
+        tries: u32,
+    },
     Live(WsWatchRevision),
+    /// Refused for a passing reason; ask again at `due`.
+    Retrying {
+        tries: u32,
+        due: f64,
+    },
     /// The host answered `unsupported` or `not_found`; asking again is pointless.
     Refused,
 }
@@ -165,6 +177,7 @@ impl Machine for WsClient {
             Event::Tick => {
                 self.link_step(LinkEvent::Tick, now, &mut fx);
                 self.flush_calls(now, &mut fx);
+                self.retry_watches(now, &mut fx);
             }
             Event::Socket(SocketEvent::Opened(s)) => {
                 self.link_step(LinkEvent::Opened(s), now, &mut fx)
@@ -191,8 +204,8 @@ impl WsClient {
     #[must_use]
     pub fn new(config: Config) -> Self {
         Self {
-            link: LinkMachine::new(config.seed),
-            ledger: Ledger::new(&config.client_instance_id),
+            link: LinkMachine::new(config.seed, Liveness::Heartbeat),
+            ledger: Ledger::new(&config, Carrier::Ws),
             config,
             next_request: 0,
             history: None,
@@ -299,17 +312,20 @@ impl WsClient {
                 }
             }
             Command::Unsubscribe { session_id } => {
+                self.forget_session(&session_id);
                 self.sessions.remove(&session_id);
             }
             Command::Watch { watch, scope } => {
                 let key = (watch, scope);
                 self.watches.insert(key.clone(), WatchSync::Offline);
                 if let Some(socket) = self.link.live() {
-                    self.request_watch(socket, key, fx);
+                    self.request_watch(socket, key, 0, fx);
                 }
             }
             Command::Unwatch { watch, scope } => {
-                self.watches.remove(&(watch, scope.clone()));
+                let key = (watch, scope.clone());
+                self.forget_watch(&key);
+                self.watches.remove(&key);
                 if let Some(socket) = self.link.live() {
                     let payload = json!({ "watch": watch, "scope": scope });
                     self.send(
@@ -361,9 +377,17 @@ impl WsClient {
             .map(|(key, _)| key.clone())
             .collect();
         for key in watches {
-            self.request_watch(socket, key, fx);
+            self.request_watch(socket, key, 0, fx);
         }
         self.flush_calls(now, fx);
+    }
+
+    /// A newer subscribe or an unsubscribe replaces any subscribe or recover
+    /// still in flight for the session, so its late reply is ignored.
+    fn forget_session(&mut self, session_id: &str) {
+        self.inflight.retain(
+            |_, p| !matches!(p, Purpose::Subscribe(id) | Purpose::Recover(id) if id == session_id),
+        );
     }
 
     fn down(&mut self, fx: &mut Fx) {
@@ -461,23 +485,7 @@ impl WsClient {
             Purpose::Recover(session_id) => self.recovered(session_id, result, fx),
             Purpose::Watch(key) => {
                 if let Err(error) = result {
-                    let refused = [WsErrorCode::Unsupported, WsErrorCode::NotFound]
-                        .iter()
-                        .any(|c| c.as_str() == error.code);
-                    if let Some(sync) = self.watches.get_mut(&key) {
-                        *sync = if refused {
-                            WatchSync::Refused
-                        } else {
-                            WatchSync::Offline
-                        };
-                    }
-                    log::warn!("[client] watch {:?} refused: {}", key.0, error.code);
-                    let (watch, scope) = key;
-                    fx.push(Effect::Output(Output::WatchRefused {
-                        watch,
-                        scope,
-                        error,
-                    }));
+                    self.watch_refused(key, error, now, fx);
                 }
             }
             Purpose::Call(call) => {
@@ -496,6 +504,7 @@ impl WsClient {
     }
 
     fn subscribe(&mut self, socket: Attempt, session_id: &str, fx: &mut Fx) {
+        self.forget_session(session_id);
         let Some(session) = self.sessions.get_mut(session_id) else {
             return;
         };
@@ -523,6 +532,7 @@ impl WsClient {
 
     /// Install a snapshot, or on a live-only host restart from live events.
     fn recover(&mut self, socket: Attempt, session_id: &str, held: Held, fx: &mut Fx) {
+        self.forget_session(session_id);
         let Some(session) = self.sessions.get_mut(session_id) else {
             return;
         };
@@ -719,66 +729,6 @@ impl WsClient {
                     fx.push(Effect::Output(Output::Event(event)));
                 }
             },
-        }
-    }
-
-    fn request_watch(&mut self, socket: Attempt, key: WatchKey, fx: &mut Fx) {
-        let payload = json!({ "watch": key.0, "scope": key.1 });
-        self.watches.insert(key.clone(), WatchSync::Requesting);
-        self.send(
-            socket,
-            Purpose::Watch(key),
-            WsRequestType::Watch,
-            payload,
-            None,
-            fx,
-        );
-    }
-
-    fn watch_frame(&mut self, frame: WsWatchFrame, fx: &mut Fx) {
-        let Some(socket) = self.link.live() else {
-            return;
-        };
-        match frame {
-            WsWatchFrame::State(state) => {
-                let key = (state.watch, state.scope);
-                let Some(sync) = self.watches.get_mut(&key) else {
-                    return;
-                };
-                *sync = WatchSync::Live(state.revision);
-                let (watch, scope) = key;
-                fx.push(Effect::Output(Output::WatchState {
-                    watch,
-                    scope,
-                    state: state.state,
-                }));
-            }
-            WsWatchFrame::Delta(delta) => {
-                let key = (delta.watch, delta.scope);
-                let Some(WatchSync::Live(last)) = self.watches.get_mut(&key) else {
-                    return;
-                };
-                let rev = delta.revision;
-                if rev.host_epoch == last.host_epoch && rev.n <= last.n {
-                    return;
-                }
-                let resync = delta.delta.get("resync") == Some(&Value::Bool(true));
-                if rev.host_epoch != last.host_epoch || rev.n != last.n + 1 || resync {
-                    log::info!(
-                        "[client] watch {:?} lost continuity at n {}; rewatching",
-                        key.0,
-                        rev.n
-                    );
-                    return self.request_watch(socket, key, fx);
-                }
-                *last = rev;
-                let (watch, scope) = key;
-                fx.push(Effect::Output(Output::WatchDelta {
-                    watch,
-                    scope,
-                    delta: delta.delta,
-                }));
-            }
         }
     }
 }

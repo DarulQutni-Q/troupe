@@ -268,12 +268,12 @@ fn a_ledgered_command_is_resent_with_its_command_id_and_answered_once() {
         ledgered: true,
     });
     let first = host.request("send_prompt");
-    assert_eq!(first["command_id"], "tab-1-c1");
+    assert_eq!(first["command_id"], "tab-1-w7-1");
 
     let out = host.reconnect();
     assert!(!out.iter().any(|o| matches!(o, Output::Reply { .. })));
     let again = host.request("send_prompt");
-    assert_eq!(again["command_id"], "tab-1-c1");
+    assert_eq!(again["command_id"], "tab-1-w7-1");
     assert_eq!(again["payload"], payload);
     assert_ne!(again["id"], first["id"]);
 
@@ -442,4 +442,121 @@ fn frames_from_a_replaced_socket_are_ignored() {
 
     assert_eq!(out, vec![]);
     assert_eq!(host.client.cursor("s1").map(|c| c.last_seq), Some(3));
+}
+
+#[test]
+fn a_late_refusal_for_a_replaced_subscribe_leaves_the_new_one_alone() {
+    let mut host = Host::new();
+    host.connect();
+    let subscribe = || Command::Subscribe {
+        session_id: "s1".into(),
+        cursor: Cursor::default(),
+    };
+    host.command(subscribe());
+    let first = host.request("subscribe")["id"].clone();
+    host.command(Command::Unsubscribe {
+        session_id: "s1".into(),
+    });
+    host.command(subscribe());
+
+    let late = host.frame(
+        json!({ "id": first, "ok": false, "err": { "code": "not_found", "message": "gone" } }),
+    );
+    assert_eq!(late, vec![]);
+
+    let out = host.reply("subscribe", subscribed(3));
+    assert!(matches!(&out[0], Output::Subscribed(r) if r.head_seq == 3));
+    assert_eq!(seqs(&host.frame(batch(&[1, 2, 3, 4]))), vec![1, 2, 3, 4]);
+}
+
+fn watch_frame(n: u64, body: Value) -> Value {
+    let mut f = json!({ "type": "watch", "watch": "projects", "scope": "", "revision": { "hostEpoch": "h1", "n": n } });
+    f.as_object_mut()
+        .unwrap()
+        .extend(body.as_object().unwrap().clone());
+    f
+}
+
+fn watch_projects() -> Command {
+    Command::Watch {
+        watch: WsWatchName::Projects,
+        scope: String::new(),
+    }
+}
+
+#[test]
+fn a_late_refusal_for_a_replaced_watch_is_not_reported() {
+    let mut host = Host::new();
+    host.connect();
+    host.command(watch_projects());
+    let first = host.request("watch")["id"].clone();
+    host.command(Command::Unwatch {
+        watch: WsWatchName::Projects,
+        scope: String::new(),
+    });
+    host.command(watch_projects());
+    host.frame(watch_frame(
+        1,
+        json!({ "reset": true, "state": { "projects": [] } }),
+    ));
+
+    let late = host.frame(
+        json!({ "id": first, "ok": false, "err": { "code": "rate_limited", "message": "busy" } }),
+    );
+    assert_eq!(late, vec![]);
+
+    let delta = host.frame(watch_frame(2, json!({ "delta": { "projects": ["a"] } })));
+    assert_eq!(
+        delta,
+        vec![Output::WatchDelta {
+            watch: WsWatchName::Projects,
+            scope: String::new(),
+            delta: json!({ "projects": ["a"] })
+        }]
+    );
+}
+
+#[test]
+fn a_watch_refused_for_a_passing_reason_is_asked_again_and_a_final_refusal_is_not() {
+    let mut host = Host::new();
+    host.connect();
+    host.command(watch_projects());
+
+    let out = host.refuse("watch", "rate_limited");
+    assert!(
+        matches!(&out[..], [Output::WatchRefused { error, .. }] if error.code == "rate_limited")
+    );
+    host.now += 0.5;
+    host.step(Event::Tick);
+    assert_eq!(
+        host.requests("watch").len(),
+        1,
+        "not before the retry delay"
+    );
+    host.now += 0.5;
+    host.step(Event::Tick);
+    assert_eq!(host.requests("watch").len(), 2);
+
+    host.refuse("watch", "unsupported");
+    host.now += 60.0;
+    host.step(Event::Tick);
+    assert_eq!(host.requests("watch").len(), 2);
+}
+
+#[test]
+fn a_watch_retry_gives_up_after_a_few_tries() {
+    let mut host = Host::new();
+    host.connect();
+    host.command(watch_projects());
+
+    for _ in 0..10 {
+        host.refuse("watch", "rate_limited");
+        host.now += 60.0;
+        host.step(Event::Tick);
+    }
+
+    assert_eq!(
+        host.requests("watch").len(),
+        1 + crate::ws::WATCH_RETRIES as usize
+    );
 }
