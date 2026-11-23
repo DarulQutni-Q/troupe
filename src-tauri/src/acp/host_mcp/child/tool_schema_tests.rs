@@ -7,14 +7,23 @@ use serde_json::Value;
 use super::tests::list_tools;
 use super::ChildConfig;
 
-/// Whether `schema` says what it is: a `type`, a `$ref` or a combinator.
+/// Whether `schema` says what it is: a `type`, a `$ref`, an `anyOf` /
+/// `oneOf` whose every alternative is typed (one bare `{}` accepts any
+/// value), or an `allOf` with at least one typed member.
 fn is_typed(schema: &Value) -> bool {
     let Some(map) = schema.as_object() else {
         return false;
     };
-    ["type", "$ref", "anyOf", "oneOf", "allOf"]
-        .iter()
-        .any(|key| map.contains_key(*key))
+    if map.contains_key("type") || map.contains_key("$ref") {
+        return true;
+    }
+    let alternatives = |key: &str| map.get(key).and_then(Value::as_array);
+    for key in ["anyOf", "oneOf"] {
+        if let Some(options) = alternatives(key) {
+            return !options.is_empty() && options.iter().all(is_typed);
+        }
+    }
+    alternatives("allOf").is_some_and(|parts| parts.iter().any(is_typed))
 }
 
 fn is_array_type(schema: &serde_json::Map<String, Value>) -> bool {
@@ -60,7 +69,14 @@ fn the_walk_flags_untyped_items_anywhere() {
             "ref": { "type": "array", "items": { "$ref": "#/$defs/A" } },
             "bare": { "type": "array" },
             "empty": { "type": ["array", "null"], "items": {} },
-            "nested": { "anyOf": [{ "type": "array", "items": true }, { "type": "null" }] }
+            "nested": { "anyOf": [{ "type": "array", "items": true }, { "type": "null" }] },
+            "open_any": { "type": "array", "items": { "anyOf": [{}, { "type": "string" }] } },
+            "open_one": { "type": "array", "items": { "oneOf": [{ "type": "string" }, true] } },
+            "str_or_null": {
+                "type": "array",
+                "items": { "anyOf": [{ "type": "string" }, { "type": "null" }] }
+            },
+            "all_of": { "type": "array", "items": { "allOf": [{}, { "$ref": "#/$defs/A" }] } }
         },
         "$defs": { "A": { "type": "object", "properties": { "x": { "type": "array" } } } }
     });
@@ -74,6 +90,8 @@ fn the_walk_flags_untyped_items_anywhere() {
             "/properties/bare",
             "/properties/empty",
             "/properties/nested/anyOf/0",
+            "/properties/open_any",
+            "/properties/open_one",
         ]
     );
 }
