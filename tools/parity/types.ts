@@ -97,11 +97,41 @@ export type AreaId =
   | 'remote'
   | 'snapshots'
   | 'dialogs'
+  | 'automations'
+  | 'github'
+
+/**
+ * The window a surface runs in. `desktop` is 1280x800 with a mouse. `phone`
+ * is 390x844 with touch and `isMobile`, which puts the web client on its
+ * phone shell; only the `react` client runs it.
+ */
+export type Profile = 'desktop' | 'phone'
+export const PROFILES: readonly Profile[] = ['desktop', 'phone']
+
+/** The kinds of screen the inventory counts (`surfaces/inventory.ts`). */
+export type ScreenKind = 'route' | 'gate' | 'pane' | 'side-panel' | 'settings'
+
+/**
+ * Where a surface sits in the UI inventory. An `overlay` names its mount
+ * sites in `src/renderer` (paths relative to it, one entry per mount site, so
+ * a phone/desktop twin names two). A `screen` names its kind and its name in
+ * the code: the route path, the gate component, the pane tab `type`, the
+ * side-panel tab, or the settings category as `app:<id>` / `project:<id>`.
+ * A `journey` is outside the inventory: a starter flow, or a phone journey
+ * named by its `tests/e2e` spec.
+ */
+export type Source =
+  | { overlay: string[] }
+  | { screen: ScreenKind; name: string }
+  | { journey: string }
 
 export interface Surface {
   id: string
   area: AreaId
   title: string
+  source: Source
+  /** Defaults to `desktop`. */
+  profile?: Profile
   steps: Step[]
   /**
    * The client this surface is compared against when it is not the run's
@@ -118,8 +148,12 @@ export interface Surface {
   pending?: { unit: string; reason: string }
   /** Not driven: no reference to compare against, for the reason given. */
   blocked?: string
-  /** Server-side setup run before each client's run (re-seeds what an earlier run changed). */
-  prepare?(world: import('./world').World): Promise<void>
+  /**
+   * Server-side setup run before each client's run (re-seeds what an earlier
+   * run changed). `deviceId` is the fresh device the run uses, for state the
+   * host keeps per device.
+   */
+  prepare?(world: import('./world').World, deviceId: string): Promise<void>
 }
 
 export interface ActionLog {
