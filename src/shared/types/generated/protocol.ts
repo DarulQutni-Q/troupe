@@ -263,6 +263,8 @@ export type PersistedSessionSummary = {
   kind?: 'quick'
   lastActivityAt: number
   lastSeq: number
+  /** The session log's epoch. The hand-written type lacks it. */
+  logEpoch?: string
   messageCount: number
   modelId?: string
   modelName?: string
@@ -276,6 +278,8 @@ export type PersistedSessionSummary = {
   status: PersistedSessionStatus
   storageKey: string
   title: string | null
+  /** Who named the chat. The hand-written type lacks it. */
+  titleSource?: TitleSource
   toolCount: number
   /** True while a prompt turn is open. */
   turnActive?: boolean
@@ -353,6 +357,8 @@ export type SessionSnapshotEvent = {
   headSeq: number
   logEpoch: string
   pendingElicitations?: Array<unknown>
+  /** MCP install approvals still waiting. The hand-written type lacks it. */
+  pendingMcpInstalls?: Array<unknown>
   pendingPermissions?: Array<unknown>
   pendingQuestions?: Array<unknown>
   sessionId: string
@@ -367,6 +373,8 @@ export type SessionSubscribeReply = {
   headSeq: number
   logEpoch: string
   pendingElicitations?: Array<unknown>
+  /** MCP install approvals still waiting. The hand-written type lacks it. */
+  pendingMcpInstalls?: Array<unknown>
   pendingPermissions?: Array<unknown>
   pendingQuestions?: Array<unknown>
   replayed: number
@@ -499,6 +507,20 @@ export type TerminalStateSnapshot = {
 export type TerminalsWatchState = {
   terminals: Array<WsTerminalSetEntry>
 }
+
+/** Who named a chat; a local alias wins over every other source. */
+export type TitleSource =
+  | 'background_generated'
+  | 'agent_supplied'
+  | 'derived_first_message'
+  | 'local_alias'
+
+export const TitleSourceValues = [
+  'background_generated',
+  'agent_supplied',
+  'derived_first_message',
+  'local_alias'
+] as const
 
 /**
  * `update_project` request payload. `cascade: true` stops the project's live
@@ -910,7 +932,9 @@ export type WsEventBatchFrame = {
 
 /**
  * The `type` of a `/ws` session log event. `gap` and `heartbeat` name the
- * top-level delivery frames.
+ * top-level delivery frames. The host publishes every session-scoped ACP
+ * event, so this list also holds the nine types after `heartbeat` that the
+ * hand-written `WS_EVENT_TYPES` lacks.
  */
 export type WsEventType =
   | 'agent_spawned'
@@ -937,6 +961,15 @@ export type WsEventType =
   | 'background_commands'
   | 'gap'
   | 'heartbeat'
+  | 'question_request'
+  | 'question_cancelled'
+  | 'elicitation_request'
+  | 'mcp_install_request'
+  | 'mcp_install_resolved'
+  | 'mcp_registry_changed'
+  | 'browser_ticket_closed'
+  | 'claude_limit_action'
+  | 'codex_limit_action'
 
 export const WsEventTypeValues = [
   'agent_spawned',
@@ -962,7 +995,16 @@ export const WsEventTypeValues = [
   'agent_working',
   'background_commands',
   'gap',
-  'heartbeat'
+  'heartbeat',
+  'question_request',
+  'question_cancelled',
+  'elicitation_request',
+  'mcp_install_request',
+  'mcp_install_resolved',
+  'mcp_registry_changed',
+  'browser_ticket_closed',
+  'claude_limit_action',
+  'codex_limit_action'
 ] as const
 
 /**

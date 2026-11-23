@@ -556,6 +556,10 @@
           "minimum": 0,
           "type": "integer"
         },
+        "logEpoch": {
+          "description": "The session log's epoch. The hand-written type lacks it.",
+          "type": "string"
+        },
         "messageCount": {
           "format": "uint64",
           "minimum": 0,
@@ -594,6 +598,10 @@
         },
         "title": {
           "type": ["string", "null"]
+        },
+        "titleSource": {
+          "$ref": "#/$defs/TitleSource",
+          "description": "Who named the chat. The hand-written type lacks it."
         },
         "toolCount": {
           "format": "uint64",
@@ -769,6 +777,11 @@
           "items": true,
           "type": "array"
         },
+        "pendingMcpInstalls": {
+          "description": "MCP install approvals still waiting. The hand-written type lacks it.",
+          "items": true,
+          "type": "array"
+        },
         "pendingPermissions": {
           "items": true,
           "type": "array"
@@ -801,6 +814,11 @@
           "type": "string"
         },
         "pendingElicitations": {
+          "items": true,
+          "type": "array"
+        },
+        "pendingMcpInstalls": {
+          "description": "MCP install approvals still waiting. The hand-written type lacks it.",
           "items": true,
           "type": "array"
         },
@@ -1131,6 +1149,11 @@
       },
       "required": ["terminals"],
       "type": "object"
+    },
+    "TitleSource": {
+      "description": "Who named a chat; a local alias wins over every other source.",
+      "enum": ["background_generated", "agent_supplied", "derived_first_message", "local_alias"],
+      "type": "string"
     },
     "UpdateProjectPayload": {
       "description": "`update_project` request payload. `cascade: true` stops the project's live\nsessions and terminals instead of refusing `project_busy`.",
@@ -1911,7 +1934,7 @@
       "type": "object"
     },
     "WsEventType": {
-      "description": "The `type` of a `/ws` session log event. `gap` and `heartbeat` name the\ntop-level delivery frames.",
+      "description": "The `type` of a `/ws` session log event. `gap` and `heartbeat` name the\ntop-level delivery frames. The host publishes every session-scoped ACP\nevent, so this list also holds the nine types after `heartbeat` that the\nhand-written `WS_EVENT_TYPES` lacks.",
       "enum": [
         "agent_spawned",
         "session_created",
@@ -1936,7 +1959,16 @@
         "agent_working",
         "background_commands",
         "gap",
-        "heartbeat"
+        "heartbeat",
+        "question_request",
+        "question_cancelled",
+        "elicitation_request",
+        "mcp_install_request",
+        "mcp_install_resolved",
+        "mcp_registry_changed",
+        "browser_ticket_closed",
+        "claude_limit_action",
+        "codex_limit_action"
       ],
       "type": "string"
     },

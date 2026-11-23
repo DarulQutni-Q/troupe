@@ -100,6 +100,9 @@ pub struct SessionSubscribeReply {
     pub pending_questions: Option<Vec<Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_elicitations: Option<Vec<Value>>,
+    /// MCP install approvals still waiting. The hand-written type lacks it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_mcp_installs: Option<Vec<Value>>,
 }
 
 /// Atomic stale-recovery payload: the next cursor is `(logEpoch, watermark)`.
@@ -117,6 +120,9 @@ pub struct SessionSnapshotEvent {
     pub pending_questions: Option<Vec<Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_elicitations: Option<Vec<Value>>,
+    /// MCP install approvals still waiting. The hand-written type lacks it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_mcp_installs: Option<Vec<Value>>,
 }
 
 /// `get_session_cursor` reply. An unknown session has no epoch and no head.
@@ -140,6 +146,16 @@ wire_enum! {
     }
 }
 
+wire_enum! {
+    /// Who named a chat; a local alias wins over every other source.
+    pub enum TitleSource {
+        BackgroundGenerated = "background_generated",
+        AgentSupplied = "agent_supplied",
+        DerivedFirstMessage = "derived_first_message",
+        LocalAlias = "local_alias",
+    }
+}
+
 literal!(
     /// `kind` of a chat that has no project.
     QuickKind = str "quick"
@@ -158,6 +174,9 @@ pub struct PersistedSessionSummary {
     pub project_id: Option<String>,
     pub cwd: String,
     pub title: Option<String>,
+    /// Who named the chat. The hand-written type lacks it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_source: Option<TitleSource>,
     pub created_at: u64,
     pub last_activity_at: u64,
     pub status: PersistedSessionStatus,
@@ -178,6 +197,9 @@ pub struct PersistedSessionSummary {
     pub model_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_name: Option<String>,
+    /// The session log's epoch. The hand-written type lacks it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_epoch: Option<String>,
     /// The session this one continues after an in-chat agent switch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continued_from: Option<String>,

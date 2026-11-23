@@ -99,7 +99,9 @@ wire_enum! {
 
 wire_enum! {
     /// The `type` of a `/ws` session log event. `gap` and `heartbeat` name the
-    /// top-level delivery frames.
+    /// top-level delivery frames. The host publishes every session-scoped ACP
+    /// event, so this list also holds the nine types after `heartbeat` that the
+    /// hand-written `WS_EVENT_TYPES` lacks.
     pub enum WsEventType {
         AgentSpawned = "agent_spawned",
         SessionCreated = "session_created",
@@ -125,6 +127,15 @@ wire_enum! {
         BackgroundCommands = "background_commands",
         Gap = "gap",
         Heartbeat = "heartbeat",
+        QuestionRequest = "question_request",
+        QuestionCancelled = "question_cancelled",
+        ElicitationRequest = "elicitation_request",
+        McpInstallRequest = "mcp_install_request",
+        McpInstallResolved = "mcp_install_resolved",
+        McpRegistryChanged = "mcp_registry_changed",
+        BrowserTicketClosed = "browser_ticket_closed",
+        ClaudeLimitAction = "claude_limit_action",
+        CodexLimitAction = "codex_limit_action",
     }
 }
 
