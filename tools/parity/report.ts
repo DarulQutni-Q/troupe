@@ -117,6 +117,20 @@ export function renderReport(
     )
   }
 
+  out.push('', '## Differences', '')
+  const differing = rows.filter((r) => (maxPixels(r.result, 'perceptual') ?? 0) > 0)
+  if (differing.length === 0) out.push('No step of any surface differs perceptually.')
+  for (const { surface, result } of differing) {
+    for (const d of result?.diffs ?? []) {
+      if (!d.full.changed) continue
+      const { x, y, width, height } = d.full.changed
+      const [text, icons, boxes] = partCells(d.full)
+      out.push(
+        `- \`${surface.id}\` \`${d.step}\`: ${d.full.perceptual.mismatched} px in the ${width}x${height} region at ${x},${y} (text ${text}, icons ${icons}, boxes ${boxes})`
+      )
+    }
+  }
+
   const flaky = rows.filter((r) => r.result?.reruns.length)
   out.push('', '## Flakes', '')
   if (flaky.length === 0) out.push('No surface needed a rerun.')

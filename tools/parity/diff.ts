@@ -52,6 +52,8 @@ export interface DiffResult {
   exact: DiffCount
   perceptual: DiffCount
   parts: Record<Part, PartDiff>
+  /** The bounding box of the perceptually mismatched pixels; null when there are none. */
+  changed: Rect | null
 }
 
 /** pixelmatch's 0..1 colour distance below which two pixels count as equal. */
@@ -109,6 +111,7 @@ export function diffImages(
   const image = blankImage(width, height, 255)
   let exact = 0
   let perceptualTotal = 0
+  const box = { x0: width, y0: height, x1: -1, y1: -1 }
   for (let p = 0; p < total; p++) {
     const i = p * 4
     const differs =
@@ -125,6 +128,12 @@ export function diffImages(
     if (perceptual[p]) {
       perceptualTotal++
       part.perceptual++
+      const x = p % width
+      const y = (p - x) / width
+      box.x0 = Math.min(box.x0, x)
+      box.y0 = Math.min(box.y0, y)
+      box.x1 = Math.max(box.x1, x)
+      box.y1 = Math.max(box.y1, y)
       image.data.set([255, 0, 0, 255], i)
     } else if (differs) {
       image.data.set([255, 200, 0, 255], i)
@@ -150,7 +159,11 @@ export function diffImages(
       total,
       exact: count(exact, total),
       perceptual: count(perceptualTotal, total),
-      parts: partDiffs
+      parts: partDiffs,
+      changed:
+        box.x1 < 0
+          ? null
+          : { x: box.x0, y: box.y0, width: box.x1 - box.x0 + 1, height: box.y1 - box.y0 + 1 }
     },
     image
   }

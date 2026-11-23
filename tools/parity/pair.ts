@@ -27,10 +27,13 @@ function scaled(file: string, scale: number, crop?: number[]): Image {
     for (let x = 0; x < width; x++) {
       const sum = [0, 0, 0, 0]
       let n = 0
-      const yEnd = Math.min(cy + ch, Math.floor(cy + (y + 1) * step))
-      const xEnd = Math.min(cx + cw, Math.floor(cx + (x + 1) * step))
-      for (let yy = Math.floor(cy + y * step); yy < yEnd; yy++) {
-        for (let xx = Math.floor(cx + x * step); xx < xEnd; xx++) {
+      // At least one source pixel per output pixel, so a scale above 1 enlarges.
+      const y0 = Math.floor(cy + y * step)
+      const x0 = Math.floor(cx + x * step)
+      const yEnd = Math.min(cy + ch, Math.max(y0 + 1, Math.floor(cy + (y + 1) * step)))
+      const xEnd = Math.min(cx + cw, Math.max(x0 + 1, Math.floor(cx + (x + 1) * step)))
+      for (let yy = y0; yy < yEnd; yy++) {
+        for (let xx = x0; xx < xEnd; xx++) {
           const i = (yy * src.width + xx) * 4
           for (let c = 0; c < 4; c++) sum[c] += src.data[i + c]
           n++

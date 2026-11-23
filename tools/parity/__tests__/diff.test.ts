@@ -16,12 +16,14 @@ describe('diffPngs', () => {
     expect(result.total).toBe(4096)
     expect(result.exact).toEqual({ mismatched: 1024, percent: 25 })
     expect(result.perceptual).toEqual({ mismatched: 1024, percent: 25 })
+    expect(result.changed).toEqual({ x: 16, y: 16, width: 32, height: 32 })
   })
 
   test('reads zero for a frame against itself', () => {
     const result = diffPngs(A, A, out())
     expect(result.exact.mismatched).toBe(0)
     expect(result.perceptual.mismatched).toBe(0)
+    expect(result.changed).toBeNull()
   })
 
   test('splits the count into text, icons and boxes', () => {
