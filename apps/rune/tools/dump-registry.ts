@@ -4,7 +4,10 @@
 // are matched against these numbers.
 //   bun apps/rune/tools/dump-registry.ts [--port 8197] [--out /tmp/registry-dump]
 //     [--scale 2] [--ids button.variants,badges] [--theme termul] [--server URL]
+//     [--registry apps/rune/crates/gallery/registry.json]
 // Without --server it starts the design-system Vite dev server on --port.
+// --registry writes the entry list (id, name, frame size) the Rune gallery checks its scenes
+// against.
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { chromium } from 'playwright'
@@ -24,6 +27,7 @@ const only = arg('ids', '')
   .split(',')
   .filter((id) => id !== '')
 const external = arg('server', '')
+const registry = arg('registry', '')
 
 /** Room around a frame so its shadow and focus ring land in the shot. */
 const MARGIN = 16
@@ -93,6 +97,10 @@ try {
     `${JSON.stringify({ base, theme, scale, entries }, null, 2)}\n`
   )
   console.log(`${entries.length} entries`)
+  if (registry) {
+    writeFileSync(registry, `${JSON.stringify(entries, null, 2)}\n`)
+    console.log(`wrote ${registry}`)
+  }
 
   for (const entry of entries) {
     if (only.length > 0 && !only.includes(entry.id)) continue

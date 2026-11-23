@@ -4,7 +4,7 @@
 # `rune` dependency and every `[patch.crates-io]` entry below.
 [workspace]
 resolver = "3"
-members = ["crates/automation", "crates/hello", "crates/theme", "crates/ui"]
+members = ["crates/automation", "crates/gallery", "crates/hello", "crates/theme", "crates/ui"]
 
 [workspace.package]
 edition = "2024"
