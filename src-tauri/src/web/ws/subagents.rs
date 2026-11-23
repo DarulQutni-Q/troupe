@@ -1,4 +1,5 @@
-//! Subagent WS handlers: `stop_subagent`.
+//! Subagent WS handlers: `stop_subagent`, and the orchestrator's settings
+//! view `subagent_settings_get` / `subagent_settings_set`.
 
 use super::*;
 use crate::acp::subagents::StopSubagentError;
@@ -44,6 +45,168 @@ pub(super) async fn handle_stop_subagent(
             WsReply::err(id, WsErrorCode::Unsupported, error.to_string())
         }
         Err(StopSubagentError::Failed(error)) => acp_err_to_reply(id, error),
+    }
+}
+
+/// The orchestrator's settings view: the gates plus every launchable agent
+/// with its allow switch, default model and description.
+fn settings_view(engine: &crate::acp::orchestrator::OrchestratorEngine) -> Value {
+    let settings = engine.settings_view();
+    let agents: Vec<Value> = engine
+        .list_agents()
+        .into_iter()
+        .map(|agent| {
+            json!({
+                "agentId": agent.agent_id,
+                "name": agent.name,
+                "allowed": agent.allowed,
+                "model": agent.default_model,
+                "description": agent.description,
+            })
+        })
+        .collect();
+    json!({
+        "enabled": settings.enabled,
+        "maxRunning": settings.max_running,
+        "maxDepth": settings.max_depth,
+        "agents": agents,
+    })
+}
+
+fn no_engine(id: String) -> WsReply {
+    WsReply::err(
+        id,
+        WsErrorCode::Unsupported,
+        "sub-agents are not available on this host",
+    )
+}
+
+/// `subagent_settings_get` → the settings view.
+pub(super) fn handle_subagent_settings_get(id: String) -> WsReply {
+    let Some(engine) = crate::acp::orchestrator::installed() else {
+        return no_engine(id);
+    };
+    WsReply::ok(id, Some(settings_view(&engine)))
+}
+
+/// One allow switch of a `subagent_settings_set` call.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct AgentAllowPayload {
+    agent_id: String,
+    allowed: bool,
+}
+
+/// One default model of a `subagent_settings_set` call; `null` clears it.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct AgentModelPayload {
+    agent_id: String,
+    model: Option<String>,
+}
+
+/// One description of a `subagent_settings_set` call; `null` or a blank
+/// string clears it.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct AgentDescriptionPayload {
+    agent_id: String,
+    description: Option<String>,
+}
+
+/// `subagent_settings_set`: a partial of the view; an omitted field keeps
+/// its value.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct SubagentSettingsPayload {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    max_running: Option<u32>,
+    #[serde(default)]
+    max_depth: Option<u8>,
+    #[serde(default)]
+    agents: Option<Vec<AgentAllowPayload>>,
+    #[serde(default)]
+    models: Option<Vec<AgentModelPayload>>,
+    #[serde(default)]
+    descriptions: Option<Vec<AgentDescriptionPayload>>,
+}
+
+/// Apply the payload's fields over `settings`.
+fn merge_settings(
+    settings: &mut crate::acp::orchestrator::OrchestratorSettings,
+    patch: SubagentSettingsPayload,
+) {
+    if let Some(enabled) = patch.enabled {
+        settings.enabled = enabled;
+    }
+    if let Some(max_running) = patch.max_running {
+        settings.max_running = max_running;
+    }
+    if let Some(max_depth) = patch.max_depth {
+        settings.max_depth = max_depth;
+    }
+    for agent in patch.agents.unwrap_or_default() {
+        settings
+            .agents
+            .insert(agent.agent_id.trim().to_string(), agent.allowed);
+    }
+    for agent in patch.models.unwrap_or_default() {
+        let key = agent.agent_id.trim().to_string();
+        match agent.model {
+            Some(model) => settings.models.insert(key, model),
+            None => settings.models.remove(&key),
+        };
+    }
+    for agent in patch.descriptions.unwrap_or_default() {
+        let key = agent.agent_id.trim().to_string();
+        match agent.description.as_deref().map(str::trim) {
+            Some(description) if !description.is_empty() => {
+                settings.descriptions.insert(key, description.to_string())
+            }
+            _ => settings.descriptions.remove(&key),
+        };
+    }
+}
+
+/// Merge `patch` into the settings, each agent under the key the listing
+/// and `subagent_start` use, so a bare installed id is not saved unread.
+fn apply_settings_patch(
+    engine: &crate::acp::orchestrator::OrchestratorEngine,
+    mut patch: SubagentSettingsPayload,
+) -> Result<crate::acp::orchestrator::OrchestratorSettings, String> {
+    for agent in patch.agents.iter_mut().flatten() {
+        agent.agent_id = engine.canonical_agent(agent.agent_id.trim());
+    }
+    for agent in patch.models.iter_mut().flatten() {
+        agent.agent_id = engine.canonical_agent(agent.agent_id.trim());
+    }
+    for agent in patch.descriptions.iter_mut().flatten() {
+        agent.agent_id = engine.canonical_agent(agent.agent_id.trim());
+    }
+    engine.update_settings(|settings| merge_settings(settings, patch))
+}
+
+/// `subagent_settings_set` → merge into the current settings, persist, and
+/// answer the new view. Out-of-bounds values are `VALIDATION_ERROR`.
+pub(super) fn handle_subagent_settings_set(id: String, payload: &Value) -> WsReply {
+    let parsed: SubagentSettingsPayload = match serde_json::from_value(payload.clone()) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            return WsReply::err_with_code(
+                id,
+                "VALIDATION_ERROR",
+                format!("malformed subagent_settings_set payload: {error}"),
+            )
+        }
+    };
+    let Some(engine) = crate::acp::orchestrator::installed() else {
+        return no_engine(id);
+    };
+    match apply_settings_patch(&engine, parsed) {
+        Ok(_) => WsReply::ok(id, Some(settings_view(&engine))),
+        Err(error) => WsReply::err_with_code(id, "VALIDATION_ERROR", error),
     }
 }
 

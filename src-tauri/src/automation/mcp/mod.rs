@@ -1,10 +1,12 @@
 //! What `mcp_tool` nodes call: the project's configured MCP servers, the
 //! client seam, and the live `tools/list` cache that validation and runs
 //! share. A server's credentials (env and header values, OAuth tokens) live
-//! only in its [`McpServerConfig`], which never leaves this module and the
-//! engine; every wire view carries the server id, name, transport and tool
-//! schemas only.
+//! only in its [`McpServerConfig`], which leaves this module and the engine
+//! only as the `session/new` servers of an agent node that lists `other`;
+//! every wire view carries the server id, name, transport and tool schemas
+//! only.
 
+mod arguments;
 mod client;
 mod registry;
 mod tools;
@@ -15,10 +17,11 @@ use futures::future::BoxFuture;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
+pub use arguments::{is_literal, literal_argument, Literal};
 pub use client::RmcpClient;
 pub use registry::{
-    desktop_store_servers, parse_registry, project_file_servers, McpServerEntry,
-    ProjectMcpServers, DESKTOP_STORE_KEY,
+    agent_servers, attach_aliases, find_server, parse_registry, store_servers, McpServerEntry,
+    ProjectMcpServers,
 };
 pub use tools::{
     Listing, Lookup, McpTools, OnListingChanged, ServerStatus, ServerTools, LISTING_DEADLINE,
@@ -88,6 +91,8 @@ pub trait McpClient: Send + Sync {
     ) -> BoxFuture<'a, Result<CallOutcome, McpFailure>>;
 }
 
+#[cfg(test)]
+mod arguments_tests;
 #[cfg(test)]
 mod client_tests;
 #[cfg(test)]

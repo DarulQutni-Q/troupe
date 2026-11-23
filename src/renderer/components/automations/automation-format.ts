@@ -1,23 +1,29 @@
 import type {
   AgentTool,
+  ApprovalDecision,
   Automation,
   AutomationNode,
+  AutomationRun,
   NodeKind,
   NodeSpec,
   RunStatus,
+  RunTrigger,
   StepStatus,
   Trigger
 } from '@shared/types/automation.types'
 import {
   Bot,
   Braces,
+  Clock,
   GitBranch,
   GitMerge,
   Globe,
+  Hand,
   Hourglass,
   Repeat,
   Wrench,
-  XCircle
+  XCircle,
+  Zap
 } from '@/components/icons'
 
 /** What the list and the header show; needs-approval wins because it asks the user to act. */
@@ -55,7 +61,36 @@ export const NODE_KIND_PRESENTATION: Record<NodeKind, { label: string; Icon: typ
   for_each: { label: 'For each', Icon: Repeat },
   merge: { label: 'Merge', Icon: GitMerge },
   wait: { label: 'Wait', Icon: Hourglass },
+  approval: { label: 'Approval', Icon: Hand },
   mcp_tool: { label: 'MCP tool', Icon: Wrench }
+}
+
+export const DECISION_PRESENTATION: Record<ApprovalDecision, { label: string; className: string }> =
+  {
+    approved: { label: 'Approved', className: 'text-success' },
+    rejected: { label: 'Rejected', className: 'text-destructive' },
+    timed_out: { label: 'Timed out', className: 'text-destructive' }
+  }
+
+const WAITING_FOR_APPROVAL = { label: 'Waiting for approval', className: 'text-warning' }
+
+export interface ParkedApproval {
+  node: AutomationNode
+  iteration: number | null
+  until: number
+}
+
+/** The approval node a run is parked on, from the run's own graph; null for a wait or no park. */
+export function parkedApproval(run: AutomationRun): ParkedApproval | null {
+  if (run.parked === null) return null
+  const { node_id, iteration, until } = run.parked
+  const node = run.graph.nodes.find((candidate) => candidate.id === node_id)
+  return node?.spec.kind === 'approval' ? { node, iteration, until } : null
+}
+
+/** A run parked on an approval reads as waiting for it; its status stays `running`. */
+export function runStatusPresentation(run: AutomationRun): { label: string; className: string } {
+  return parkedApproval(run) ? WAITING_FOR_APPROVAL : STATUS_PRESENTATION[run.status]
 }
 
 const DATE_TIME_OPTIONS: Intl.DateTimeFormatOptions = {
@@ -134,6 +169,8 @@ export function nodeKeyDetail(spec: NodeSpec): string {
       return spec.mode === 'all' ? 'When every branch ran' : 'When any branch ran'
     case 'wait':
       return `Wait ${formatDuration(spec.duration_ms)}`
+    case 'approval':
+      return spec.message
     case 'mcp_tool':
       return spec.tool
   }
@@ -143,7 +180,7 @@ export function nodeLabels(nodes: AutomationNode[]): Map<string, string> {
   return new Map(nodes.map((node) => [node.id, node.label]))
 }
 
-const AGENT_TOOL_LABELS: Record<AgentTool, string> = {
+export const AGENT_TOOL_LABELS: Record<AgentTool, string> = {
   read: 'read files',
   search: 'search',
   edit: 'edit files',
@@ -157,4 +194,24 @@ export function agentToolsLabel(tools: AgentTool[]): string {
   return tools.length === 0
     ? 'no tools'
     : `tools: ${tools.map((tool) => AGENT_TOOL_LABELS[tool]).join(', ')}`
+}
+
+/** What started a run; a run keeps no copy of the trigger's settings, only this and when it was due. */
+export type FiredBy = { by: RunTrigger; at: number }
+
+export const TRIGGER_LABEL: Record<RunTrigger, string> = {
+  scheduled: 'Scheduled',
+  catch_up: 'Catch-up',
+  manual: 'Manual'
+}
+
+/** How a run's trigger card and step row read: what started it, and when it was due. */
+export function firedPresentation({ by, at }: FiredBy): {
+  Icon: typeof Zap
+  title: string
+  detail: string
+} {
+  return by === 'manual'
+    ? { Icon: Zap, title: TRIGGER_LABEL.manual, detail: 'Started by hand' }
+    : { Icon: Clock, title: TRIGGER_LABEL[by], detail: `Due ${formatDateTime(at)}` }
 }

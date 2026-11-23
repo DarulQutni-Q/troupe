@@ -1,118 +1,186 @@
-import type { ShellInfo } from '@shared/types/ipc.types'
-import { Edit2, Globe, MessageSquare, Plus, Terminal as TerminalIcon } from '@/components/icons'
+import { openNewChat } from '@/components/chat/new-chat/open-new-chat'
+import { ChatEdit, Globe, Plus, Terminal } from '@/components/icons'
+import { logShellEvent } from '@/components/shell/shell-log'
+import { useAvailableShells } from '@/components/shell/tool-strip/use-available-shells'
+import { useShortcutLabel } from '@/components/shell/use-shortcut-label'
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuGroup,
   DropdownMenuItem,
+  DropdownMenuShortcut,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
-import { Skeleton } from '@/components/ui/skeleton'
-import { openProjectCanvas } from '@/lib/open-project-canvas'
+import { FOCUS_RING_CLASS } from '@/components/ui/panel-styles'
+import { committedPaneProject, useWorkspaceSettled } from '@/lib/pane-target'
 import { isTauriContext } from '@/lib/tauri-runtime'
 import { cn } from '@/lib/utils'
+import { useDefaultShell } from '@/stores/app-settings-store'
 import { useActiveProject } from '@/stores/project-store'
 import { useWorkspaceStore } from '@/stores/workspace-store'
-import { useAvailableShells } from './use-available-shells'
+import { useNewTabActions } from './new-tab-actions'
 
-/** Row look of the classic terminal menu (text-2xs rows, flush to the menu edge). */
-const ROW_CLASS = 'min-h-0 gap-2 rounded-none px-2.5 py-1.5 text-2xs leading-none'
+/** Menu item icons: 14px with the menu's icon gap (docs/design/menus.md). */
+const ICON = 'mr-2 size-3.5'
 
 interface NewTabMenuProps {
   paneId: string
-  onAddTerminal?: (shell?: ShellInfo) => void
-  onAddBrowserTab?: () => void
-  defaultShell?: string
 }
 
 /**
- * Revamp tab bar `+` menu: one trigger for New chat, New terminal (per
- * detected shell), New browser tab (desktop only) and Open canvas. Radix owns
- * keyboard, Esc and focus return.
+ * The project that owns `paneId` right now, or `null` with a log when the
+ * tree on screen is not the selected project's (a slow project switch) or
+ * the pane is gone. Every item reads its project from here, so a chat or a
+ * terminal never lands in another project's pane.
  */
-export function NewTabMenu({
-  paneId,
-  onAddTerminal,
-  onAddBrowserTab,
-  defaultShell
-}: NewTabMenuProps): React.JSX.Element {
-  const { loading, sortedShells } = useAvailableShells(defaultShell)
+function targetProject(paneId: string, what: string): string | null {
+  const projectId = committedPaneProject(paneId)
+  if (!projectId) {
+    logShellEvent(`new tab menu skipped a ${what} in pane ${paneId}: the project is switching`)
+  }
+  return projectId
+}
+
+/**
+ * The tab bar `+`: one menu for a new chat, a new terminal (the default
+ * shell, or another detected shell from the submenu) and a new browser tab
+ * (desktop only), each opening in this pane. Radix owns keyboard, Escape and
+ * focus return. While a project switch is in flight the items are disabled.
+ */
+export function NewTabMenu({ paneId }: NewTabMenuProps): React.JSX.Element {
+  const actions = useNewTabActions()
   const project = useActiveProject()
-  const projectPath = project?.path
-  const projectId = project?.id
+  const settled = useWorkspaceSettled()
+  const appShell = useDefaultShell()
+  const { loading, failed, sortedShells, defaultShell, load } = useAvailableShells(
+    project?.defaultShell || appShell,
+    { lazy: true }
+  )
+  // The shortcuts act on the active pane: show them only in its own menu, so
+  // they never read as shortcuts for this pane while another pane is active.
+  const isActivePane = useWorkspaceStore((s) => s.activePaneId === paneId)
+  const chatShortcut = useShortcutLabel('newTerminal')
+  const terminalShortcut = useShortcutLabel('worktreeOpenTerminal')
+  const browserShortcut = useShortcutLabel('newBrowserTab')
+  const canBrowse = isTauriContext()
+  const canOpenTab = Boolean(actions) && settled
 
   return (
-    <DropdownMenu>
+    <DropdownMenu
+      onOpenChange={(open) => {
+        // Shells are detected on first use; a failed detection runs again.
+        if (open) load()
+      }}
+    >
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          className="h-7 w-7 flex items-center justify-center rounded-md hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors duration-150 ease-out"
+          className={cn(
+            'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors duration-150 ease-out hover:bg-foreground/[0.06] hover:text-foreground data-[state=open]:bg-foreground/[0.06] data-[state=open]:text-foreground',
+            FOCUS_RING_CLASS
+          )}
           title="New tab"
           aria-label="New tab"
+          data-testid="new-tab-menu-trigger"
         >
-          <Plus size={12} />
+          <Plus size={14} aria-hidden />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-44 p-0 shadow-lg">
+      <DropdownMenuContent align="start" className="w-56">
         <DropdownMenuItem
-          className={ROW_CLASS}
-          disabled={!projectPath}
-          onSelect={() => useWorkspaceStore.getState().showAgentLauncher(paneId)}
+          disabled={!project?.path || !settled}
+          onSelect={() => {
+            const projectId = targetProject(paneId, 'chat')
+            if (!projectId) return
+            logShellEvent(`new tab menu opens a chat in pane ${paneId}`)
+            void openNewChat({ paneId, projectId, reason: 'new-tab-menu' })
+          }}
         >
-          <MessageSquare size={11} />
-          <span className="truncate">New chat</span>
+          <ChatEdit className={ICON} aria-hidden />
+          New chat
+          {isActivePane && chatShortcut && (
+            <DropdownMenuShortcut>{chatShortcut}</DropdownMenuShortcut>
+          )}
         </DropdownMenuItem>
 
-        {onAddTerminal && (
-          <DropdownMenuGroup aria-label="Terminal">
-            <div
-              role="presentation"
-              className="px-2.5 py-1 text-2xs font-medium text-muted-foreground bg-secondary/30"
-            >
-              Terminal
-            </div>
-            {loading ? (
-              <div className="py-1 px-2.5 space-y-1.5">
-                <Skeleton className="h-6 w-full" />
-                <Skeleton className="h-6 w-full" />
-              </div>
+        <DropdownMenuItem
+          disabled={!canOpenTab}
+          onSelect={() => {
+            if (!targetProject(paneId, 'terminal')) return
+            logShellEvent(`new tab menu opens a terminal in pane ${paneId}`)
+            // The shell the submenu marks Default, so a saved shell that no
+            // longer exists does not make this fail. Before the detection
+            // lands, the spawn resolves the setting itself.
+            actions?.addTerminal(paneId, defaultShell)
+          }}
+        >
+          <Terminal className={ICON} aria-hidden />
+          New terminal
+          {isActivePane && terminalShortcut && (
+            <DropdownMenuShortcut>{terminalShortcut}</DropdownMenuShortcut>
+          )}
+        </DropdownMenuItem>
+
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger disabled={!canOpenTab}>
+            <Terminal className={ICON} aria-hidden />
+            New terminal with
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="w-52" aria-label="Shells">
+            {failed ? (
+              <DropdownMenuItem
+                onSelect={(event) => {
+                  // Keep the menu open: the list replaces this row.
+                  event.preventDefault()
+                  load()
+                }}
+              >
+                Could not detect shells. Try again
+              </DropdownMenuItem>
+            ) : loading ? (
+              <DropdownMenuItem disabled>Detecting shells…</DropdownMenuItem>
             ) : sortedShells && sortedShells.length > 0 ? (
               sortedShells.map((shell) => (
                 <DropdownMenuItem
-                  key={shell.name}
-                  className={cn(ROW_CLASS, shell.name === defaultShell && 'text-primary')}
-                  onSelect={() => onAddTerminal(shell)}
+                  key={shell.path}
+                  onSelect={() => {
+                    if (!targetProject(paneId, 'terminal')) return
+                    logShellEvent(
+                      `new tab menu opens a terminal with shell ${shell.name} in pane ${paneId}`
+                    )
+                    actions?.addTerminal(paneId, shell)
+                  }}
                 >
-                  <TerminalIcon size={11} />
-                  <span className="truncate">{shell.displayName}</span>
-                  {shell.name === defaultShell && (
-                    <span className="ml-auto text-3xs text-muted-foreground">(default)</span>
+                  <span className="min-w-0 flex-1 truncate">{shell.displayName}</span>
+                  {shell === defaultShell && (
+                    <span className="ml-2 text-2xs text-muted-foreground">Default</span>
                   )}
                 </DropdownMenuItem>
               ))
             ) : (
-              <div className="px-2.5 py-1.5 text-2xs text-muted-foreground">No shells detected</div>
+              <DropdownMenuItem disabled>No shells detected</DropdownMenuItem>
             )}
-          </DropdownMenuGroup>
-        )}
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
 
-        {onAddBrowserTab && isTauriContext() && (
-          <DropdownMenuItem className={ROW_CLASS} onSelect={() => onAddBrowserTab()}>
-            <Globe size={11} />
-            <span className="truncate">New browser tab</span>
+        {canBrowse && (
+          <DropdownMenuItem
+            disabled={!canOpenTab}
+            onSelect={() => {
+              if (!targetProject(paneId, 'browser tab')) return
+              logShellEvent(`new tab menu opens a browser tab in pane ${paneId}`)
+              actions?.addBrowserTab(paneId)
+            }}
+          >
+            <Globe className={ICON} aria-hidden />
+            New browser tab
+            {isActivePane && browserShortcut && (
+              <DropdownMenuShortcut>{browserShortcut}</DropdownMenuShortcut>
+            )}
           </DropdownMenuItem>
         )}
-
-        <DropdownMenuItem
-          className={ROW_CLASS}
-          disabled={!projectPath}
-          onSelect={() => {
-            if (projectId && projectPath) void openProjectCanvas(projectId, projectPath)
-          }}
-        >
-          <Edit2 size={11} />
-          <span className="truncate">Open canvas</span>
-        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   )

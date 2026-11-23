@@ -29,7 +29,8 @@ pub use accounts::SignInCheck;
 pub use logins::LinkCodeError;
 
 use cli::{claude_cli_command, SystemClaudeRuntimeProbe};
-use usage::{ClaudeUsageProbe, SystemClaudeUsageProbe, UsageCache};
+pub(crate) use usage::ClaudeUsageProbe;
+use usage::{SystemClaudeUsageProbe, UsageCache};
 
 /// Extract the major version from Node's canonical `vMAJOR.MINOR.PATCH` output.
 pub fn parse_node_major(output: &str) -> Option<u64> {
@@ -45,7 +46,7 @@ pub fn parse_node_major(output: &str) -> Option<u64> {
 /// `FRESH_PATH_CACHE` pattern in `pty::env_refresh`): catalog resolution and
 /// managed-config preflights probe repeatedly, and `node --version` spawns a
 /// process each time. A host that installs or upgrades Node must restart
-/// Termul to re-probe — the same tradeoff the cached PATH probe already makes.
+/// Troupe to re-probe — the same tradeoff the cached PATH probe already makes.
 static NODE_MAJOR_CACHE: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
 
 pub(crate) fn probe_node_major() -> Option<u64> {
@@ -203,10 +204,10 @@ pub(crate) fn claude_runtime_block(
 pub(crate) fn claude_unavailable_reason(block: ClaudeRuntimeBlock) -> &'static str {
     match block {
         ClaudeRuntimeBlock::NodeTooOld => {
-            "Claude Agent ACP requires Node.js 22 or newer. Install or upgrade Node.js, then restart Termul."
+            "Claude Agent ACP requires Node.js 22 or newer. Install or upgrade Node.js, then restart Troupe."
         }
         ClaudeRuntimeBlock::NpmMissing => {
-            "Claude Agent ACP requires npm. Install npm alongside Node.js 22 or newer, then restart Termul."
+            "Claude Agent ACP requires npm. Install npm alongside Node.js 22 or newer, then restart Troupe."
         }
         ClaudeRuntimeBlock::CliMissing => {
             "Install Claude Code CLI from Anthropic, then run `claude auth login` in a terminal."
@@ -308,6 +309,35 @@ fn parse_auth_mode(value: &str) -> Result<ClaudeAuthMode, String> {
         "claude-code" => Ok(ClaudeAuthMode::ClaudeCode),
         "api-key" => Ok(ClaudeAuthMode::ApiKey),
         _ => Err("Claude auth preference is invalid".to_string()),
+    }
+}
+
+/// The chat a managed Claude spawn opens, which picks its Account.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum LaunchChat {
+    /// No chat yet: the Project's Account, else the Default Account.
+    #[default]
+    None,
+    /// An existing chat: its own Account, else its Project's.
+    Existing(crate::acp::config::SessionId),
+    /// A chat the agent is started to create, on this Account.
+    New { account_id: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClaudeLaunchAuth {
+    /// Not the host-installed Claude agent.
+    Unmanaged,
+    /// API-key mode, or a config dir the project env sets: switching the
+    /// project's account would not change it.
+    Fixed,
+    Account(String),
+}
+
+impl ClaudeLaunchAuth {
+    #[must_use]
+    pub fn host_auth_ready(&self) -> bool {
+        !matches!(self, Self::Unmanaged)
     }
 }
 
@@ -469,6 +499,14 @@ impl ClaudeAgentService {
         service
     }
 
+    /// The host state dir that holds the account store; `None` without host
+    /// state.
+    #[must_use]
+    pub fn state_dir(&self) -> Option<&Path> {
+        self.profile_store.as_ref()?;
+        self.install_root.as_deref()?.parent()
+    }
+
     #[must_use]
     pub fn without_host_state() -> Self {
         Self::new_with_runtime(
@@ -541,7 +579,7 @@ impl ClaudeAgentService {
     }
 
     /// Run Anthropic's interactive `claude auth login` in the caller's
-    /// terminal. Termul never installs or updates the external Claude CLI.
+    /// terminal. Troupe never installs or updates the external Claude CLI.
     pub fn run_cli_login(&self) -> Result<(), String> {
         self.run_cli_login_in(None)
     }
@@ -750,17 +788,20 @@ impl ClaudeAgentService {
         &self,
         config: &mut crate::acp::config::AgentConfig,
     ) -> Result<bool, String> {
-        self.prepare_managed_config_for_project(config, None).await
+        self.prepare_managed_launch(config, None, &LaunchChat::None)
+            .await
+            .map(|auth| auth.host_auth_ready())
     }
 
-    /// [`prepare_managed_config`](Self::prepare_managed_config) for a spawn in
-    /// `project_id`: in Claude Code mode the agent runs with the config
-    /// directory of that Project's Account.
-    pub async fn prepare_managed_config_for_project(
+    /// [`prepare_managed_config`](Self::prepare_managed_config) for a spawn
+    /// that opens `chat` in `project_id`: in Claude Code mode the agent runs
+    /// with the config directory of the chat's Account (see [`LaunchChat`]).
+    pub async fn prepare_managed_launch(
         &self,
         config: &mut crate::acp::config::AgentConfig,
         project_id: Option<&str>,
-    ) -> Result<bool, String> {
+        chat: &LaunchChat,
+    ) -> Result<ClaudeLaunchAuth, String> {
         if !self.is_managed_config(config) {
             // A config that claims the managed claude-acp identity but fails
             // verification is a security-relevant boundary — log it. Custom
@@ -770,7 +811,7 @@ impl ClaudeAgentService {
                     "[acp-claude] config claims the managed claude-acp identity but failed host verification; treating as unmanaged"
                 );
             }
-            return Ok(false);
+            return Ok(ClaudeLaunchAuth::Unmanaged);
         }
         if let Err(reason) = self.runtime_probe.ensure_supported().await {
             log::warn!("[acp-claude] managed config rejected: {reason}");
@@ -779,7 +820,7 @@ impl ClaudeAgentService {
         }
         match self.auth_mode() {
             Ok(ClaudeAuthMode::ClaudeCode) => {
-                let account = self.resolve_account(project_id);
+                let account = self.resolve_account(project_id, chat);
                 let (config_dir, source) = effective_config_dir(
                     &config.env,
                     account.config_dir.as_deref(),
@@ -837,12 +878,17 @@ impl ClaudeAgentService {
                     "[acp-claude] managed config uses the {} Claude profile",
                     source.label()
                 );
-                Ok(true)
+                Ok(match source {
+                    ConfigDirSource::ProjectEnv => ClaudeLaunchAuth::Fixed,
+                    ConfigDirSource::Host | ConfigDirSource::Linked => {
+                        ClaudeLaunchAuth::Account(account.account_id)
+                    }
+                })
             }
             Ok(ClaudeAuthMode::ApiKey) => match self.credentials.get(API_KEY_ACCOUNT) {
                 Ok(Some(key)) if !key.trim().is_empty() => {
                     config.env.insert(ANTHROPIC_API_KEY_ENV.to_string(), key);
-                    Ok(true)
+                    Ok(ClaudeLaunchAuth::Fixed)
                 }
                 Ok(_) => {
                     log::warn!(

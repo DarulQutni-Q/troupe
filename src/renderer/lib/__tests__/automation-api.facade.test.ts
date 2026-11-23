@@ -1,5 +1,5 @@
 import wire from '@shared/types/__fixtures__/automation.json'
-import type { AutomationId, RunId } from '@shared/types/automation.types'
+import type { AutomationId, NodeId, RunId } from '@shared/types/automation.types'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { mockFetch, mockIsTauriContext, mockInvoke, mockLog } = vi.hoisted(() => ({
@@ -19,6 +19,7 @@ import {
   approveAutomation,
   cancelAutomationRun,
   createAutomation,
+  decideAutomationApproval,
   deleteAutomation,
   deleteAutomationSecret,
   dismissAutomationSuggestion,
@@ -32,15 +33,18 @@ import {
   markAutomationSeen,
   matchAutomationSuggestion,
   onAutomationChanged,
+  previewAutomationOps,
   previewSchedule,
   publishAutomationChange,
   runAutomationNow,
   setAutomationEnabled,
+  setAutomationLayout,
   setAutomationSecret
 } from '../automation-api'
 
 const ID = 'auto-1' as AutomationId
 const RUN = 'run/1' as RunId
+const GATE = 'gate' as NodeId
 const detail = { automation: wire.automation, issues: [], policy: wire.run_policy }
 
 interface Case {
@@ -94,6 +98,26 @@ const CASES: Case[] = [
     body: { base_revision: 3, ops: [{ op: 'rename', name: 'X' }] }
   },
   {
+    name: 'previewAutomationOps',
+    call: () => previewAutomationOps(ID, 3, [{ op: 'rename', name: 'X' }]),
+    reply: detail,
+    command: 'automation_preview_ops',
+    args: { id: ID, baseRevision: 3, ops: [{ op: 'rename', name: 'X' }] },
+    method: 'POST',
+    path: '/api/automations/auto-1/ops/preview',
+    body: { base_revision: 3, ops: [{ op: 'rename', name: 'X' }] }
+  },
+  {
+    name: 'setAutomationLayout',
+    call: () => setAutomationLayout(ID, { trigger: { x: 1, y: 2 } }),
+    reply: wire.automation,
+    command: 'automation_set_layout',
+    args: { id: ID, layout: { trigger: { x: 1, y: 2 } } },
+    method: 'POST',
+    path: '/api/automations/auto-1/layout',
+    body: { layout: { trigger: { x: 1, y: 2 } } }
+  },
+  {
     name: 'deleteAutomation',
     call: () => deleteAutomation(ID),
     reply: null,
@@ -141,6 +165,16 @@ const CASES: Case[] = [
     method: 'POST',
     path: '/api/automation-runs/run%2F1/cancel',
     body: {}
+  },
+  {
+    name: 'decideAutomationApproval',
+    call: () => decideAutomationApproval(RUN, GATE, true),
+    reply: true,
+    command: 'automation_decide_approval',
+    args: { runId: RUN, nodeId: GATE, approved: true },
+    method: 'POST',
+    path: '/api/automation-runs/run%2F1/approval',
+    body: { node_id: 'gate', approved: true }
   },
   {
     name: 'listAutomationRuns',
@@ -322,6 +356,25 @@ describe('automation facade transports', () => {
     expect(result).toEqual({
       success: false,
       error: 'automations[0].revision: expected a number',
+      code: 'INVALID_RESPONSE'
+    })
+  })
+
+  it('returns whether the decision applied, and rejects a non-boolean reply', async () => {
+    mockIsTauriContext.mockReturnValue(false)
+    mockFetch
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ok(false) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ok('yes') })
+
+    expect(await decideAutomationApproval(RUN, GATE, false)).toEqual({
+      success: true,
+      data: false
+    })
+    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit]
+    expect(JSON.parse(String(init.body))).toEqual({ node_id: 'gate', approved: false })
+    expect(await decideAutomationApproval(RUN, GATE, true)).toEqual({
+      success: false,
+      error: 'decided: expected a boolean',
       code: 'INVALID_RESPONSE'
     })
   })

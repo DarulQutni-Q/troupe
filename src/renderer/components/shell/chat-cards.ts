@@ -1,10 +1,13 @@
 /**
- * Pure data for the Side panel Chats list (shell revamp CAP-3): scope by the
- * worktree pick, newest-first order, the branch line and the search filter.
+ * Pure data for the chat cards of the Rail and the command palette Chats
+ * group: scope by the worktree pick, newest-first order, the branch line and
+ * the search filter.
  * No React, no stores: callers pass the index, the project and the pick.
  */
 import type { ProjectChatEntry } from '@/components/sidebar/project-chat-row'
 import type { SessionIndexEntry } from '@/lib/acp-history-persistence'
+import { foldEntries, membersOf, sessionChainIndex } from '@/lib/session-chain'
+import { startedByLabeler } from '@/lib/started-by'
 import { pickedWorkingCopy, workingCopyOf } from '@/lib/working-copy'
 import type { Project } from '@/types/project'
 
@@ -49,8 +52,33 @@ interface BuildChatCardsInput {
   agentNames: ReadonlyMap<string, string>
 }
 
+/** The project's Troupe-created chats, and those in the picked scope. */
+function projectChatScope({
+  sessionIndex,
+  project,
+  pick
+}: Omit<BuildChatCardsInput, 'agentNames'>): {
+  projectChats: SessionIndexEntry[]
+  scoped: SessionIndexEntry[]
+} {
+  const picked = pickedWorkingCopy(project, pick)
+  const narrowKey = picked?.state === 'resolved' && picked.kind === 'worktree' ? picked.key : null
+  const projectChats = sessionIndex.filter(
+    (e) => e.projectId === project.id && e.discovered !== true
+  )
+  const scoped = projectChats.filter(
+    (e) => narrowKey === null || workingCopyOf(e.cwd, project)?.key === narrowKey
+  )
+  return { projectChats, scoped }
+}
+
+/** Whether {@link buildChatCards} would return any card (folding never empties a list). */
+export function hasChatCards(input: Omit<BuildChatCardsInput, 'agentNames'>): boolean {
+  return projectChatScope(input).scoped.length > 0
+}
+
 /**
- * Cards for the active project: Termul-created chats only, scoped by the pick
+ * Cards for the active project: Troupe-created chats only, scoped by the pick
  * (a picked worktree keeps its own chats; Workspace keeps all of them), newest
  * activity first with the id as the tie-break.
  */
@@ -60,35 +88,46 @@ export function buildChatCards({
   pick,
   agentNames
 }: BuildChatCardsInput): ChatCardData[] {
-  const picked = pickedWorkingCopy(project, pick)
-  const narrowKey = picked?.state === 'resolved' && picked.kind === 'worktree' ? picked.key : null
+  // CAP-8 (spec-in-chat-agent-switch): scope first, then fold every
+  // `continuedFrom` chain to its terminal session — a handed-off chat is one
+  // row, opened/reloaded on the live session, deleted as a whole via
+  // `chainIds`. Display membership derives from the picked scope (a chain
+  // member outside it stays its own row), but DELETE membership resolves
+  // against the whole project index so a folded card removes members beyond
+  // the pick too — otherwise the out-of-scope member resurfaces standalone.
+  const { projectChats, scoped } = projectChatScope({ sessionIndex, project, pick })
+  const deleteIndex = sessionChainIndex(projectChats)
+  const startedByLabelOf = startedByLabeler(sessionIndex)
 
-  return sessionIndex
-    .filter((e) => e.projectId === project.id && e.discovered !== true)
-    .filter((e) => narrowKey === null || workingCopyOf(e.cwd, project)?.key === narrowKey)
+  return foldEntries(sessionChainIndex(scoped))
     .sort((a, b) => b.lastActivityAt - a.lastActivityAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
-    .map((e) => ({
-      entry: {
-        id: e.id,
-        title: e.title,
-        messageCount: e.messageCount,
-        status: e.status,
-        discovered: false,
-        agentId: e.agentId,
-        agentConfigId: e.agentConfigId,
-        agents: e.agents,
-        lastActivityAt: e.lastActivityAt,
-        cwd: e.cwd,
-        canOpen: true
-      },
-      agentName: e.agentConfigId ? (agentNames.get(e.agentConfigId) ?? null) : null,
-      indexModel: e.modelName || e.modelId || null,
-      branch: branchLineOf(e, project)
-    }))
+    .map((e) => {
+      const members = membersOf(deleteIndex, e.id)
+      return {
+        entry: {
+          id: e.id,
+          title: e.title,
+          messageCount: e.messageCount,
+          status: e.status,
+          discovered: false,
+          agentId: e.agentId,
+          agentConfigId: e.agentConfigId,
+          agents: e.agents,
+          chainIds: members.length > 1 ? members : undefined,
+          startedByLabel: startedByLabelOf(e),
+          lastActivityAt: e.lastActivityAt,
+          cwd: e.cwd,
+          canOpen: true
+        },
+        agentName: e.agentConfigId ? (agentNames.get(e.agentConfigId) ?? null) : null,
+        indexModel: e.modelName || e.modelId || null,
+        branch: branchLineOf(e, project)
+      }
+    })
 }
 
 /**
- * The text the card's first line shows when there is no live session model:
+ * The model line of a card when there is no live session model:
  * the host-recorded model, else the agent name, else the generic fallback.
  */
 export function modelLineOf(card: Pick<ChatCardData, 'indexModel' | 'agentName'>): string {

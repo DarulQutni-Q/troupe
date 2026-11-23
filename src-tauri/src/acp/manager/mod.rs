@@ -69,11 +69,19 @@ mod gates;
 mod activity;
 mod close;
 mod exit;
-pub(crate) use gates::{ApiKey, AuthCredential, ConfigOptionValue, GatewayAuthInput};
+pub(crate) use gates::{
+    gate_mcp_servers, ApiKey, AuthCredential, ConfigOptionValue, GatewayAuthInput,
+};
 mod history;
+mod import_session_history;
+mod launch;
+pub use launch::{AgentLaunch, LaunchRecipe};
+mod import_steps;
 mod native_subagents;
 mod project_binding;
 mod reopen;
+mod reopen_gate;
+pub use reopen_gate::HostMove;
 mod sign_in;
 mod spawn_error;
 pub(crate) mod stderr_ring;
@@ -99,9 +107,15 @@ pub(crate) use test_driver::{FakeAuth, FakeDriver, FakeTurn};
 #[cfg(test)]
 mod agent_tools_loop_tests;
 #[cfg(test)]
+mod background_commands_tests;
+#[cfg(test)]
 mod native_subagents_loop_tests;
 #[cfg(test)]
 mod native_subagents_tests;
+#[cfg(test)]
+mod orchestrated_cards_tests;
+#[cfg(test)]
+mod orchestrated_origin_tests;
 #[cfg(test)]
 pub(crate) mod real_loop_tests;
 
@@ -152,6 +166,9 @@ pub struct NewSessionOutcome {
     pub models: Option<SessionModelState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config_options: Option<Vec<SessionConfigOption>>,
+    /// Canonical quick-chat folder. Absent for a project chat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
 }
 
 /// Trusted server-side context attached to durable session registration.
@@ -164,6 +181,13 @@ pub struct SessionCreationContext {
     /// promoted to a durable chat later via `promote_session` without losing
     /// the plan tool. Meaningless for non-ephemeral sessions (always injected).
     pub promotable: bool,
+    /// Set by the subagent orchestrator: this session is an orchestrated
+    /// child, routed under the chat named by the origin. The driver seeds
+    /// the child route from it inside `session/new`, so the child's
+    /// permission requests, questions and transcript surface in the chat.
+    /// The host injects the `troupe` MCP server for such a session (it may
+    /// recurse while the engine's depth setting allows).
+    pub child_origin: Option<ChildOrigin>,
     /// Worktree path the agent runs in (CAP-3). When set, the durable record
     /// carries it so relaunch reattaches without a second `git worktree add`
     /// and the chat indicator (CAP-6) survives reload. State isolation still
@@ -182,6 +206,27 @@ pub struct SessionCreationContext {
     /// How the host answers an ephemeral session's permission requests.
     /// `None` cancels every request.
     pub tool_allowlist: Option<crate::acp::session::ToolAllowlist>,
+    /// Set when this session is a quick chat. The value is the host-minted
+    /// folder id. The client does not choose it.
+    pub quick_chat_id: Option<String>,
+    /// The chat whose agent started this one (`start_chat`).
+    pub started_by: Option<String>,
+}
+
+/// Where an orchestrated child session renders: every id the child's route
+/// needs, supplied by the engine (no parent walk on the driver).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChildOrigin {
+    /// The chat the child renders in (never itself a child session).
+    pub root_session_id: String,
+    /// The session that spawned the child: the chat, or another child.
+    pub parent_session_id: String,
+    /// The dispatch of the run that spawned this one (nested runs).
+    pub parent_dispatch_id: Option<String>,
+    /// This run's dispatch tool call id, `termul-subagent:<run id>`.
+    pub dispatch_id: String,
+    /// 1 = the chat's agent spawned the run directly.
+    pub depth: u8,
 }
 
 /// Commands sent from Tauri command handlers to an agent's driver thread.
@@ -197,11 +242,14 @@ enum AcpCommand {
         runtime_agent_id: String,
         project_id: Option<String>,
         ephemeral: bool,
+        child_origin: Option<ChildOrigin>,
         worktree_path: Option<String>,
         worktree_branch: Option<String>,
         additional_directories: Vec<PathBuf>,
         command_id: Option<String>,
         tool_allowlist: Option<crate::acp::session::ToolAllowlist>,
+        quick_chat_id: Option<String>,
+        started_by: Option<String>,
         reply: oneshot::Sender<Result<NewSessionOutcome, String>>,
     },
     LoadSession {
@@ -212,6 +260,9 @@ enum AcpCommand {
         /// attaches that list plus the host plan server. An empty vec still
         /// attaches the plan server — a reload with no project servers.
         mcp_servers: Option<Vec<McpServer>>,
+        /// Record the replayed history as durable records of the session
+        /// instead of dropping it (see `import_session_history`).
+        import_history: bool,
         reply: oneshot::Sender<Result<SessionReopenOutcome, String>>,
     },
     ResumeSession {
@@ -271,6 +322,16 @@ enum AcpCommand {
             >,
         >,
     },
+    /// Upsert an orchestrated subagent's record into the chat it renders in
+    /// and deliver its card (announce, change or settle + result). Sent by
+    /// the orchestrator engine to the chat's agent driver; registers no
+    /// route.
+    UpsertSubagent {
+        record: crate::acp::subagents::Subagent,
+        /// The settle result text, when this is the settle card.
+        content: Option<String>,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     /// Session ids whose workspace roots are registered on this agent's
     /// driver — the authoritative "which live agent owns which session" set
     /// (issue #837: `list_agents` payload extension). A session id appears
@@ -282,6 +343,11 @@ enum AcpCommand {
     /// (`session::unprompted`).
     WorkingSessionIds {
         reply: oneshot::Sender<Result<Vec<String>, String>>,
+    },
+    /// The commands the agent left running, per owned session that lists any
+    /// (`session::background_commands`).
+    BackgroundCommands {
+        reply: oneshot::Sender<Result<crate::acp::session::BackgroundCommandsSnapshot, String>>,
     },
     /// The canonical workspace root of every session registered on this
     /// agent's driver (`(session id, root)`), for the destructive-operation
@@ -399,6 +465,14 @@ pub struct SpawnOutcome {
     pub stable_namespace: Option<String>,
 }
 
+/// What a spawn opens: the Project selects the Claude and Codex Account, and
+/// the chat the agent is started for can select its own Account.
+#[derive(Debug, Clone, Default)]
+pub struct SpawnScope {
+    pub project_id: Option<String>,
+    pub chat: crate::acp::claude_agent::LaunchChat,
+}
+
 /// Identity-rich summary of a live agent (CAP-11). Returned by the WS
 /// `list_agents` handler so
 /// clients can render/agent-route without a second lookup. `configId` and
@@ -422,6 +496,9 @@ pub struct AgentSummary {
     /// Owned sessions the agent works in outside a prompt turn now, so a
     /// client that opens one later shows it busy. Always serialized.
     pub working_sessions: Vec<String>,
+    /// The commands the agent left running, by owned session, so a client
+    /// that opens the chat later lists them. Always serialized.
+    pub background_commands: crate::acp::session::BackgroundCommandsSnapshot,
     /// The `commandId` of the `spawn_agent` that created this agent. In-process
     /// only: never serialized to clients.
     #[serde(skip)]
@@ -497,7 +574,7 @@ pub struct AcpManager {
     /// flag so the gate also applies when persistence is absent.
     process_shutdown: AtomicBool,
     persistence: Option<Arc<SessionPersistence>>,
-    /// Host-injected `termul` MCP server (exposes the `plan` tool; one shared TCP listener across
+    /// Host-injected `troupe` MCP server (exposes the `plan` tool; one shared TCP listener across
     /// all sessions, started EAGERLY in the constructor so the first
     /// `new_session_with_context` doesn't block a Tokio worker thread on the
     /// bind + port-publish handshake). Injects a self-spawned stdio child
@@ -510,6 +587,18 @@ pub struct AcpManager {
     /// Host-wide Claude auth and managed-install identity. Only the verified
     /// host-installed Claude entrypoint can receive its keychain credential.
     claude_agent: Arc<crate::acp::claude_agent::ClaudeAgentService>,
+    /// Host-wide Codex Account homes. Only `acp-registry:codex-acp` receives
+    /// a `CODEX_HOME`. Test managers leave this inactive.
+    codex_agent: Arc<crate::acp::codex_agent::CodexAgentService>,
+    launches: Mutex<HashMap<AgentId, AgentLaunch>>,
+    recipes: Mutex<HashMap<SessionId, LaunchRecipe>>,
+    /// Chats whose launch recipe must survive an idle reap. Both the Claude
+    /// and the Codex limit supervisors hold a chat here while it waits for
+    /// its limit to reset, and release it when that wait ends.
+    kept_recipes: Mutex<std::collections::HashSet<String>>,
+    claude_limit: std::sync::OnceLock<crate::acp::claude_limit::ClaudeLimitHandle>,
+    codex_limit: std::sync::OnceLock<crate::acp::codex_limit::CodexLimitHandle>,
+    reopen_gates: Arc<reopen_gate::ReopenGates>,
 }
 
 impl AcpManager {
@@ -552,7 +641,27 @@ impl AcpManager {
             persistence: None,
             host_plan_server,
             claude_agent,
+            codex_agent: Arc::new(crate::acp::codex_agent::CodexAgentService::without_host_state()),
+            launches: Mutex::new(HashMap::new()),
+            recipes: Mutex::new(HashMap::new()),
+            kept_recipes: Mutex::new(std::collections::HashSet::new()),
+            claude_limit: std::sync::OnceLock::new(),
+            codex_limit: std::sync::OnceLock::new(),
+            reopen_gates: Arc::default(),
         }
+    }
+
+    /// [`with_claude_agent`](Self::with_claude_agent) plus the host Codex
+    /// Account service. Desktop and `troupe-server` pass both.
+    #[must_use]
+    pub fn with_host_agents(
+        sinks: Vec<Arc<dyn EventSink>>,
+        claude_agent: Arc<crate::acp::claude_agent::ClaudeAgentService>,
+        codex_agent: Arc<crate::acp::codex_agent::CodexAgentService>,
+    ) -> Self {
+        let mut manager = Self::with_claude_agent(sinks, claude_agent);
+        manager.codex_agent = codex_agent;
+        manager
     }
 
     /// Create the standalone manager sharing one durable store with the relay.
@@ -592,7 +701,28 @@ impl AcpManager {
             persistence: Some(persistence),
             host_plan_server,
             claude_agent,
+            codex_agent: Arc::new(crate::acp::codex_agent::CodexAgentService::without_host_state()),
+            launches: Mutex::new(HashMap::new()),
+            recipes: Mutex::new(HashMap::new()),
+            kept_recipes: Mutex::new(std::collections::HashSet::new()),
+            claude_limit: std::sync::OnceLock::new(),
+            codex_limit: std::sync::OnceLock::new(),
+            reopen_gates: Arc::default(),
         }
+    }
+
+    /// [`with_persistence_and_claude_agent`](Self::with_persistence_and_claude_agent)
+    /// plus the host Codex Account service.
+    #[must_use]
+    pub fn with_persistence_and_host_agents(
+        sinks: Vec<Arc<dyn EventSink>>,
+        persistence: Arc<SessionPersistence>,
+        claude_agent: Arc<crate::acp::claude_agent::ClaudeAgentService>,
+        codex_agent: Arc<crate::acp::codex_agent::CodexAgentService>,
+    ) -> Self {
+        let mut manager = Self::with_persistence_and_claude_agent(sinks, persistence, claude_agent);
+        manager.codex_agent = codex_agent;
+        manager
     }
 
     #[must_use]
@@ -657,6 +787,37 @@ impl AcpManager {
         &self.claude_agent
     }
 
+    /// The host's Codex Account service.
+    #[must_use]
+    pub fn codex_agent(&self) -> &Arc<crate::acp::codex_agent::CodexAgentService> {
+        &self.codex_agent
+    }
+
+    /// Spawn the Codex ACP agent against one Account's home without the
+    /// signed-out gate. The client then calls `authenticate`. `host_auth_ready`
+    /// is false so that call is not skipped. A resent `command_id` returns the
+    /// agent already stamped with it.
+    pub async fn spawn_codex_sign_in(
+        &self,
+        mut config: AgentConfig,
+        account_id: &str,
+        command_id: Option<String>,
+    ) -> Result<SpawnOutcome, String> {
+        if let Some(command_id) = command_id.as_deref() {
+            if let Some(outcome) = self.spawn_outcome_by_command_id(command_id) {
+                log::info!("[codex-accounts] sign-in spawn reused the agent for this command");
+                return Ok(outcome);
+            }
+        }
+        crate::acp::factory_key::normalize_launch_args(&mut config);
+        crate::acp::factory_key::inject(&mut config)?;
+        self.codex_agent
+            .prepare_sign_in_config(&mut config, account_id)
+            .await?;
+        self.spawn_with_sinks(config, false, self.sinks.clone(), command_id)
+            .await
+    }
+
     /// Spawn an ACP agent: launch the subprocess, complete `initialize`, and
     /// register the agent. Emits `acp:agent_spawned` on success. Returns a
     /// [`SpawnOutcome`] carrying the authoritative capabilities, auth methods,
@@ -664,23 +825,99 @@ impl AcpManager {
     /// synchronously from the response (CAP-4: the spawn response — not the
     /// async event — is the source of truth).
     pub async fn spawn(&self, config: AgentConfig) -> Result<SpawnOutcome, String> {
-        self.spawn_with_command_id(config, None, None).await
+        self.spawn_with_command_id(config, None, SpawnScope::default())
+            .await
     }
 
     /// [`spawn`](Self::spawn) stamping the client `commandId` on the agent, so
     /// a resent `spawn_agent` finds it ([`Self::spawn_outcome_by_command_id`]).
-    /// `project_id` selects the Claude Account of a managed Claude agent.
+    /// `scope` selects the Claude Account of a managed Claude agent and the
+    /// Codex Account of `acp-registry:codex-acp`. The renderer reuse key
+    /// already includes the project id, and the chat id when the agent opens
+    /// one chat, and `renewAgentCredentials` bumps the credential epoch after
+    /// a project account switch so a warm process is not reused.
     pub async fn spawn_with_command_id(
         &self,
         mut config: AgentConfig,
         command_id: Option<String>,
-        project_id: Option<String>,
+        scope: SpawnScope,
     ) -> Result<SpawnOutcome, String> {
-        let host_auth_ready = self
-            .prepare_spawn_config(&mut config, project_id.as_deref())
+        let launch_config = config.clone();
+        let (host_auth_ready, claude, codex) = self
+            .prepare_spawn_config(&mut config, scope.project_id.as_deref(), &scope.chat)
             .await?;
-        self.spawn_with_sinks(config, host_auth_ready, self.sinks.clone(), command_id)
-            .await
+        let outcome = self
+            .spawn_with_sinks(config, host_auth_ready, self.sinks.clone(), command_id)
+            .await?;
+        self.record_agent_launch(
+            &outcome.agent_id,
+            AgentLaunch {
+                config: launch_config,
+                project_id: scope.project_id,
+                claude,
+                codex,
+            },
+        );
+        Ok(outcome)
+    }
+
+    pub fn set_claude_limit(&self, handle: crate::acp::claude_limit::ClaudeLimitHandle) {
+        if self.claude_limit.set(handle).is_err() {
+            log::warn!("[claude-limit] supervisor already installed; kept the first");
+        }
+    }
+
+    #[must_use]
+    pub fn claude_limit(&self) -> Option<&crate::acp::claude_limit::ClaudeLimitHandle> {
+        self.claude_limit.get()
+    }
+
+    pub fn set_codex_limit(&self, handle: crate::acp::codex_limit::CodexLimitHandle) {
+        if self.codex_limit.set(handle).is_err() {
+            log::warn!("[codex-limit] supervisor already installed; kept the first");
+        }
+    }
+
+    #[must_use]
+    pub fn codex_limit(&self) -> Option<&crate::acp::codex_limit::CodexLimitHandle> {
+        self.codex_limit.get()
+    }
+
+    /// Keep or drop the launch recipe of a chat whose agent may be reaped
+    /// while it waits, for example for a Codex limit to reset.
+    pub fn keep_launch_recipe(&self, session_id: &str, keep: bool) {
+        let mut held = self.kept_recipes.lock();
+        if keep {
+            held.insert(session_id.to_string());
+        } else {
+            held.remove(session_id);
+        }
+    }
+
+    /// Hold the chat's recipe only while that recipe is still stored. The
+    /// check and the hold use the same locks as [`Self::forget_recipes_without_agent`].
+    /// The bool is whether this call added the hold. A refusal must release
+    /// only a hold it added, so another supervisor's resume stays protected.
+    pub fn keep_present_launch_recipe(
+        &self,
+        session_id: &SessionId,
+    ) -> Option<(LaunchRecipe, bool)> {
+        let _agents = self.agents.lock();
+        let mut held = self.kept_recipes.lock();
+        let recipe = self.recipes.lock().get(session_id).cloned()?;
+        let added = held.insert(session_id.0.clone());
+        Some((recipe, added))
+    }
+
+    /// Serve the `start_chat` and `send_to_chat` host tools with `chats`.
+    pub fn set_worker_chats(&self, chats: Arc<crate::acp::worker_chats::WorkerChats>) {
+        self.host_plan_server.set_worker_chats(chats);
+    }
+
+    /// The sinks every host-spawned agent reaches (the orchestrator's
+    /// reroute filter forwards re-addressed child traffic to them).
+    pub(crate) fn sinks(&self) -> &[Arc<dyn EventSink>] {
+        &self.sinks
     }
 
     /// [`spawn`](Self::spawn) whose agent fans its events out to `sinks`
@@ -690,24 +927,43 @@ impl AcpManager {
         &self,
         mut config: AgentConfig,
         project_id: Option<&str>,
+        chat: &crate::acp::claude_agent::LaunchChat,
         sinks: Vec<Arc<dyn EventSink>>,
     ) -> Result<SpawnOutcome, String> {
-        let host_auth_ready = self.prepare_spawn_config(&mut config, project_id).await?;
-        self.spawn_with_sinks(config, host_auth_ready, sinks, None).await
+        let (host_auth_ready, _, _) = self
+            .prepare_spawn_config(&mut config, project_id, chat)
+            .await?;
+        self.spawn_with_sinks(config, host_auth_ready, sinks, None)
+            .await
     }
 
-    /// Launch-arg normalization, the persisted Factory key and the managed
-    /// Claude account of `project_id`. Returns host-auth readiness.
+    /// Launch-arg normalization, the persisted Factory key, and the managed
+    /// Claude or Codex account of `chat` in `project_id`. Returns host-auth
+    /// readiness and the account each spawn runs on.
     async fn prepare_spawn_config(
         &self,
         config: &mut AgentConfig,
         project_id: Option<&str>,
-    ) -> Result<bool, String> {
+        chat: &crate::acp::claude_agent::LaunchChat,
+    ) -> Result<
+        (
+            bool,
+            crate::acp::claude_agent::ClaudeLaunchAuth,
+            crate::acp::codex_agent::CodexLaunchAuth,
+        ),
+        String,
+    > {
         crate::acp::factory_key::normalize_launch_args(config);
         crate::acp::factory_key::inject(config)?;
-        self.claude_agent
-            .prepare_managed_config_for_project(config, project_id)
-            .await
+        let claude = self
+            .claude_agent
+            .prepare_managed_launch(config, project_id, chat)
+            .await?;
+        let codex = self
+            .codex_agent
+            .prepare_managed_launch(config, project_id, chat)
+            .await?;
+        Ok((claude.host_auth_ready() || codex.applied(), claude, codex))
     }
 
     /// The [`SpawnOutcome`] of the live agent spawned under `command_id`, or
@@ -985,6 +1241,7 @@ impl AcpManager {
                 capabilities: entry.capabilities.clone(),
                 owns_session: Vec::new(),
                 working_sessions: Vec::new(),
+                background_commands: Default::default(),
                 command_id: entry.stamp.command_id.clone(),
             })
             .collect()
@@ -1017,6 +1274,7 @@ impl AcpManager {
     /// driver stopped mid-query degrades to an empty set (logged) rather than
     /// failing the whole listing.
     pub async fn list_agent_summaries_with_ownership(&self) -> Vec<AgentSummary> {
+        self.host_moves_settled().await;
         let mut summaries = self.list_agent_summaries();
         for summary in &mut summaries {
             match self.agent_session_ids(&summary.id).await {
@@ -1039,6 +1297,11 @@ impl AcpManager {
                     send_command(&tx, |reply| AcpCommand::WorkingSessionIds { reply }).await
                 {
                     summary.working_sessions = ids;
+                }
+                if let Ok(commands) =
+                    send_command(&tx, |reply| AcpCommand::BackgroundCommands { reply }).await
+                {
+                    summary.background_commands = commands;
                 }
             }
         }
@@ -1115,11 +1378,25 @@ impl AcpManager {
         // evict the token so it doesn't leak (CodeRabbit #6).
         // Story 8: a promotable ephemeral session (warm pool) still gets the
         // plan tool — it becomes a durable chat on promotion, and plan-MCP
-        // injection is `session/new`-time only.
+        // injection is `session/new`-time only. An orchestrated child session
+        // gets it too: it may spawn subagents of its own while the engine's
+        // depth setting allows, and its own tool calls route through the
+        // same host.
+        let recipe_mcp = mcp_servers.clone();
+        let recipe_cwd = cwd.clone();
+        let recipe_directories = context.additional_directories.clone();
+        let inject_host_tools =
+            !context.ephemeral || context.promotable || context.child_origin.is_some();
         let (combined_mcp_servers, plan_token): (Vec<McpServer>, Option<String>) =
-            if !context.ephemeral || context.promotable {
+            if inject_host_tools {
                 let (port, token, provisional_sid) =
                     self.host_plan_server.register_session(&agent_id.0);
+                // No client subscribes to a child's private session: its
+                // `ask_user` and `mcp_install` cards show on its chat.
+                if let Some(origin) = &context.child_origin {
+                    self.host_plan_server
+                        .route_cards_to_chat(&token, &origin.root_session_id);
+                }
                 let internal =
                     build_internal_plan_stdio(&agent_id.0, port, &token, &provisional_sid);
                 // Prepend so the internal server is first in the agent's tool list.
@@ -1146,11 +1423,14 @@ impl AcpManager {
                 runtime_agent_id: agent_id.0.clone(),
                 project_id: context.project_id,
                 ephemeral: context.ephemeral,
+                child_origin: context.child_origin,
                 worktree_path: context.worktree_path,
                 worktree_branch: context.worktree_branch,
                 additional_directories,
                 command_id: context.command_id,
                 tool_allowlist: context.tool_allowlist,
+                quick_chat_id: context.quick_chat_id,
+                started_by: context.started_by,
                 reply,
             })
             .await
@@ -1166,6 +1446,13 @@ impl AcpManager {
                     self.host_plan_server
                         .bind_session(&token, &outcome.session_id.0);
                 }
+                self.record_launch_recipe(
+                    agent_id,
+                    &outcome.session_id.0,
+                    recipe_cwd,
+                    Some(recipe_mcp),
+                    recipe_directories,
+                );
                 Ok(outcome)
             }
             Err(e) => {
@@ -1191,26 +1478,79 @@ impl AcpManager {
         additional_directories: Vec<String>,
         mcp_servers: Option<Vec<McpServer>>,
     ) -> Result<SessionReopenOutcome, String> {
+        self.load_session_with(
+            agent_id,
+            session_id,
+            cwd,
+            additional_directories,
+            mcp_servers,
+            false,
+            None,
+        )
+        .await
+    }
+
+    /// [`Self::load_session`] of a chat `moving` holds.
+    pub async fn load_session_in_move(
+        &self,
+        moving: &HostMove,
+        agent_id: &AgentId,
+        session_id: SessionId,
+        cwd: String,
+        additional_directories: Vec<String>,
+        mcp_servers: Option<Vec<McpServer>>,
+    ) -> Result<SessionReopenOutcome, String> {
+        self.load_session_with(
+            agent_id,
+            session_id,
+            cwd,
+            additional_directories,
+            mcp_servers,
+            false,
+            Some(moving),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn load_session_with(
+        &self,
+        agent_id: &AgentId,
+        session_id: SessionId,
+        cwd: String,
+        additional_directories: Vec<String>,
+        mcp_servers: Option<Vec<McpServer>>,
+        import_history: bool,
+        moving: Option<&HostMove>,
+    ) -> Result<SessionReopenOutcome, String> {
+        let _held = self.hold_unless_moving(moving, &session_id).await;
         self.reject_session_owned_by_other_mid_turn(agent_id, &session_id)
             .await?;
         let caps = self.capabilities(agent_id)?;
         gate_load_session(&caps)?;
         let directories = filter_additional_directories(&caps, &cwd, &additional_directories);
         let session_key = session_id.0.clone();
+        let recipe = (cwd.clone(), mcp_servers.clone(), additional_directories);
         // Resolve the command channel BEFORE a new plan token exists, so an
         // unknown agent returns without leaving a registered token behind.
         let tx = self.command_tx(agent_id)?;
-        let (mcp_servers, plan_token) =
-            self.prepare_reopen_mcp(agent_id, &session_id.0, &caps, mcp_servers).await?;
+        let (mcp_servers, plan_token) = self
+            .prepare_reopen_mcp(agent_id, &session_id.0, &caps, mcp_servers)
+            .await?;
         let outcome = send_command(&tx, |reply| AcpCommand::LoadSession {
             session_id,
             cwd,
             additional_directories: directories,
             mcp_servers,
+            import_history,
             reply,
         })
         .await;
         self.settle_reopen_plan_token(&session_key, plan_token.as_deref(), reached_agent(&outcome));
+        if outcome.is_ok() {
+            let (cwd, mcp_servers, directories) = recipe;
+            self.record_launch_recipe(agent_id, &session_key, cwd, mcp_servers, directories);
+        }
         outcome
     }
 
@@ -1232,17 +1572,61 @@ impl AcpManager {
         additional_directories: Vec<String>,
         mcp_servers: Option<Vec<McpServer>>,
     ) -> Result<SessionReopenOutcome, String> {
+        self.resume_session_with(
+            agent_id,
+            session_id,
+            cwd,
+            additional_directories,
+            mcp_servers,
+            None,
+        )
+        .await
+    }
+
+    /// [`Self::resume_session`] of a chat `moving` holds.
+    pub async fn resume_session_in_move(
+        &self,
+        moving: &HostMove,
+        agent_id: &AgentId,
+        session_id: SessionId,
+        cwd: String,
+        additional_directories: Vec<String>,
+        mcp_servers: Option<Vec<McpServer>>,
+    ) -> Result<SessionReopenOutcome, String> {
+        self.resume_session_with(
+            agent_id,
+            session_id,
+            cwd,
+            additional_directories,
+            mcp_servers,
+            Some(moving),
+        )
+        .await
+    }
+
+    async fn resume_session_with(
+        &self,
+        agent_id: &AgentId,
+        session_id: SessionId,
+        cwd: String,
+        additional_directories: Vec<String>,
+        mcp_servers: Option<Vec<McpServer>>,
+        moving: Option<&HostMove>,
+    ) -> Result<SessionReopenOutcome, String> {
+        let _held = self.hold_unless_moving(moving, &session_id).await;
         self.reject_session_owned_by_other_mid_turn(agent_id, &session_id)
             .await?;
         let caps = self.capabilities(agent_id)?;
         gate_resume_session(&caps)?;
         let directories = filter_additional_directories(&caps, &cwd, &additional_directories);
         let session_key = session_id.0.clone();
+        let recipe = (cwd.clone(), mcp_servers.clone(), additional_directories);
         // Resolve the command channel BEFORE a new plan token exists, so an
         // unknown agent returns without leaving a registered token behind.
         let tx = self.command_tx(agent_id)?;
-        let (mcp_servers, plan_token) =
-            self.prepare_reopen_mcp(agent_id, &session_id.0, &caps, mcp_servers).await?;
+        let (mcp_servers, plan_token) = self
+            .prepare_reopen_mcp(agent_id, &session_id.0, &caps, mcp_servers)
+            .await?;
         let outcome = send_command(&tx, |reply| AcpCommand::ResumeSession {
             session_id,
             cwd,
@@ -1252,6 +1636,10 @@ impl AcpManager {
         })
         .await;
         self.settle_reopen_plan_token(&session_key, plan_token.as_deref(), reached_agent(&outcome));
+        if outcome.is_ok() {
+            let (cwd, mcp_servers, directories) = recipe;
+            self.record_launch_recipe(agent_id, &session_key, cwd, mcp_servers, directories);
+        }
         outcome
     }
 
@@ -1260,7 +1648,7 @@ impl AcpManager {
     /// `None` leaves the request with no client MCP list and no host plan
     /// server. `Some` prepends the host plan server, injects OAuth headers, and
     /// gates transports. The renderer sends `Some` on every history reopen, not
-    /// only Reload this chat, so the agent keeps the `termul` server and the
+    /// only Reload this chat, so the agent keeps the `troupe` server and the
     /// user's MCP servers (#1420).
     ///
     /// When this agent already holds a settled plan token for the session, the
@@ -1357,12 +1745,33 @@ impl AcpManager {
         agent_id: &AgentId,
         session_id: SessionId,
     ) -> Result<(), String> {
+        // The client treats the chat as closed whatever the agent answers.
+        self.forget_launch_recipe(&session_id.0, Some(agent_id));
+        self.close_session_keeping_recipe(agent_id, session_id)
+            .await
+    }
+
+    /// [`close_session`](Self::close_session) for a host move of the chat to
+    /// another agent: the move reopens the chat from its launch recipe, so
+    /// the recipe stays.
+    pub(crate) async fn close_session_keeping_recipe(
+        &self,
+        agent_id: &AgentId,
+        session_id: SessionId,
+    ) -> Result<(), String> {
         let caps = self.capabilities(agent_id)?;
         gate_close_session(&caps)?;
         let tx = self.command_tx(agent_id)?;
         let closed_session = session_id.0.clone();
-        send_command(&tx, |reply| AcpCommand::CloseSession { session_id, reply }).await?;
-        self.release_session_tickets(&closed_session);
+        let closed = send_command(&tx, |reply| AcpCommand::CloseSession { session_id, reply }).await;
+        // A closed chat stops its orchestrated subagents, whatever the agent
+        // answered: their own agents are private and would otherwise keep
+        // running unnoticed.
+        if let Some(engine) = crate::acp::orchestrator::installed() {
+            engine.chat_closed(&closed_session).await;
+        }
+        closed?;
+        self.release_session_tickets(&closed_session, None);
         Ok(())
     }
 
@@ -1457,6 +1866,26 @@ impl AcpManager {
             return Err("prompt content must not be empty".to_string());
         }
         let tx = self.command_tx(agent_id)?;
+        // A turn of a durable chat (one with an accept hook) ends its
+        // scheduled resume. The driver runs the hook before the agent sees
+        // the prompt, so the signal precedes any limit the turn reaches.
+        let on_accept = match on_accept {
+            Some(hook) => {
+                let claude = self.claude_limit.get().cloned();
+                let codex = self.codex_limit.get().cloned();
+                let session = session_id.clone();
+                Some(Box::new(move || {
+                    if let Some(limit) = &claude {
+                        limit.turn_started(session.clone());
+                    }
+                    if let Some(limit) = &codex {
+                        limit.turn_started(session);
+                    }
+                    hook();
+                }) as PromptAcceptHook)
+            }
+            None => None,
+        };
         let (accepted_tx, accepted_rx) = oneshot::channel();
         let (completion_tx, completion_rx) = oneshot::channel();
         tx.send(AcpCommand::SendPrompt {
@@ -1490,10 +1919,12 @@ impl AcpManager {
     /// Release the relay tickets of `session_id` after the driver resolved its
     /// parked approvals and questions as cancelled (turn cancel or session
     /// close). Tickets have no timer, so this frees the session's queue slot.
-    fn release_session_tickets(&self, session_id: &str) {
+    /// A turn cancel names `agent_id`: only that agent's approvals were
+    /// cancelled, and an orchestrated subagent's under the chat stay.
+    fn release_session_tickets(&self, session_id: &str, agent_id: Option<&AgentId>) {
         for sink in &self.sinks {
             if let Some(relay) = sink.as_ws_relay() {
-                relay.release_session_tickets(session_id);
+                relay.release_session_tickets(session_id, agent_id);
             }
         }
     }
@@ -1511,13 +1942,15 @@ impl AcpManager {
             send_command(&tx, |reply| AcpCommand::CancelPrompt { session_id, reply }).await;
         // The driver resolved every parked approval and question of the session
         // as cancelled before it replied, whatever the reply says.
-        self.release_session_tickets(&cancelled_session);
+        self.release_session_tickets(&cancelled_session, Some(agent_id));
         result
     }
 
     /// Stop subagent `subagent_id` of chat `root_session_id`. Converges: a
     /// subagent whose work already ended answers `AlreadyEnded` and nothing
-    /// is sent. The agent confirms a stop on the subagent's record.
+    /// is sent. The agent confirms a stop on the subagent's record. An
+    /// orchestrated run answers from the orchestrator engine first; only a
+    /// run the engine does not know falls through to the agent.
     pub(crate) async fn stop_subagent(
         &self,
         agent_id: &AgentId,
@@ -1526,6 +1959,11 @@ impl AcpManager {
     ) -> Result<crate::acp::subagents::StopSubagentOutcome, crate::acp::subagents::StopSubagentError>
     {
         use crate::acp::subagents::StopSubagentError;
+        if let Some(engine) = crate::acp::orchestrator::installed() {
+            if let Some(result) = engine.stop_from_ui(&root_session_id, &subagent_id).await {
+                return result.map(stop_outcome_to_wire).map_err(stop_error_from_engine);
+            }
+        }
         let subagent = crate::logging::redact_session_id(&subagent_id);
         let chat = crate::logging::redact_session_id(&root_session_id);
         log::info!("[acp] stop of subagent {subagent} in chat {chat} requested");
@@ -1562,6 +2000,25 @@ impl AcpManager {
             }
         }
         result
+    }
+
+    /// Upsert an orchestrated subagent's record into the chat it renders in,
+    /// on the chat's agent driver, and deliver its card. The engine's one
+    /// write path into a chat: persistence, relay and reopened chats read
+    /// the same record.
+    pub(crate) async fn upsert_subagent_record(
+        &self,
+        agent_id: &AgentId,
+        record: crate::acp::subagents::Subagent,
+        content: Option<String>,
+    ) -> Result<(), String> {
+        let tx = self.command_tx(agent_id)?;
+        send_command(&tx, |reply| AcpCommand::UpsertSubagent {
+            record,
+            content,
+            reply,
+        })
+        .await
     }
 
     /// Issue #837 split-brain guard: reject a reopen (`session/load` /
@@ -1726,6 +2183,26 @@ impl AcpManager {
         .await
     }
 
+    /// Route a chat MCP-install decision to the parked host tool. Secret
+    /// values stay inside `decision` and are not logged here. `session_id`
+    /// must be the session the install is parked on.
+    pub fn answer_mcp_install(
+        &self,
+        request_id: &str,
+        session_id: &str,
+        decision: crate::acp::host_mcp::mcp_install::McpInstallDecision,
+    ) -> Result<(), crate::acp::host_mcp::mcp_install::McpInstallAnswerError> {
+        self.host_plan_server
+            .answer_mcp_install(request_id, session_id, decision)
+    }
+
+    #[cfg(test)]
+    pub fn host_plan_server_for_tests(
+        &self,
+    ) -> Arc<crate::acp::host_mcp::parent::HostPlanServer> {
+        Arc::clone(&self.host_plan_server)
+    }
+
     /// Route a structured-question answer (issue #411) back to a waiting agent
     /// request.
     ///
@@ -1808,6 +2285,68 @@ impl AcpManager {
         self.stop_agent(agent_id, ExitIntent::Killed).await
     }
 
+    /// Delete a persisted session. A quick chat stops every live agent that
+    /// owns the session, and the agent id stored at create, before the folder
+    /// and the record are removed. A project chat and an older unassigned
+    /// chat only remove the record.
+    pub async fn delete_persisted_session(
+        &self,
+        persistence: &SessionPersistence,
+        session_id: &str,
+    ) -> Result<(), SessionPersistenceError> {
+        self.forget_launch_recipe(session_id, None);
+        self.claude_agent.forget_chat_account(session_id);
+        self.codex_agent.forget_chat_account(session_id);
+        if let Ok(metadata) = persistence.metadata(session_id) {
+            if metadata.kind == crate::acp::session_persistence::SessionKind::Quick {
+                // `runtime_agent_id` is the agent from create. Reopen starts a
+                // new agent and does not rewrite that field.
+                self.stop_quick_chat_agents(session_id, metadata.runtime_agent_id.as_deref())
+                    .await;
+            }
+        }
+        persistence.delete_session(session_id).await
+    }
+
+    /// Stop the live owners of a quick chat, then the stored create-time id.
+    /// An unknown or already-stopped id is success. The caller removes the
+    /// folder only after this returns.
+    async fn stop_quick_chat_agents(&self, session_id: &str, recorded_agent_id: Option<&str>) {
+        let live: Vec<AgentId> = self.agents.lock().keys().cloned().collect();
+        let mut stop = Vec::new();
+        for agent_id in live {
+            match self
+                .owns_session(&agent_id, SessionId::new(session_id))
+                .await
+            {
+                Ok(true) => stop.push(agent_id),
+                Ok(false) => {}
+                Err(error) => {
+                    log::warn!(
+                        "[quick-chat] ownership query failed before delete session_id={} \
+                         agent_id={} error={error}",
+                        crate::logging::redact_session_id(session_id),
+                        agent_id.0
+                    );
+                }
+            }
+        }
+        if let Some(agent_id) = recorded_agent_id.filter(|id| !id.is_empty()) {
+            let recorded = AgentId(agent_id.to_string());
+            if !stop.contains(&recorded) {
+                stop.push(recorded);
+            }
+        }
+        for agent_id in stop {
+            log::info!(
+                "[quick-chat] stopping agent before delete session_id={} agent_id={}",
+                crate::logging::redact_session_id(session_id),
+                agent_id.0
+            );
+            let _ = self.kill(&agent_id).await;
+        }
+    }
+
     /// Stop an agent for the idle reaper: same teardown as [`Self::kill`], but
     /// announced with reason `reaped`.
     pub async fn reap_agent(&self, agent_id: &AgentId) -> Result<(), String> {
@@ -1844,18 +2383,23 @@ impl AcpManager {
             }
             entry
         };
-        let mut entry = entry?;
-        log::info!("[acp] stopping agent {agent_id} ({intent:?})");
-        // The driver teardown announces the stop to every sink (and so to the
-        // roster watch) as `session_closed` + `agent_disconnected`. The agent's
-        // approvals can never be answered, so release them and their queue
-        // slots now instead of waiting for that announcement (a wedged driver
-        // may take the whole join bound to tear down).
+        // Orchestrated runs whose parent agent is this one stop with it in
+        // the driver teardown (`settle_orphaned_runs`), which every exit runs.
+        //
+        // The agent's prompts can never be answered, so release them and
+        // their queue slots now instead of waiting for the teardown's
+        // `agent_disconnected` (a wedged driver may take the whole join bound
+        // to tear down). This runs even when the agent already reaped itself:
+        // an orchestrated child's own disconnect reaches only its private
+        // sinks, so the kill its run's settle sends is the only release of
+        // the prompts it raised on its chat.
         for sink in &self.sinks {
             if let Some(relay) = sink.as_ws_relay() {
                 relay.release_agent_tickets(agent_id);
             }
         }
+        let mut entry = entry?;
+        log::info!("[acp] stopping agent {agent_id} ({intent:?})");
 
         // Ask the driver loop to wind down, then drop the sender so the loop
         // ends even if the Shutdown was not observed.
@@ -2088,6 +2632,7 @@ impl AcpManager {
                 running_subagents: 0,
                 reopens_in_flight: 0,
                 unprompted_sessions: 0,
+                running_background_commands: 0,
                 last_active_at: std::time::Instant::now(),
             }),
             probes: Mutex::new(0),
@@ -2182,6 +2727,7 @@ impl AcpManager {
                             modes: None,
                             models: None,
                             config_options: None,
+                            cwd: None,
                         }));
                     }
                     AcpCommand::OwnsSession { session_id, reply } => {
@@ -2302,6 +2848,12 @@ impl AcpManager {
                         let _ = reply.send(Ok(sessions
                             .iter()
                             .any(|(id, _, active)| *id == session_id.0 && *active)));
+                    }
+                    // The orchestrator engine's card writes answer Ok here;
+                    // the cards themselves are asserted through the engine
+                    // tests' real spawn paths.
+                    AcpCommand::UpsertSubagent { reply, .. } => {
+                        let _ = reply.send(Ok(()));
                     }
                     _ => {}
                 }
@@ -2453,6 +3005,29 @@ impl AcpManager {
             None => Ok(()),
         }
     }
+}
+
+/// Map the engine's stop outcome onto the wire type `stop_subagent` answers
+/// with.
+fn stop_outcome_to_wire(
+    outcome: crate::acp::orchestrator::StopOutcome,
+) -> crate::acp::subagents::StopSubagentOutcome {
+    match outcome {
+        crate::acp::orchestrator::StopOutcome::Sent => {
+            crate::acp::subagents::StopSubagentOutcome::Sent
+        }
+        crate::acp::orchestrator::StopOutcome::AlreadyEnded => {
+            crate::acp::subagents::StopSubagentOutcome::AlreadyEnded
+        }
+    }
+}
+
+/// Map the engine's stop error onto the wire type `stop_subagent` answers
+/// with.
+fn stop_error_from_engine(
+    error: crate::acp::orchestrator::StopError,
+) -> crate::acp::subagents::StopSubagentError {
+    crate::acp::subagents::StopSubagentError::Failed(error.to_string())
 }
 
 #[cfg(test)]

@@ -352,3 +352,34 @@ describe('ChatComposerEditor command position', () => {
     expect(caret).toBe(1)
   })
 })
+
+describe('ChatComposerEditor autoFocus', () => {
+  it('takes focus when a composer mounted read-only turns editable', async () => {
+    const button = document.createElement('button')
+    document.body.append(button)
+    button.focus()
+    const props = { value: '', onValueChange: vi.fn(), ariaLabel: 'Late composer', autoFocus: true }
+    const { rerender } = render(<ChatComposerEditor {...props} disabled />)
+    const editorEl = document.querySelector<HTMLElement>('[aria-label="Late composer"]')
+    expect(document.activeElement).toBe(button)
+
+    rerender(<ChatComposerEditor {...props} disabled={false} />)
+
+    await waitFor(() => expect(editorEl?.contains(document.activeElement)).toBe(true))
+    button.remove()
+  })
+
+  it('leaves focus in another text field when it turns editable', async () => {
+    const input = document.createElement('input')
+    document.body.append(input)
+    const props = { value: '', onValueChange: vi.fn(), ariaLabel: 'Late composer', autoFocus: true }
+    const { rerender } = render(<ChatComposerEditor {...props} disabled />)
+    input.focus()
+
+    rerender(<ChatComposerEditor {...props} disabled={false} />)
+
+    await act(async () => {})
+    expect(document.activeElement).toBe(input)
+    input.remove()
+  })
+})

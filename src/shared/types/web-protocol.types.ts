@@ -86,6 +86,9 @@ export const WS_EVENT_TYPES = [
   // Live-only, never persisted: the agent started or stopped working in the
   // session outside a prompt turn (reliable tier).
   'agent_working',
+  // Live-only, never persisted: the session's whole list of commands the agent
+  // left running, replacing the previous one (reliable tier).
+  'background_commands',
   // Top-level frame `{ type: 'gap', sid }` (no `seq`): LOSSY events of `sid`
   // were dropped for this connection because it could not keep up. The client
   // installs an atomic snapshot of the session.
@@ -129,6 +132,9 @@ export const WS_REQUEST_TYPES = [
   'set_model',
   'respond_permission',
   'answer_question',
+  // Chat approval of an MCP install. The payload may carry secret field
+  // values, so the host does not ledger it.
+  'answer_mcp_install',
   // Stop agent browsing for a session (desktop parity with the
   // `browser_stop` Tauri command); only an authenticated client of the
   // session may send it.
@@ -143,6 +149,7 @@ export const WS_REQUEST_TYPES = [
   'promote_session',
   'list_sessions',
   'register_discovered_session',
+  'import_agent_session',
   'spawn_agent',
   'kill_agent',
   'list_agents',
@@ -164,6 +171,8 @@ export const WS_REQUEST_TYPES = [
   // errors reject. Publishes a `chat_history` watch delta on a real delete;
   // live-only mode → `unsupported`.
   'delete_session',
+  // Quick chat local rename. Sets TitleSource::LocalAlias. Quick chats only.
+  'rename_session',
   'open_persisted_session',
   'get_session_payload',
   'recover_session_snapshot',
@@ -266,6 +275,12 @@ export const WS_REQUEST_TYPES = [
   // persists on file-backed hosts, publishes the project state to every
   // `projects` watcher).
   'set_default_project',
+  // Orchestrated sub-agents (acp-subagent-orchestrator): `get` reads the
+  // settings view `{ enabled, maxRunning, maxDepth, agents: [{ agentId,
+  // name, allowed, model, description }] }`; `set` writes a partial of it (an omitted field keeps
+  // its value) and answers the new view. One host engine serves every chat.
+  'subagent_settings_get',
+  'subagent_settings_set',
   // Claude Accounts (ADR-0004): list `{}` → `ClaudeAccountsSnapshot`; choose
   // the Default `{ accountId }` → `{}` or a Project Account `{ projectId,
   // accountId | null, expectedAccountId? }` → `{ applied }`, where
@@ -276,15 +291,23 @@ export const WS_REQUEST_TYPES = [
   'list_claude_usage',
   'set_default_claude_account',
   'set_project_claude_account',
+  // `{ projectId, sessionId, accountId | null, expectedAccountId? }` →
+  // `{ applied }`: the chat's own Account; `null` follows the Project again.
+  // `expectedAccountId` compares with the Account the chat resolves to now.
+  'set_chat_claude_account',
   // `{ enabled }` → `{}`: host-wide automatic switching at a usage limit.
   'set_claude_auto_switch',
+  // `{ sessionId, at }` → `{}`: the host continues the chat at `at` (epoch
+  // ms) after its Claude limit resets; `at: null` cancels.
+  'set_claude_resume',
   // `{ name }` → the new signed-out `ClaudeAccount`.
   'add_claude_account',
   // `{ accountId, name }` → `{}`.
   'rename_claude_account',
-  // `{ accountId }` → `{ movedProjectIds }`, the Projects that moved to the
-  // Default Account; `[]` when the Account was already gone. The built-in
-  // Account is refused.
+  // `{ accountId }` → `RemovedClaudeAccount` (`{ movedProjectIds,
+  // movedChatIds }`): the Projects that moved to the Default Account and the
+  // chats that had the Account as their own; empty when the Account was
+  // already gone. The built-in Account is refused.
   'remove_claude_account',
   // Link sign-in: `start` `{ accountId }` → `{ url }` (the Claude sign-in
   // link; replaces a running sign-in of the Account). `finish` `{ accountId,
@@ -295,6 +318,36 @@ export const WS_REQUEST_TYPES = [
   'start_claude_link_login',
   'finish_claude_link_login',
   'cancel_claude_login',
+  // Codex Accounts. ChatGPT logins only. `list` → `CodexAccountsSnapshot`.
+  // Choose the Default `{ accountId }` → `{}` or a Project `{ projectId,
+  // accountId | null, expectedAccountId? }` → `{ applied }`.
+  'list_codex_accounts',
+  // `{ force? }` → `{ usage: CodexAccountUsage[] }`. Cached 5 min on the host.
+  // A forced read still reuses one younger than 60 s.
+  'list_codex_usage',
+  'set_default_codex_account',
+  'set_project_codex_account',
+  // `{ projectId, sessionId, accountId | null, expectedAccountId? }` →
+  // `{ applied }`: the chat's own Account; `null` follows the Project again.
+  'set_chat_codex_account',
+  // `{ enabled }` → `{}`. A chat at its Account's limit continues on the
+  // signed-in Account with the most room.
+  'set_codex_auto_switch',
+  // `{ sessionId, at }` → `{}`: the host continues the chat at `at` (epoch
+  // ms) after its Codex limit resets; `at: null` cancels.
+  'set_codex_resume',
+  // `{ name }` → the new signed-out account.
+  'add_codex_account',
+  // `{ accountId, name }` → `{}`.
+  'rename_codex_account',
+  // `{ accountId }` → `{ movedProjectIds }`. Runs `codex logout` for that home
+  // first. The built-in Account is refused. An Account already gone answers
+  // `{ movedProjectIds: [] }`.
+  'remove_codex_account',
+  // `{ accountId, config }` → the spawn outcome of an agent whose home is that
+  // Account. The client then calls `authenticate_agent` with `chat-gpt` or
+  // `chat-gpt-device-code`. The config env is not stored in the ledger.
+  'start_codex_account_login',
   // The canvas gateway's renderer leg (spine AD-21, AD-29). `canvas_mount`
   // / `canvas_unmount` `{ projectId, mountSeq }` tell the host this connection
   // holds (or no longer holds) a project's canvas; the host then forwards
@@ -341,6 +394,7 @@ export const WS_COMMAND_CLASSES: Readonly<
   set_model: ['idempotent', null],
   respond_permission: ['command', 'payload'],
   answer_question: ['command', 'payload'],
+  answer_mcp_install: ['command', 'never'],
   browser_stop: ['idempotent', null],
   create_session: ['create', 'entity'],
   load_session: ['command', 'payload'],
@@ -350,18 +404,32 @@ export const WS_COMMAND_CLASSES: Readonly<
   promote_session: ['command', 'payload'],
   list_sessions: ['read', null],
   register_discovered_session: ['command', 'payload'],
+  import_agent_session: ['command', 'payload'],
   spawn_agent: ['create', 'entity'],
   list_claude_accounts: ['read', null],
   list_claude_usage: ['read', null],
   set_default_claude_account: ['idempotent', null],
   set_project_claude_account: ['idempotent', null],
+  set_chat_claude_account: ['idempotent', null],
   set_claude_auto_switch: ['idempotent', null],
+  set_claude_resume: ['idempotent', null],
   add_claude_account: ['command', 'payload'],
   rename_claude_account: ['idempotent', null],
   remove_claude_account: ['idempotent', null],
   start_claude_link_login: ['idempotent', null],
   finish_claude_link_login: ['command', 'receipt-only'],
   cancel_claude_login: ['idempotent', null],
+  list_codex_accounts: ['read', null],
+  list_codex_usage: ['read', null],
+  set_default_codex_account: ['idempotent', null],
+  set_project_codex_account: ['idempotent', null],
+  set_chat_codex_account: ['idempotent', null],
+  set_codex_auto_switch: ['idempotent', null],
+  set_codex_resume: ['idempotent', null],
+  add_codex_account: ['command', 'payload'],
+  rename_codex_account: ['idempotent', null],
+  remove_codex_account: ['idempotent', null],
+  start_codex_account_login: ['command', 'payload'],
   kill_agent: ['idempotent', null],
   list_agents: ['read', null],
   authenticate: ['read', null],
@@ -373,6 +441,7 @@ export const WS_COMMAND_CLASSES: Readonly<
   ping: ['read', null],
   list_persisted_sessions: ['read', null],
   delete_session: ['idempotent', null],
+  rename_session: ['idempotent', null],
   open_persisted_session: ['read', null],
   get_session_payload: ['read', null],
   recover_session_snapshot: ['read', null],
@@ -398,6 +467,8 @@ export const WS_COMMAND_CLASSES: Readonly<
   update_project: ['idempotent', null],
   remove_project: ['idempotent', null],
   set_default_project: ['idempotent', null],
+  subagent_settings_get: ['read', null],
+  subagent_settings_set: ['idempotent', null],
   record_agent_switch: ['command', 'payload'],
   mark_chat_read: ['idempotent', null],
   watch: ['read', null],
@@ -495,6 +566,35 @@ export interface WsAgentSummary {
    * the `agent_working` event reports live). Older servers omit it.
    */
   workingSessions?: string[]
+  /**
+   * The commands the agent left running, by owned session (the lists the
+   * `background_commands` event reports live), as of `revision`. A session
+   * left out lists none. Older servers omit it.
+   */
+  backgroundCommands?: { revision: number; sessions: Record<string, BackgroundCommand[]> }
+}
+
+/**
+ * A command the agent left running after its tool call reported done or its
+ * prompt turn ended. The host derives it from ACP updates; an ended command
+ * stays listed until the next prompt of its session starts.
+ */
+export type BackgroundCommand = {
+  toolCallId: string
+  /** The command's description, else its tool call title. */
+  title: string
+  command: string | null
+  /** Wall clock, when the tool call first appeared. */
+  startedAtMs: number
+} & ({ state: 'running' } | { state: 'ended'; endedAtMs: number })
+
+/**
+ * One session's commands as of `revision`. Every change on the agent takes
+ * the next revision, so of two lists from one agent the higher one is newer.
+ */
+export interface BackgroundCommandList {
+  revision: number
+  commands: BackgroundCommand[]
 }
 
 // ============================================================================
@@ -688,6 +788,9 @@ export const WS_ERROR_CODES = {
   // Project or as the default (nothing changed), or starting a managed Claude
   // agent on it. The message names the Account and where to sign in.
   CLAUDE_ACCOUNT_SIGNED_OUT: 'claude_account_signed_out',
+  // The Codex Account a managed Codex spawn needs is not signed in. The
+  // message names the Account or the project `CODEX_HOME`.
+  CODEX_ACCOUNT_SIGNED_OUT: 'codex_account_signed_out',
   // `finish_claude_link_login` got a code the Claude CLI calls incomplete.
   // The sign-in still waits for the whole code.
   CLAUDE_LOGIN_CODE_INCOMPLETE: 'claude_login_code_incomplete',
@@ -769,6 +872,7 @@ export const WS_EVENT_TIERS: Readonly<Record<WsEventType, ReliabilityTier>> = {
   // Durable host record that owns a seq — reliable so no seq goes missing.
   local_title_generated: WS_RELAY_TIERS.RELIABLE,
   agent_working: WS_RELAY_TIERS.RELIABLE,
+  background_commands: WS_RELAY_TIERS.RELIABLE,
   // Frames about delivery itself: a gap must reach the client in order, and a
   // heartbeat is never queued, so neither may be a lossy event.
   gap: WS_RELAY_TIERS.RELIABLE,
@@ -923,6 +1027,22 @@ export interface PersistedSessionSummary {
    */
   modelId?: string
   modelName?: string
+  /**
+   * Switch-chain edge (CAP-8): the previous session id this session
+   * continues from, stamped by the host when an in-chat agent switch is
+   * durably recorded. Additive: absent on pre-feature sessions and on the
+   * chain's first session. The authoritative switch history stays in the
+   * durable `agent_switch` records; this is an index convenience so a
+   * client can fold the chain into one history row without walking logs.
+   */
+  continuedFrom?: string
+  /**
+   * Session id of the chat whose agent started this one with the host's
+   * `start_chat` tool. Absent on chats a person started and on older hosts.
+   */
+  startedBy?: string
+  /** `quick` for a chat with no project. Absent on older hosts and on project chats. */
+  kind?: 'quick'
 }
 
 export interface UserPromptEvent {

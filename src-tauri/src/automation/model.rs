@@ -3,6 +3,7 @@
 //! `src/shared/types/automation.types.ts` mirrors every type here; the shared
 //! fixture `src/shared/types/__fixtures__/automation.json` pins both sides.
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -158,6 +159,9 @@ pub struct Automation {
     pub enabled: bool,
     pub trigger: Trigger,
     pub graph: Graph,
+    /// Canvas node positions. Not part of the revision: saving one neither
+    /// bumps `revision` nor touches the approval.
+    pub layout: Layout,
     pub isolation: Isolation,
     pub next_run_at: Option<i64>,
     pub consecutive_errors: u32,
@@ -180,6 +184,7 @@ impl Automation {
             enabled: true,
             trigger: Trigger::Manual,
             graph: Graph::default(),
+            layout: Layout::default(),
             isolation: Isolation::SharedInRoot,
             next_run_at: None,
             consecutive_errors: 0,
@@ -201,6 +206,35 @@ impl Automation {
             Trigger::Manual => None,
             Trigger::Schedule { schedule } => Some(schedule),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct NodePosition {
+    pub x: f64,
+    pub y: f64,
+}
+
+/// Keys are node ids plus `"trigger"`; stored keys name only those that exist.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(transparent)]
+pub struct Layout(pub BTreeMap<String, NodePosition>);
+
+impl Layout {
+    /// Drops every key that is neither `"trigger"` nor a node of `graph`.
+    pub fn retain_nodes(&mut self, graph: &Graph) {
+        self.0.retain(|key, _| {
+            key == TRIGGER_SOURCE || graph.nodes.iter().any(|n| n.id.as_str() == key)
+        });
+    }
+
+    /// The first key whose position is NaN or infinite, which JSON cannot
+    /// carry and a canvas cannot draw.
+    pub fn non_finite_key(&self) -> Option<&str> {
+        self.0
+            .iter()
+            .find(|(_, p)| !p.x.is_finite() || !p.y.is_finite())
+            .map(|(key, _)| key.as_str())
     }
 }
 
@@ -275,6 +309,10 @@ pub enum NodeSpec {
         max_attempts: u8,
         #[serde(default)]
         tools: Vec<AgentTool>,
+        /// The MCP server ids a session that lists `other` starts with:
+        /// `None` for every enabled server, `[]` for none.
+        #[serde(default)]
+        mcp_servers: Option<Vec<String>>,
     },
     Transform {
         fields: Vec<NamedTemplate>,
@@ -302,6 +340,12 @@ pub enum NodeSpec {
     /// Parks the run durably for `duration_ms`, then continues.
     Wait {
         duration_ms: u64,
+    },
+    /// Parks the run until a person approves it (`out`). A rejection, or
+    /// `timeout_ms` passing first, fails the step (`error`).
+    Approval {
+        message: Template,
+        timeout_ms: u64,
     },
     /// Calls `tool` on the project's MCP server `server_id` (the registry
     /// entry id) with no LLM. The server's credentials come from its stored
@@ -364,6 +408,8 @@ pub const AGENT_MAX_TIMEOUT_MS: u64 = 900_000;
 pub const AGENT_MAX_ATTEMPTS: u8 = 3;
 pub const FOR_EACH_MAX_ITERATIONS: u32 = 100;
 pub const WAIT_MAX_MS: u64 = 7 * 24 * 60 * 60 * 1000;
+pub const APPROVAL_MIN_TIMEOUT_MS: u64 = 60_000;
+pub const APPROVAL_MAX_TIMEOUT_MS: u64 = WAIT_MAX_MS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -390,6 +436,7 @@ impl NodeSpec {
             NodeSpec::ForEach { .. } => NodeKind::ForEach,
             NodeSpec::Merge { .. } => NodeKind::Merge,
             NodeSpec::Wait { .. } => NodeKind::Wait,
+            NodeSpec::Approval { .. } => NodeKind::Approval,
             NodeSpec::McpTool { .. } => NodeKind::McpTool,
         }
     }
@@ -420,7 +467,9 @@ impl NodeSpec {
                 out.extend(right.iter().map(|r| ("right".to_string(), r)));
                 out
             }
-            NodeSpec::Fail { message } => vec![("message".to_string(), message)],
+            NodeSpec::Fail { message } | NodeSpec::Approval { message, .. } => {
+                vec![("message".to_string(), message)]
+            }
             NodeSpec::ForEach { items, .. } => vec![("items".to_string(), items)],
             NodeSpec::Merge { .. } | NodeSpec::Wait { .. } => Vec::new(),
             NodeSpec::McpTool { arguments, .. } => arguments
@@ -441,6 +490,7 @@ pub enum NodeKind {
     ForEach,
     Merge,
     Wait,
+    Approval,
     McpTool,
 }
 
@@ -578,6 +628,7 @@ pub enum IssueCode {
     InvalidOutputSchema,
     AgentTimeoutOutOfRange,
     AgentMaxAttemptsOutOfRange,
+    McpServersWithoutOther,
     MissingConditionOperand,
     InvalidSchedule,
     UntrustedAgentOutboundTool,
@@ -588,6 +639,7 @@ pub enum IssueCode {
     NestedForEach,
     LoopItemOutsideBody,
     MergeNeedsTwoInputs,
+    ApprovalTimeoutOutOfRange,
     /// Added by the service, which owns the agent registry.
     UnknownAgent,
     McpTimeoutOutOfRange,
@@ -660,6 +712,18 @@ pub struct Run {
     pub summary: Option<String>,
     pub conversation_id: Option<String>,
     pub worktree_id: Option<String>,
+    /// Read from the run's `waiting` step, never stored on the run: a
+    /// parked run's status stays `running`.
+    #[serde(default)]
+    pub parked: Option<Parked>,
+}
+
+/// The step a `running` run is parked on and when its park ends (epoch ms).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct Parked {
+    pub node_id: NodeId,
+    pub iteration: Option<u32>,
+    pub until: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -669,7 +733,7 @@ pub enum StepStatus {
     Succeeded,
     Failed,
     Skipped,
-    /// A `wait` step whose run is parked until `wait_until`.
+    /// A `wait` or `approval` step whose run is parked until `wait_until`.
     Waiting,
 }
 
@@ -691,7 +755,7 @@ pub struct Step {
     pub error: Option<String>,
     pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
-    /// When a `waiting` step's run resumes.
+    /// When a `waiting` step's park ends.
     #[serde(default)]
     pub wait_until: Option<i64>,
 }
@@ -716,6 +780,17 @@ pub struct AgentPolicy {
     pub timeout_ms: u64,
     /// Sorted and deduplicated; empty means no tools.
     pub tools: Vec<AgentTool>,
+    /// The enabled MCP servers its session starts with: the node's
+    /// `mcp_servers` in that order, or every one in Settings order when it
+    /// is unset; empty unless `tools` has `other`. The agent skips a server
+    /// whose transport it does not support.
+    pub mcp_servers: Vec<AgentMcpServer>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentMcpServer {
+    pub server_id: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

@@ -56,8 +56,7 @@ vi.mock('@/lib/acp-mcp-persistence', async (orig) => {
   return {
     ...actual,
     loadMcpServers: vi.fn(async () => []),
-    saveMcpServers: vi.fn(async () => {}),
-    syncMcpRegistryToProjectBestEffort: vi.fn(async () => {})
+    saveMcpServers: vi.fn(async () => {})
   }
 })
 
@@ -1441,6 +1440,7 @@ describe('acp-store', () => {
     expect(invoke).toHaveBeenNthCalledWith(1, 'acp_spawn_agent', {
       config: { name: 'X', command: 'x', args: [], env: {} },
       projectId: null,
+      sessionId: null,
       commandId: expect.any(String)
     })
     expect(invoke).toHaveBeenNthCalledWith(2, 'acp_kill_agent', { agentId: 'agent-test' })

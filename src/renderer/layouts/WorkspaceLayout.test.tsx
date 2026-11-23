@@ -141,6 +141,16 @@ vi.mock('@/stores/terminal-store', () => ({
   cleanupProjectTerminals: vi.fn()
 }))
 
+const { onboardingGateRef } = vi.hoisted(() => ({
+  onboardingGateRef: { current: 'skip' as 'pending' | 'show' | 'skip' }
+}))
+vi.mock('@/components/onboarding/onboarding-gate', () => ({
+  useOnboardingGate: () => ({ state: onboardingGateRef.current, close: () => {} })
+}))
+vi.mock('@/components/onboarding/Onboarding', () => ({
+  Onboarding: () => <div>Welcome to Troupe</div>
+}))
+
 vi.mock('@/stores/app-settings-store', () => ({
   useAppSettingsStore: vi.fn((selector?: (state: Record<string, unknown>) => unknown) => {
     const state = {
@@ -203,10 +213,10 @@ vi.mock('@/stores/keyboard-shortcuts-store', async () => {
     zoomIn: { customKey: 'ctrl+=', defaultKey: 'ctrl+=' },
     zoomOut: { customKey: 'ctrl+-', defaultKey: 'ctrl+-' },
     zoomReset: { customKey: 'ctrl+0', defaultKey: 'ctrl+0' },
-    sidebarToggle: { customKey: 'ctrl+shift+b', defaultKey: 'ctrl+shift+b' },
+    sidebarToggle: { customKey: 'ctrl+b', defaultKey: 'ctrl+b' },
     closeTab: { customKey: 'ctrl+w', defaultKey: 'ctrl+w' },
     saveFile: { customKey: 'ctrl+s', defaultKey: 'ctrl+s' },
-    toggleFileExplorer: { customKey: 'ctrl+b', defaultKey: 'ctrl+b' },
+    toggleFileExplorer: { customKey: 'ctrl+alt+b', defaultKey: 'ctrl+alt+b' },
     newBrowserTab: { customKey: 'ctrl+shift+n', defaultKey: 'ctrl+shift+n' },
     colorThemePicker: { customKey: 'ctrl+alt+t', defaultKey: 'ctrl+alt+t' },
     settings: { customKey: 'ctrl+,', defaultKey: 'ctrl+,' }
@@ -460,6 +470,7 @@ beforeEach(() => {
   mockUseActiveTerminal.mockReturnValue(null)
   mockUseActiveTerminalId.mockReturnValue('')
   mockUpdatePanelVisibility.mockReset()
+  mockSaveTerminalLayout.mockClear()
   appSettingsRef.current = { shellLayout: undefined }
   resetShellLayoutStoreForTests()
   useShellLayoutStore.setState({ status: 'ready', sidePanelVisible: true, railExpanded: true })
@@ -639,6 +650,26 @@ describe('WorkspaceLayout - Empty States', () => {
       mockUseProjects.mockReturnValue([])
       mockUseActiveProject.mockReturnValue(null)
       mockUseActiveProjectId.mockReturnValue('')
+    })
+
+    afterEach(() => {
+      onboardingGateRef.current = 'skip'
+    })
+
+    it('shows first run instead of the shell when the gate shows it', () => {
+      onboardingGateRef.current = 'show'
+      renderWithRouter()
+
+      expect(screen.getByText('Welcome to Troupe')).toBeInTheDocument()
+      expect(screen.queryByText('No Projects Yet')).not.toBeInTheDocument()
+    })
+
+    it('shows the loading screen while the gate waits for its facts', () => {
+      onboardingGateRef.current = 'pending'
+      renderWithRouter()
+
+      expect(screen.getByText('Loading...')).toBeInTheDocument()
+      expect(screen.queryByText('No Projects Yet')).not.toBeInTheDocument()
     })
 
     it('should render no projects empty state when projects array is empty', () => {
@@ -907,10 +938,10 @@ describe('WorkspaceLayout - Empty States', () => {
       mockUseActiveTerminalId.mockReturnValue('')
     })
 
-    it.skip('keeps Ctrl+B toggling file explorer and persists globally', () => {
+    it.skip('keeps Ctrl+Alt+B toggling file explorer and persists globally', () => {
       renderWithRouter()
 
-      fireEvent.keyDown(window, { key: 'b', ctrlKey: true })
+      fireEvent.keyDown(window, { key: 'b', ctrlKey: true, altKey: true })
 
       expect(mockUpdatePanelVisibility).toHaveBeenCalledWith('fileExplorerVisible', false)
     })
@@ -918,7 +949,7 @@ describe('WorkspaceLayout - Empty States', () => {
     it.skip('toggles sidebar with configured sidebar shortcut and persists globally', () => {
       renderWithRouter()
 
-      fireEvent.keyDown(window, { key: 'B', ctrlKey: true, shiftKey: true })
+      fireEvent.keyDown(window, { key: 'b', ctrlKey: true })
 
       expect(mockUpdatePanelVisibility).toHaveBeenCalledWith('sidebarVisible', false)
     })
@@ -930,8 +961,8 @@ describe('WorkspaceLayout - Empty States', () => {
       document.body.appendChild(input)
       input.focus()
 
+      fireEvent.keyDown(input, { key: 'b', ctrlKey: true, altKey: true })
       fireEvent.keyDown(input, { key: 'b', ctrlKey: true })
-      fireEvent.keyDown(input, { key: 'B', ctrlKey: true, shiftKey: true })
 
       expect(useShellLayoutStore.getState().sidePanelVisible).toBe(true)
       expect(useShellLayoutStore.getState().railExpanded).toBe(true)
@@ -1277,9 +1308,13 @@ describe('WorkspaceLayout - Empty States', () => {
   })
 })
 
-// Desktop always renders the revamped shell (ShellFrame): Rail | Side panel |
-// main. A stored legacy `shellLayout` value is ignored.
+// Desktop always renders the revamped shell (ShellFrame): Rail | main |
+// Side panel | tool strip. A stored legacy `shellLayout` value is ignored.
 describe('WorkspaceLayout - desktop shell', () => {
+  beforeEach(() => {
+    useShellLayoutStore.setState({ sidePanelVisible: true })
+  })
+
   function precedes(a: Element, b: Element): boolean {
     return Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
   }
@@ -1288,13 +1323,16 @@ describe('WorkspaceLayout - desktop shell', () => {
     const rail = screen.getByRole('navigation', { name: 'Projects' })
     const sidePanel = screen.getByTestId('side-panel-column')
     const main = document.querySelector('main') as Element
-    expect(precedes(rail, sidePanel)).toBe(true)
-    expect(precedes(sidePanel, main)).toBe(true)
+    const strip = screen.getByRole('toolbar', { name: 'Tools' })
+    expect(precedes(rail, main)).toBe(true)
+    expect(precedes(main, sidePanel)).toBe(true)
+    expect(precedes(sidePanel, strip)).toBe(true)
+    expect(document.querySelector('[data-status-bar]')).toBeNull()
     expect(screen.queryByRole('navigation', { name: 'Global actions' })).not.toBeInTheDocument()
     expect(document.querySelector('aside.w-64')).toBeNull()
   }
 
-  it('renders ShellFrame on desktop: Rail, Side panel and main in order', () => {
+  it('renders ShellFrame on desktop: Rail, main, Side panel and tool strip in order', () => {
     mockUseActiveProject.mockReturnValue(createProject('p1', '/workspace/p1', 'blue'))
 
     renderWithRouter()

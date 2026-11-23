@@ -1,6 +1,7 @@
 import { PersistenceKeys } from '@shared/types/persistence.types'
 import { type Dispatch, type SetStateAction, useEffect, useRef, useState } from 'react'
 import { persistenceApi } from '@/lib/api'
+import { isLaunchPlaceholderSessionId } from '@/stores/acp-store/live-turn'
 
 /** Drafts handed to a chat before its composer mounts, by draft key (see {@link seedComposerDraft}). */
 const draftSeeds = new Map<string, string>()
@@ -32,8 +33,11 @@ export function useComposerDraft({
   projectId,
   sessionId,
   seedNonce
-}: UseComposerDraftArgs): [string, Dispatch<SetStateAction<string>>] {
+}: UseComposerDraftArgs): [string, Dispatch<SetStateAction<string>>, boolean] {
   const [value, setValue] = useState('')
+  // `false` while the persisted draft read is pending: text set then would be
+  // replaced by the older stored draft.
+  const [hydrated, setHydrated] = useState(false)
   // Persist the in-progress composer draft per session (project + session id)
   // so an unsent message survives a web reload. useState stays the source of
   // truth; the persisted copy is a recovery fallback only — hydrate on mount,
@@ -48,17 +52,26 @@ export function useComposerDraft({
   // A seeded draft counts as hydrated only once it renders: until then `value`
   // is the previous text, and writing that would delete the persisted seed.
   const pendingSeedRef = useRef<string | null>(null)
+  // The latest text (read by effects) and the key the hydration effect last
+  // ran for, for the placeholder → session carry-over below.
+  const draftValueRef = useRef(value)
+  draftValueRef.current = value
+  const lastKeyRef = useRef<{ key: string; sessionId: string | null | undefined } | null>(null)
   useEffect(() => {
     pendingSeedRef.current = null
+    const previous = lastKeyRef.current
+    lastKeyRef.current = { key: draftKey, sessionId }
     if (seedNonce !== undefined) {
       // Editing/seeding a message — don't restore a stale draft over the seed.
       hydratedRef.current = true
+      setHydrated(true)
       return
     }
     if (!canPersistDraft) {
       // projectId/sessionId missing — can't key a draft; treat as hydrated so
       // the write effect's hydration gate doesn't block (it also guards).
       hydratedRef.current = true
+      setHydrated(true)
       return
     }
     const seeded = draftSeeds.get(draftKey)
@@ -67,10 +80,38 @@ export function useComposerDraft({
       hydratedRef.current = false
       pendingSeedRef.current = seeded
       setValue(seeded)
+      setHydrated(true)
+      return
+    }
+    // The launch placeholder on screen became this session in place (#1941):
+    // the text typed while it started is the new session's draft. Keep it and
+    // store it under the session's key, so a reload or a remount finds it; a
+    // read of the new key would find nothing.
+    const carried = draftValueRef.current
+    if (
+      carried &&
+      previous &&
+      previous.key !== draftKey &&
+      previous.sessionId != null &&
+      isLaunchPlaceholderSessionId(String(previous.sessionId))
+    ) {
+      hydratedRef.current = true
+      setHydrated(true)
+      // Drop the placeholder's copy only once the session's copy is stored: a
+      // failed write resolves (it does not reject), and deleting anyway would
+      // leave a reload with neither.
+      const placeholderKey = previous.key
+      void persistenceApi
+        .write(draftKey, carried)
+        .then((result) => {
+          if (result.success) return persistenceApi.delete(placeholderKey)
+        })
+        .catch(() => {})
       return
     }
     let cancelled = false
     hydratedRef.current = false
+    setHydrated(false)
     void persistenceApi
       .read<string>(draftKey)
       .then((result) => {
@@ -83,12 +124,14 @@ export function useComposerDraft({
         // Storage unavailable/corrupt — degrade to empty (no UI crash).
       })
       .finally(() => {
-        if (!cancelled) hydratedRef.current = true
+        if (cancelled) return
+        hydratedRef.current = true
+        setHydrated(true)
       })
     return () => {
       cancelled = true
     }
-  }, [draftKey, seedNonce, canPersistDraft])
+  }, [draftKey, seedNonce, canPersistDraft, sessionId])
 
   // Debounced draft write on change — only after hydration so the just-loaded
   // draft isn't clobbered with '' before the read resolves. Empty value
@@ -116,8 +159,6 @@ export function useComposerDraft({
 
   // Flush the latest draft on unmount only (AskUserQuestion replaces the
   // composer). Keep a ref so we do not defeat the debounce on every keystroke.
-  const draftValueRef = useRef(value)
-  draftValueRef.current = value
   useEffect(() => {
     return () => {
       if (seedNonce !== undefined) return
@@ -128,5 +169,5 @@ export function useComposerDraft({
     }
   }, [draftKey, seedNonce, canPersistDraft])
 
-  return [value, setValue]
+  return [value, setValue, hydrated]
 }

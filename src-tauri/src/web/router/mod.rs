@@ -36,10 +36,10 @@ use crate::web::install_api;
 use crate::web::log_api;
 use crate::web::mcp_oauth_api;
 use crate::web::mcp_probe_api;
-use crate::web::mcp_servers_api;
 use crate::web::openapi;
 use crate::web::host_allow::{self, HostAllowList};
 use crate::web::origin::{self, OriginPolicy};
+use crate::web::link_preview_api;
 use crate::web::project_icon_api;
 use crate::web::project_registry::ProjectRegistry;
 use crate::web::projects_api;
@@ -217,10 +217,6 @@ pub fn router(
             "/projects/{projectId}",
             put(projects_api::update_project).delete(projects_api::remove_project),
         )
-        .route(
-            "/mcp-servers",
-            get(mcp_servers_api::get).put(mcp_servers_api::put),
-        )
         // On-demand MCP client probe (web parity): runs on the termul-server
         // host where stdio commands execute. Mirrors the `acp_probe_mcp_server`
         // Tauri command; returns the same `IpcBody<ProbeResult>` shape.
@@ -237,6 +233,9 @@ pub fn router(
             "/mcp-servers/oauth/disconnect",
             post(mcp_oauth_api::oauth_disconnect),
         )
+        // Paste-back: finish a flow from the redirect address a browser on
+        // another machine landed on.
+        .route("/mcp-servers/oauth/complete", post(mcp_oauth_api::oauth_complete))
         // The OAuth callback redirect target (GET — the AS redirects here).
         .route("/oauth/callback", get(mcp_oauth_api::oauth_callback))
         // Project-creation fs/git/shell routes (Story: Web/remote project
@@ -304,6 +303,10 @@ pub fn router(
         // `project_icon_resolve` command — same shared resolver, read-route
         // posture (boundary check, no write guard).
         .route("/project/icon", post(project_icon_api::resolve_icon))
+        // Link preview (favicon + title) for chat links. Mirrors the desktop
+        // `link_preview_resolve` command; the resolver only reaches public
+        // addresses.
+        .route("/link/preview", post(link_preview_api::resolve_preview))
         // Search web routes (CAP-2: Web & Mobile 1:1 Parity). Each mirrors a
         // desktop `#[tauri::command] search_*` handler; see `web/search_api.rs`.
         .route("/search/rg-info", get(search_api::rg_info))
@@ -519,10 +522,6 @@ pub fn router_with_static(
         .route("/terminal/ws", get(terminal_ws_upgrade))
         .route("/projects", get(projects_api::list))
         .route("/projects/default", post(projects_api::set_default_project))
-        .route(
-            "/mcp-servers",
-            get(mcp_servers_api::get).put(mcp_servers_api::put),
-        )
         .route("/mcp-servers/probe", post(mcp_probe_api::probe))
         .route("/fs/mkdir", post(fs_api::mkdir))
         .route("/fs/write", post(fs_api::write))
@@ -579,6 +578,7 @@ pub fn router_with_static(
         .route("/github/edit-item", post(github_api::edit_item))
         .route("/github/item-state", post(github_api::set_item_state))
         .route("/project/icon", post(project_icon_api::resolve_icon))
+        .route("/link/preview", post(link_preview_api::resolve_preview))
         .route("/search/rg-info", get(search_api::rg_info))
         .route("/search/content", post(search_api::content))
         .route("/search/file-names", get(search_api::file_names))

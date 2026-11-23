@@ -1,6 +1,6 @@
 # In-Chat Agent Switch
 
-Termul lets you move a running Agent chat to a different agent mid-conversation,
+Troupe lets you move a running Agent chat to a different agent mid-conversation,
 with a summarized context handoff, without leaving the chat tab.
 
 You pick the agent once at launch today. When you outgrow that choice — the
@@ -27,6 +27,13 @@ An armed switch does nothing until you send. Cancel it (the ✕ on the pill) to
 stay with the current agent; closing the picker without picking cancels
 nothing.
 
+An empty chat (no messages, nothing queued, no turn) has nothing to hand off,
+so nothing is armed. A model pick on another agent's tab replaces it at once
+(`replaceEmptyChat` in `new-chat/open-new-chat.ts`): a new empty chat on that
+agent, with the picked model, takes the same tab (or the quick chat view), and
+the old empty chat is deleted. No switch record, separator, or handoff turn is
+written. The picker hint reads "Starts this chat on *agent*".
+
 ## What happens on the wire
 
 The new agent gets a fresh session whose first prompt carries a structured
@@ -52,8 +59,12 @@ summary travels on the wire.
   the reopen is idempotent, no doubled turns or separators.) Late output
   from the old agent never lands in the new session's chat.
 - The conversation continues in the same tab (same pane, same focus).
-- The sidebar row for the chat shows the ordered agent icon sequence
-  (original → current) instead of a single icon.
+- The sidebar and history lists show ONE row for the conversation — the
+  session a switch spawns is folded into the chat it continues, not listed
+  as a separate chat. The row carries the ordered agent icon sequence
+  (original → current) instead of a single icon, and opens, reloads and
+  status signals land on the newest session in the chain. Deleting the row
+  deletes the whole conversation chain.
 
 ## Busy behavior
 
@@ -104,6 +115,18 @@ the agent the conversation ended with:
 - Resolution follows the **last** switch record's target session and agent,
   walking a multi-switch chain (A → B → C reopens on C) so the whole chain's
   transcript renders above the separator.
+- The one-row history fold rides on `continuedFrom`, a durable edge the host
+  stamps on the new session's metadata once the marker is flushed. The
+  durable `agent_switch` record stays authoritative — the edge is the O(1)
+  lookup that avoids scanning every transcript. Sessions switched before the
+  edge existed are backfilled by a one-time startup migration that reads
+  their markers, and the renderer heals the edge whenever it installs a
+  payload that carries one. Opening any chain member from history — the
+  sidebar, cards, mention picker, or a project-switch restore — lands on
+  the newest session via the fold or the marker redirect; a live tab
+  already pinned to a pre-switch member id can still reattach that member
+  directly. Opening the newest session directly splices the earlier
+  transcript back in via the same edge.
 - The pre-switch transcript remains visible above the separator; new prompts
   go to the current agent.
 - Unswitched chats reopen exactly as before — no switch machinery runs.
@@ -113,6 +136,6 @@ the agent the conversation ended with:
 ## Both surfaces
 
 The flow works identically on the Tauri desktop app and the web client over
-`termul-server`: the picker, separator, and marker persistence are shared
+`troupe-server`: the picker, separator, and marker persistence are shared
 renderer + host code, and the durable record type is implemented on both the
 IPC command and the WS route side.

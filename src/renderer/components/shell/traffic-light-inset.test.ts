@@ -1,23 +1,19 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import type { TopRowPlatform } from '@/lib/top-row'
-import { getTrafficLightInset, TRAFFIC_LIGHT_CLEARANCE_PX } from './traffic-light-inset'
+import { TRAFFIC_LIGHT_CLEARANCE_PX } from './traffic-light-inset'
 
-const platform = (trafficLights: boolean): TopRowPlatform => ({
-  dragRegions: true,
-  windowControls: !trafficLights,
-  trafficLights
-})
+const TAURI_DIR = join(__dirname, '..', '..', '..', '..', 'src-tauri')
 
-describe('getTrafficLightInset', () => {
-  it('applies only with native traffic lights and the Rail collapsed', () => {
-    expect(getTrafficLightInset(platform(true), false)).not.toBeNull()
-    expect(getTrafficLightInset(platform(true), true)).toBeNull()
-    expect(getTrafficLightInset(platform(false), false)).toBeNull()
+describe('TRAFFIC_LIGHT_CLEARANCE_PX', () => {
+  it('clears the lights (x = 22..74) plus the 4px gap to the mark', () => {
+    expect(TRAFFIC_LIGHT_CLEARANCE_PX).toBe(78)
   })
 
-  it('derives the header padding from the clearance, the collapsed Rail and the shell gap', () => {
-    expect(TRAFFIC_LIGHT_CLEARANCE_PX).toBe(80)
-    // 80 - 48 (collapsed Rail) - 8 (shell gap)
-    expect(getTrafficLightInset(platform(true), false)?.panelHeaderStartPx).toBe(24)
+  it('matches the native light position in both window configs', () => {
+    for (const file of ['tauri.conf.json', 'tauri.macos.conf.json']) {
+      const config = readFileSync(join(TAURI_DIR, file), 'utf-8')
+      expect(config).toMatch(/"trafficLightPosition":\s*\{\s*"x":\s*22,/)
+    }
   })
 })

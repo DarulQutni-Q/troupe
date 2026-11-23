@@ -611,6 +611,10 @@ impl AcpInstallService {
                 "invalid agent id",
             ));
         }
+        // A legacy id installs the canonical agent. An existing legacy install
+        // stays on disk and is reused by the catalog until a canonical install
+        // exists.
+        let agent_id = crate::acp::agent_aliases::canonical_agent_id(agent_id);
         let catalog = self.catalog.list_catalog(false).await.map_err(|error| {
             InstallError::new(
                 code::INSTALL_FAILED,
@@ -633,7 +637,7 @@ impl AcpInstallService {
         self.install(agent, &catalog.host, None, None).await
     }
 
-    /// Install the pinned Claude ACP npm package into Termul's host cache.
+    /// Install the pinned Claude ACP npm package into Troupe's host cache.
     /// This path is deliberately separate from registry npx launch: package
     /// installation is explicit, version-locked, staged, and atomically
     /// activated. It never installs or modifies the external Claude CLI.
@@ -668,7 +672,7 @@ impl AcpInstallService {
             Some(crate::acp::claude_agent::ClaudeRuntimeBlock::NodeTooOld) => {
                 return Err(InstallError::new(
                     code::NOT_INSTALLABLE,
-                    "Claude Agent ACP requires Node.js 22 or newer. Upgrade Node.js and restart Termul.",
+                    "Claude Agent ACP requires Node.js 22 or newer. Upgrade Node.js and restart Troupe.",
                 ));
             }
             Some(crate::acp::claude_agent::ClaudeRuntimeBlock::NpmMissing) => {

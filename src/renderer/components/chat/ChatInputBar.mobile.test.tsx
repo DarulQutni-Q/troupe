@@ -13,7 +13,12 @@ import type { SessionConfigOption, SessionUsage } from '@/lib/acp-api'
 import type { AcpSession } from '@/stores/acp-store'
 import { useOverlayStackStore } from '@/stores/overlay-stack-store'
 import { ChatInputBar } from './ChatInputBar'
-import { getComposerValue, setComposerValue } from './composer/chat-composer-test-helpers'
+import {
+  getComposerValue,
+  pressComposerKey,
+  setComposerCaret,
+  setComposerValue
+} from './composer/chat-composer-test-helpers'
 
 // jsdom omits `document.elementFromPoint`; ProseMirror's drop handler calls it.
 if (typeof document.elementFromPoint !== 'function') {
@@ -77,7 +82,10 @@ vi.mock('@/hooks/use-mobile-web-shell', async () => {
   return { ...actual, useMobileWebShell: () => mockShell.current }
 })
 
-vi.mock('@/lib/tauri-runtime', () => ({ isTauriContext: () => false }))
+vi.mock('@/lib/tauri-runtime', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/tauri-runtime')>()),
+  isTauriContext: () => false
+}))
 
 vi.mock('sonner', () => ({
   toast: { error: mockToastError, success: vi.fn() }
@@ -411,7 +419,7 @@ function holdClosingSheetMounted(): () => void {
 
 describe('mobile composer: one-row toolbar', () => {
   it('renders exactly one row: Add to chat, model, context ring, send', () => {
-    const { container } = renderBar()
+    const { container } = renderBar({ startScreen: true })
     const row = mobileRow(container)
 
     expect(row.closest('[data-chat-composer="true"]')).not.toBeNull()
@@ -424,7 +432,8 @@ describe('mobile composer: one-row toolbar', () => {
     for (const stale of ['1', '2', 'single']) {
       expect(container.querySelector(`[data-composer-toolbar-row="${stale}"]`)).toBeNull()
     }
-    expect(container.querySelector('[data-chat-composer-context-strip]')).toBeNull()
+    // The phone keeps the composer alone, even on the start screen.
+    expect(container.querySelector('[data-chat-start-context-row]')).toBeNull()
   })
 
   it('keeps Attach and MCP out of the toolbar (they live in the sheet) and shows the effort on the pill', () => {
@@ -502,8 +511,12 @@ describe('mobile composer: one-row toolbar', () => {
   })
 
   it('shows a non-default mode icon on the pill and none for the first mode', () => {
+    // Composer V2 phone chip: agent glyph + chevron, plus the mode icon when
+    // the mode is not the first one.
     const { unmount } = renderBar()
-    expect(screen.getByRole('button', { name: PILL_NAME }).querySelectorAll('svg')).toHaveLength(1)
+    const defaultPill = screen.getByRole('button', { name: PILL_NAME })
+    expect(defaultPill.querySelectorAll('svg')).toHaveLength(2)
+    expect(defaultPill.querySelector('[data-termul-icon="ChevronDown"]')).not.toBeNull()
     unmount()
 
     renderBar({
@@ -520,7 +533,7 @@ describe('mobile composer: one-row toolbar', () => {
     const pill = screen.getByRole('button', {
       name: 'Opus 5.5. Plan mode. Switch agent. Currently Claude Code'
     })
-    expect(pill.querySelectorAll('svg')).toHaveLength(2)
+    expect(pill.querySelectorAll('svg')).toHaveLength(3)
   })
 
   it('hides the context ring when usage is missing, bootstrap-only or under 1%', () => {
@@ -557,11 +570,12 @@ describe('mobile composer: one-row toolbar', () => {
 
   it('renders no mobile row and keeps the desktop toolbar when the shell is not mobile', () => {
     mockShell.current = false
-    const { container } = renderBar()
+    const { container } = renderBar({ startScreen: true })
 
     expect(container.querySelector('[data-composer-toolbar-row="mobile"]')).toBeNull()
     expect(container.querySelector('[data-composer-toolbar-row="single"]')).not.toBeNull()
-    expect(container.querySelector('[data-chat-composer-context-strip]')).not.toBeNull()
+    // The desktop start row lives under the composer in AgentChatPanel.
+    expect(container.querySelector('[data-chat-start-context-row]')).toBeNull()
     // The desktop + opens a menu; the phone + opens a sheet.
     expect(screen.getByRole('button', { name: 'Add to chat' })).toHaveAttribute(
       'aria-haspopup',
@@ -577,6 +591,40 @@ describe('mobile composer: one-row toolbar', () => {
 function stableMarkup(html: string): string {
   return html.replace(/:r[0-9a-z]+:/g, ':id:').replace(/radix-[:\w-]+/g, 'radix-id')
 }
+
+describe('Composer V2 phone compact (Paper 2.6b)', () => {
+  it('is one popover card: no tray, no foot row, 36px buttons', () => {
+    const { container } = renderBar()
+    const card = container.querySelector('[data-chat-composer="true"]') as HTMLElement
+    expect(card).toHaveClass('rounded-[20px]', 'bg-popover', 'shadow-control')
+    expect(card.querySelector('[data-composer-raised]')).toBeNull()
+    expect(container.querySelector('[data-composer-foot-row]')).toBeNull()
+    expect(container.firstElementChild).toHaveClass('px-4')
+    expect(plusButton()).toHaveClass('size-9')
+    expect(screen.getByRole('button', { name: 'Send message' }).parentElement).toHaveClass('size-9')
+    expect(screen.getByRole('button', { name: PILL_NAME })).toHaveClass('h-9')
+    const row = container.querySelector('[data-composer-row]') as HTMLElement
+    expect(row).toHaveClass('pl-4', 'pr-3.5', 'pt-[11px]', 'pb-0.5')
+    expect(row.querySelector('[data-placeholder]')).toHaveAttribute(
+      'data-placeholder',
+      'Ask anything…'
+    )
+  })
+
+  it('shows the worktree strip under the card on a new chat only', () => {
+    const strip = <span data-testid="strip">Current checkout · dev</span>
+    const { unmount } = renderBar({ startScreen: true, worktree: strip })
+    const wrap = document.querySelector('[data-composer-phone-strip="true"]')
+    expect(wrap).toContainElement(screen.getByTestId('strip'))
+    expect(document.querySelector('[data-chat-composer="true"]')).not.toContainElement(
+      screen.getByTestId('strip')
+    )
+    unmount()
+
+    renderBar({ startScreen: false, worktree: strip })
+    expect(screen.queryByTestId('strip')).toBeNull()
+  })
+})
 
 describe('desktop composer markup', () => {
   it('keeps the desktop composer card unchanged', () => {
@@ -662,15 +710,16 @@ describe('mobile composer: Add to chat sheet', () => {
     expect(
       within(sheet)
         .getAllByRole('button')
-        .map((button) => button.textContent?.trim())
+        .map((button) => button.getAttribute('aria-label') ?? button.textContent?.trim())
     ).toEqual([
+      // The grab handle: it closes the sheet (no ✕ in the header).
       'Close',
       'Camera',
       'Photos',
       'Files',
       '@Mention a file or conversationAttach project files or another chat as context',
       '/CommandsAgent commands and skills',
-      'Termul toolsBrowser, canvas and automations',
+      'Troupe toolsBrowser, canvas, automations and orchestration',
       'ConnectorsNone added'
     ])
   })
@@ -966,12 +1015,12 @@ describe('mobile composer: closed session', () => {
       'Files',
       'Mention a file or conversation',
       'Commands',
-      'Termul tools'
+      'Troupe tools'
     ]) {
       expect(within(sheet).getByRole('button', { name })).toBeDisabled()
     }
     fireEvent.click(within(sheet).getByRole('button', { name: 'Connectors' }))
-    expect(within(sheet).getByRole('switch', { name: 'Disable github' })).toBeEnabled()
+    expect(within(sheet).getByRole('switch', { name: 'github' })).toBeEnabled()
   })
 })
 
@@ -982,45 +1031,48 @@ describe('mobile composer: Connectors in the sheet', () => {
     return screen.getByRole('dialog', { name: 'Connectors' })
   }
 
-  it('summarises how many servers are on, then lists each with its status and a switch', () => {
+  it('groups servers: Needs attention with an action and no switch, then On and Off (Paper 2.6n)', () => {
     mockMcp.servers = [
       { id: 'github', type: 'stdio', name: 'github', enabled: true },
-      { id: 'playwright', type: 'stdio', name: 'playwright', enabled: false }
+      { id: 'playwright', type: 'stdio', name: 'playwright', enabled: false },
+      { id: 'cua', type: 'stdio', name: 'cua', enabled: true },
+      { id: 'linear', type: 'stdio', name: 'linear', enabled: true }
     ]
-    mockMcp.probeStatus = { github: 'connected', playwright: 'disconnected' }
+    mockMcp.probeStatus = { github: 'connected', cua: 'disconnected', linear: 'authRequired' }
     renderBar()
     expect(
       within(openSheet()).getByRole('button', { name: 'Connectors' })
-    ).toHaveAccessibleDescription('1 of 2 on')
+    ).toHaveAccessibleDescription('3 of 4 on · 2 need attention')
     fireEvent.click(screen.getByRole('button', { name: 'Connectors' }))
     const sheet = screen.getByRole('dialog', { name: 'Connectors' })
 
-    expect(within(sheet).getByText('2 attached to this session.')).toBeInTheDocument()
-    expect(within(sheet).getByText('Connected')).toBeInTheDocument()
-    expect(within(sheet).getByRole('switch', { name: 'Disable github' })).toBeInTheDocument()
-    expect(within(sheet).getByRole('switch', { name: 'Enable playwright' })).toBeInTheDocument()
+    expect(within(sheet).getByText('3 of 4 on. Fix a connector to turn it on.')).toBeInTheDocument()
+    const attention = within(sheet).getByRole('group', { name: 'Needs attention' })
+    expect(within(attention).getByRole('button', { name: 'Reconnect cua' })).toBeInTheDocument()
+    expect(within(attention).getByRole('button', { name: 'Sign in to linear' })).toBeInTheDocument()
+    expect(within(attention).queryByRole('switch')).toBeNull()
     expect(
-      within(sheet).getByText('This chat still uses the previous servers.')
-    ).toBeInTheDocument()
-    expect(within(sheet).getByRole('button', { name: 'Reload this chat' })).toBeInTheDocument()
-    // The sheet scrolls, so the list drops the popover's nested 300px scroller.
-    const list = within(sheet).getAllByRole('list')[0]
-    expect(list).not.toHaveClass('max-h-[300px]')
-    expect(list).not.toHaveClass('overflow-y-auto')
+      within(within(sheet).getByRole('group', { name: 'On' })).getByRole('switch', {
+        name: 'github'
+      })
+    ).toBeChecked()
+    expect(
+      within(within(sheet).getByRole('group', { name: 'Off' })).getByRole('switch', {
+        name: 'playwright'
+      })
+    ).not.toBeChecked()
   })
 
-  it("counts the chat's own servers over the project list", () => {
-    mockMcp.servers = [
-      { id: 'github', type: 'stdio', name: 'github', enabled: true },
-      { id: 'playwright', type: 'stdio', name: 'playwright', enabled: true }
-    ]
-    renderBar({ session: { ...session(), mcpServerCount: 1 } })
+  it('Reconnect probes the server again', () => {
+    mockMcp.servers = [{ id: 'cua', type: 'stdio', name: 'cua', enabled: true }]
+    mockMcp.probeStatus = { cua: 'disconnected' }
+    renderBar()
     const sheet = openMcp()
-    expect(within(sheet).getByText('1 attached to this session.')).toBeInTheDocument()
-    expect(within(sheet).queryByText('2 attached to this session.')).not.toBeInTheDocument()
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Reconnect cua' }))
+    expect(mockLoadMcpTools).toHaveBeenCalledWith('cua')
   })
 
-  it('says none are added or attached when the project has no servers', () => {
+  it('says none are added when the project has no servers', () => {
     mockMcp.servers = []
     renderBar()
     expect(
@@ -1028,8 +1080,11 @@ describe('mobile composer: Connectors in the sheet', () => {
     ).toHaveAccessibleDescription('None added')
     fireEvent.click(screen.getByRole('button', { name: 'Connectors' }))
     const sheet = screen.getByRole('dialog', { name: 'Connectors' })
-    expect(within(sheet).getByText('No servers attached yet.')).toBeInTheDocument()
-    expect(within(sheet).queryByRole('list')).not.toBeInTheDocument()
+    expect(
+      within(sheet).getByText('No connectors yet. Add one in the MCP settings.')
+    ).toBeInTheDocument()
+    expect(within(sheet).queryByRole('switch')).toBeNull()
+    expect(within(sheet).getByRole('button', { name: 'Manage MCP servers' })).toBeInTheDocument()
   })
 
   it('Back, Escape and system back return to Add to chat with focus on the Connectors row', async () => {
@@ -1062,7 +1117,7 @@ describe('mobile composer: Connectors in the sheet', () => {
     renderBar()
     const sheet = openMcp()
 
-    fireEvent.click(within(sheet).getByRole('switch', { name: 'Disable github' }))
+    fireEvent.click(within(sheet).getByRole('switch', { name: 'github' }))
 
     expect(mockSetMcpServerEnabled).toHaveBeenCalledWith('github', false)
   })
@@ -1073,7 +1128,7 @@ describe('mobile composer: Connectors in the sheet', () => {
     renderBar()
     const sheet = openMcp()
 
-    fireEvent.click(within(sheet).getByRole('switch', { name: 'Disable github' }))
+    fireEvent.click(within(sheet).getByRole('switch', { name: 'github' }))
 
     await waitFor(() =>
       expect(mockToastError).toHaveBeenCalledWith(
@@ -1082,14 +1137,46 @@ describe('mobile composer: Connectors in the sheet', () => {
     )
   })
 
-  it('shows the empty line, with no rows and no footnote, when none are attached', () => {
+  it('keeps Reload for a stale chat with no servers left, and no next-chat note', () => {
     renderBar()
     const sheet = openMcp()
 
     expect(within(sheet).getByRole('heading', { name: 'Connectors' })).toBeInTheDocument()
-    expect(within(sheet).getByText('No servers attached yet.')).toBeInTheDocument()
-    expect(within(sheet).queryByRole('listitem')).not.toBeInTheDocument()
-    expect(within(sheet).getByRole('button', { name: 'Reload this chat' })).toBeInTheDocument()
-    expect(within(sheet).queryByText('Takes effect on the next chat.')).not.toBeInTheDocument()
+    expect(
+      within(sheet).getByText('No connectors yet. Add one in the MCP settings.')
+    ).toBeInTheDocument()
+    expect(within(sheet).queryByRole('switch')).toBeNull()
+    expect(within(sheet).getByRole('button', { name: /Reload this chat/ })).toBeInTheDocument()
+    expect(within(sheet).queryByText(/Changes apply to the next chat/)).not.toBeInTheDocument()
+  })
+})
+
+describe('mobile composer: Enter key', () => {
+  it('adds a new line on Enter and does not send (a soft keyboard has no Shift+Enter)', async () => {
+    const onSend = vi.fn()
+    renderBar({ onSend })
+    setComposerValue('first line')
+    setComposerCaret('first line'.length)
+
+    pressComposerKey('Enter')
+
+    expect(onSend).not.toHaveBeenCalled()
+    await waitFor(() => expect(getComposerValue()).toBe('first line\n'))
+  })
+
+  it('still sends on Cmd/Ctrl+Enter (hardware keyboard)', async () => {
+    const onSend = vi.fn()
+    renderBar({ onSend })
+    setComposerValue('send me')
+
+    pressComposerKey('Enter', { metaKey: true })
+
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith('send me'))
+  })
+
+  it('labels the keyboard return key "enter", not "send"', () => {
+    renderBar()
+    const editor = document.querySelector('[data-composer-editor="true"]')
+    expect(editor).toHaveAttribute('enterkeyhint', 'enter')
   })
 })

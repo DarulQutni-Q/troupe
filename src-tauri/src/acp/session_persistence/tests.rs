@@ -2093,6 +2093,15 @@ fn agent_switch_is_a_durable_event() {
     assert!(!is_durable_event("permission_request"));
 }
 
+/// Chat MCP install events are live prompts. A replay must not resurrect a
+/// card after the user already answered it.
+#[test]
+fn mcp_install_events_are_not_durable() {
+    assert!(!is_durable_event("mcp_install_request"));
+    assert!(!is_durable_event("mcp_install_resolved"));
+    assert!(!is_durable_event("mcp_registry_changed"));
+}
+
 /// CAP-2: a switch recorded between two message enqueues at its allocated
 /// seq leaves a hole-free log with exactly one switch.
 #[tokio::test]
@@ -4062,7 +4071,7 @@ async fn a_tail_payload_restores_each_subagents_calls_text_and_result() {
     assert!(tail.messages.iter().all(|message| message.seq > 6), "turn 1 is outside the window");
     let calls = serde_json::to_value(&tail.tool_calls).unwrap();
     assert_eq!(calls[0]["toolCallId"], "d1");
-    assert_eq!(calls[0]["subagentText"], "Found one bug.");
+    assert_eq!(calls[0]["subagentMessages"][0]["text"], "Found one bug.");
     assert_eq!(calls[0]["content"][0]["content"]["text"], "One bug.");
     assert_eq!(calls[1]["toolCallId"], "c1");
     assert_eq!(calls[1]["_meta"]["claudeCode"]["parentToolUseId"], "d1");

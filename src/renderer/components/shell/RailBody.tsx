@@ -1,0 +1,134 @@
+import { CalendarClock, Canvas, ChatEdit, SearchList } from '@/components/icons'
+import { ProjectSidebar } from '@/components/ProjectSidebar'
+import { RailFooter } from '@/components/shell/RailFooter'
+import { RailHeader } from '@/components/shell/RailHeader'
+import { RailProjectChats } from '@/components/shell/rail/RailProjectChats'
+import { RailNav, RailNavRow } from '@/components/shell/rail/rail-nav'
+import { RailWorktreeSwitcherProvider } from '@/components/shell/rail/worktree-switcher'
+import { logRailEvent } from '@/components/shell/shell-log'
+import { useNewChat } from '@/components/shell/use-new-chat'
+import { useShortcutLabel } from '@/components/shell/use-shortcut-label'
+import { useProjectActions } from '@/stores/project-store'
+import { useWorkspaceStore } from '@/stores/workspace-store'
+import type { Project } from '@/types/project'
+
+interface RailBodyProps {
+  projects: Project[]
+  activeProjectId: string
+  onSelectProject: (id: string) => void
+  onNewProject: () => void
+  onSSHConnect: (profileId: string) => void
+  onSelectSSHProfile: (profileId: string) => void
+  activeSSHProfileId: string | null
+  onOpenCommandPalette: () => void
+  onOpenCanvas: () => void
+  canOpenCanvas: boolean
+  isShortcutsOpen: boolean
+  onShortcutsOpenChange: (open: boolean) => void
+  isThemePickerOpen: boolean
+  onToggleThemePicker?: () => void
+}
+
+const NEED_PROJECT = 'Open a project first'
+
+/** Every project lists its chats under its row, open or not. */
+const renderProjectChats = (project: Project, isActive: boolean): React.JSX.Element => (
+  <RailProjectChats key={project.id} project={project} isOpenProject={isActive} />
+)
+
+/**
+ * Rail body, top to bottom: the header (top row part, ending in the Rail
+ * toggle), the nav (New chat, Search, Canvas, Automations), the Projects
+ * section with every project's chats (and the SSH section on desktop),
+ * and the icon-only footer. Fills the width its container gives it and
+ * inherits the Rail's surface.
+ *
+ * One tree for both Rail states: every part reads the density from
+ * `RailDensityProvider` (set by `ShellRail`). Collapsed, the rows keep their
+ * heights and only drop labels and meta, so every icon stays at its y.
+ */
+export function RailBody({
+  projects,
+  activeProjectId,
+  onSelectProject,
+  onNewProject,
+  onSSHConnect,
+  onSelectSSHProfile,
+  activeSSHProfileId,
+  onOpenCommandPalette,
+  onOpenCanvas,
+  canOpenCanvas,
+  isShortcutsOpen,
+  onShortcutsOpenChange,
+  isThemePickerOpen,
+  onToggleThemePicker
+}: RailBodyProps): React.JSX.Element {
+  const { updateProject, deleteProject, archiveProject, restoreProject, reorderProjects } =
+    useProjectActions()
+  const searchShortcut = useShortcutLabel('commandPalette')
+  const newChat = useNewChat()
+
+  return (
+    <div className="flex h-full min-h-0 w-full flex-col">
+      <RailHeader />
+
+      <RailNav>
+        <RailNavRow
+          label="New chat"
+          icon={<ChatEdit />}
+          onClick={() => {
+            logRailEvent('new chat')
+            newChat()
+          }}
+        />
+        <RailNavRow
+          label="Search"
+          shortcut={searchShortcut}
+          icon={<SearchList />}
+          onClick={onOpenCommandPalette}
+        />
+        <RailNavRow
+          label="Canvas"
+          name="Open canvas"
+          hint={canOpenCanvas ? undefined : NEED_PROJECT}
+          icon={<Canvas />}
+          disabled={!canOpenCanvas}
+          onClick={onOpenCanvas}
+        />
+        <RailNavRow
+          label="Automations"
+          name="Open automations"
+          hint={activeProjectId ? undefined : NEED_PROJECT}
+          icon={<CalendarClock />}
+          disabled={!activeProjectId}
+          onClick={() => useWorkspaceStore.getState().addAutomationsTab(activeProjectId)}
+        />
+      </RailNav>
+
+      <RailWorktreeSwitcherProvider>
+        <ProjectSidebar
+          projects={projects}
+          activeProjectId={activeProjectId}
+          onSelectProject={onSelectProject}
+          onNewProject={onNewProject}
+          onUpdateProject={updateProject}
+          onDeleteProject={deleteProject}
+          onArchiveProject={archiveProject}
+          onRestoreProject={restoreProject}
+          onReorderProjects={reorderProjects}
+          onSSHConnect={onSSHConnect}
+          onSelectSSHProfile={onSelectSSHProfile}
+          activeSSHProfileId={activeSSHProfileId}
+          renderProjectContent={renderProjectChats}
+        />
+      </RailWorktreeSwitcherProvider>
+
+      <RailFooter
+        isShortcutsOpen={isShortcutsOpen}
+        onShortcutsOpenChange={onShortcutsOpenChange}
+        isThemePickerOpen={isThemePickerOpen}
+        onToggleThemePicker={onToggleThemePicker}
+      />
+    </div>
+  )
+}

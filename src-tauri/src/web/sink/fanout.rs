@@ -347,7 +347,7 @@ impl WsRelaySink {
                 }
             }
         }
-        self.release_session_tickets(sid);
+        self.release_session_tickets(sid, None);
         if let Some(rendezvous) = self.rendezvous() {
             rendezvous.forget_session(sid);
         }
@@ -408,6 +408,14 @@ impl EventSink for WsRelaySink {
             "elicitation_request" if event.sid.is_some() => {
                 self.elicitations.register_event(&event.payload);
             }
+            "mcp_install_request" => {
+                self.mcp_installs.register_event(&event.payload);
+            }
+            "mcp_install_resolved" => {
+                if let Some(request_id) = event.payload.get("requestId").and_then(Value::as_str) {
+                    self.mcp_installs.settle(request_id);
+                }
+            }
             _ => {}
         }
 
@@ -443,12 +451,22 @@ impl EventSink for WsRelaySink {
                 // a new one. A turn end with a turn id also records the turn as
                 // ended, so a request of it registered after this (a separate
                 // `emit`) is dropped instead of outliving the turn.
+                // A turn end releases only the approvals of the agent whose
+                // turn it was: an orchestrated subagent's, parked under this
+                // chat, ends with its own run.
+                let turn_agent = (type_ == "prompt_complete")
+                    .then(|| event.payload.get("agentId").and_then(Value::as_str))
+                    .flatten()
+                    .map(|agent_id| crate::acp::AgentId(agent_id.to_string()));
                 match (type_, &terminated_turn) {
                     ("prompt_complete", Some(turn_id)) => {
-                        self.release_turn_tickets(sid, turn_id);
+                        self.release_turn_tickets(sid, turn_id, turn_agent.as_ref());
                     }
-                    ("prompt_complete" | "session_closed", _) => {
-                        self.release_session_tickets(sid);
+                    ("prompt_complete", None) => {
+                        self.release_session_tickets(sid, turn_agent.as_ref());
+                    }
+                    ("session_closed", _) => {
+                        self.release_session_tickets(sid, None);
                     }
                     _ => {}
                 }

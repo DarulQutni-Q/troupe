@@ -56,8 +56,7 @@ vi.mock('@/lib/acp-mcp-persistence', async (orig) => {
   return {
     ...actual,
     loadMcpServers: vi.fn(async () => []),
-    saveMcpServers: vi.fn(async () => {}),
-    syncMcpRegistryToProjectBestEffort: vi.fn(async () => {})
+    saveMcpServers: vi.fn(async () => {})
   }
 })
 
@@ -1355,6 +1354,25 @@ describe('acp-store', () => {
     const rejected = { ...rateLimit, status: 'rejected', percent: 100 }
     useAcpStore.getState()._onUsageUpdate({ ...update, used: 61_000, rateLimit: rejected })
     expect(useAcpStore.getState().sessionUsage.s1?.rateLimit).toEqual(rejected)
+  })
+
+  it('_onUsageUpdate shows the limit the host sends as limitReached', () => {
+    seedSession('s1', 'agent-1')
+    const rejected = {
+      status: 'rejected',
+      resetsAt: 1_760_360_399,
+      kind: 'five_hour',
+      percent: 100,
+      overageInUse: false
+    }
+    const update = { agentId: 'agent-1', sessionId: 's1', size: 200_000 }
+    useAcpStore.getState()._onUsageUpdate({ ...update, used: 0, size: 0, limitReached: rejected })
+    expect(useAcpStore.getState().sessionUsage.s1?.rateLimit).toEqual(rejected)
+    useAcpStore.getState()._onUsageUpdate({ ...update, used: 61_000, limitReached: rejected })
+    expect(useAcpStore.getState().sessionUsage.s1).toMatchObject({
+      used: 61_000,
+      rateLimit: rejected
+    })
   })
 
   it('_onUsageUpdate records a rate limit that arrives without token counts', () => {

@@ -101,9 +101,16 @@ fn files_outside_the_root_missing_files_and_folders_are_refused() {
         Some(UploadRefusal::Missing)
     );
     assert_eq!(refusal(root, "docs"), Some(UploadRefusal::NotAFile));
+    // An NTFS stream is refused on Windows; elsewhere `:` is a legal file
+    // name character, so the name is simply a file that does not exist.
+    let stream_refusal = if std::path::MAIN_SEPARATOR == '\\' {
+        UploadRefusal::NotAFile
+    } else {
+        UploadRefusal::Missing
+    };
     assert_eq!(
         refusal(root, "docs/report.pdf:Zone.Identifier"),
-        Some(UploadRefusal::NotAFile)
+        Some(stream_refusal)
     );
 }
 
@@ -190,6 +197,30 @@ fn files_the_project_git_ignores_are_refused() {
         Some(UploadRefusal::IgnoredFile)
     );
     assert!(open_source(root, "docs/report.pdf").is_ok());
+}
+
+#[test]
+fn git_ignores_accepts_a_canonical_root() {
+    // On Windows `canonicalize` yields a `\\?\` root that git.exe rejects;
+    // `git_ignores` must normalize its `-C` operand (#1724).
+    let p = project();
+    let init = std::process::Command::new("git")
+        .arg("-C")
+        .arg(p.dir.path())
+        .args(["init", "-q"])
+        .status();
+    if !init.is_ok_and(|s| s.success()) {
+        eprintln!("skipped: git is not available");
+        return;
+    }
+    let root = fs::canonicalize(p.dir.path()).unwrap();
+    // Runtime check: the layering test forbids compile-time platform gates in core.
+    if cfg!(windows) {
+        assert!(root.to_string_lossy().starts_with(r"\\?\"), "{root:?}");
+    }
+    fs::write(root.join(".gitignore"), "build/\n").unwrap();
+    assert!(git_ignores(&root, Path::new("build/app.zip")));
+    assert!(!git_ignores(&root, Path::new("docs/report.pdf")));
 }
 
 #[test]

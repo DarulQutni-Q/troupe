@@ -1,4 +1,3 @@
-import { AlertTriangle } from '@/components/icons'
 import { RailTooltip } from '@/components/shell/rail-button'
 import { Spinner } from '@/components/ui/spinner'
 import { needsYouLabel } from '@/lib/agent-chat-attention'
@@ -27,7 +26,7 @@ export function NeedsYouButton({
           event.stopPropagation()
           onOpen?.()
         }}
-        className="inline-flex h-5 min-w-0 shrink-0 items-center gap-1 rounded-full bg-warning/10 px-1.5 text-3xs font-semibold tabular-nums text-warning transition-[transform,background-color] duration-150 ease-out hover:bg-warning/20 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus-ring active:scale-[0.97] motion-reduce:transition-none motion-reduce:active:scale-100"
+        className="inline-flex h-5 min-w-0 shrink-0 items-center gap-1 rounded-full bg-warning/10 px-1.5 text-3xs font-semibold tabular-nums text-warning transition-colors duration-150 ease-out hover:bg-warning/20 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus-ring motion-reduce:transition-none"
       >
         <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-warning" />
         <span>{count}</span>
@@ -80,16 +79,26 @@ export function IdleAgentMark({
   )
 }
 
-/** Crash mark: 12px triangle + "Crashed" in warning. No pulse. */
+/**
+ * Crash mark: a 6px destructive dot in a 12px slot, on the row's right lane
+ * like the chat status dots. A crash is an error, so it is red, not amber.
+ * The pointer tooltip and the accessible name say "Terminal crashed"; the
+ * project row's own name says it too, for keyboard users. No pulse.
+ */
 export function CrashedMark({ className }: { className?: string }): React.JSX.Element {
   return (
-    <span
-      className={cn('flex shrink-0 items-center gap-1 text-2xs text-warning', className)}
-      title="Terminal crashed"
-    >
-      <AlertTriangle size={12} aria-hidden="true" />
-      <span>Crashed</span>
-    </span>
+    <RailTooltip label="Terminal crashed">
+      <span
+        role="img"
+        aria-label="Terminal crashed"
+        className={cn(
+          'pointer-events-auto flex size-3 shrink-0 items-center justify-center',
+          className
+        )}
+      >
+        <span aria-hidden="true" className="size-1.5 rounded-full bg-destructive" />
+      </span>
+    </RailTooltip>
   )
 }
 
@@ -112,9 +121,14 @@ export function resolveProjectLiveState(hasActivity: boolean, running: boolean):
   return running ? 'idle-agent' : null
 }
 
-const LIVE_MARK: Record<NonNullable<ProjectLiveState>, React.JSX.Element> = {
+/**
+ * The mark per live state. An idle agent shows nothing on the Rail row: the
+ * project's chat rows already show each chat's status, and a fourth dot
+ * colour only added noise ({@link IdleAgentMark} stays for other surfaces).
+ */
+const LIVE_MARK: Record<NonNullable<ProjectLiveState>, React.JSX.Element | null> = {
   activity: <RunningMark label="Project activity" title="Activity" />,
-  'idle-agent': <IdleAgentMark />
+  'idle-agent': null
 }
 
 /** Project row right slot, fixed order so nothing shifts: live work → needs you → crash. */

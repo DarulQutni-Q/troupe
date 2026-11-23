@@ -14,6 +14,25 @@ pub fn home_dir() -> Option<PathBuf> {
     std::fs::canonicalize(home?).ok()
 }
 
+/// Open `path` for reading without waiting on it: a FIFO swapped in after
+/// the caller's metadata check opens at once instead of blocking for a
+/// writer, and the caller's handle checks then refuse it. Regular files
+/// read the same either way.
+#[cfg(unix)]
+pub fn open_nonblocking(path: &Path) -> io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+}
+
+/// Windows has no FIFOs a path open could block on.
+#[cfg(windows)]
+pub fn open_nonblocking(path: &Path) -> io::Result<File> {
+    File::open(path)
+}
+
 /// How many directory entries name the open file. More than one means
 /// another name, maybe outside the folder the file was opened through,
 /// reaches the same bytes.
@@ -116,7 +135,7 @@ pub fn mark_downloaded(path: &Path, _origin: &str) -> io::Result<()> {
     let since_epoch = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    let value = format!("0081;{since_epoch:08x};Termul;");
+    let value = format!("0081;{since_epoch:08x};Troupe;");
     let c_path = CString::new(path.as_os_str().as_bytes())?;
     // SAFETY: both strings are NUL-terminated and live across the call;
     // `value` is passed with its exact length.

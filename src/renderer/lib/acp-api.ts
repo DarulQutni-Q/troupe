@@ -24,6 +24,7 @@ import type {
 } from '@shared/types/subagent'
 import {
   type AgentCapabilities,
+  type BackgroundCommandList,
   isProviderErrorCode,
   type ProviderErrorCode
 } from '@shared/types/web-protocol.types'
@@ -31,7 +32,10 @@ import { invoke } from '@tauri-apps/api/core'
 import {
   type AgentIdleWindowStatus,
   type CommandCallOptions,
-  getAcpTransport
+  getAcpTransport,
+  type SubagentSettingsAgentView,
+  type SubagentSettingsInput,
+  type SubagentSettingsView
 } from '@/lib/acp-transport'
 import type { AcpRuntimeAvailability } from '@/lib/agents/supported-acp-agents'
 import { type CommandRun, runCommand } from '@/lib/command-engine'
@@ -40,11 +44,18 @@ import { waitUntilVisible } from '@/lib/command-visibility'
 import { hasConversationWire } from '@/lib/conversation-envelope'
 import { invokeIpc } from '@/lib/ipc/tauri'
 import { logFrontendError } from '@/lib/log-api'
+import type { McpInstallAnswer } from '@/lib/mcp-install-request'
 import { wireBlocksToDisplay } from '@/lib/skills-wire-reverse'
 import { isTauriContext } from '@/lib/tauri-runtime'
+import { randomUUID } from '@/lib/uuid'
 import { webServerMcpOAuth } from '@/lib/web-server-api'
 
-export type { AgentIdleWindowStatus }
+export type {
+  AgentIdleWindowStatus,
+  SubagentSettingsAgentView,
+  SubagentSettingsInput,
+  SubagentSettingsView
+}
 
 // --- Identifiers -----------------------------------------------------------
 
@@ -156,7 +167,11 @@ export interface SessionReopenOutcome {
 // WS wire contract — shared modules cannot import renderer code, so the
 // declaration moved there for `WsAgentSummary`; imported at the top of this
 // file). Re-exported here so existing `@/lib/acp-api` imports keep working.
-export type { AgentCapabilities } from '@shared/types/web-protocol.types'
+export type {
+  AgentCapabilities,
+  BackgroundCommand,
+  BackgroundCommandList
+} from '@shared/types/web-protocol.types'
 
 /** A tool call. ACP schema, camelCase on the wire. */
 export type ToolKind =
@@ -193,6 +208,16 @@ export interface ToolCallLocation {
   line?: number
 }
 
+/** One stretch of text a subagent wrote between two of its tool calls. */
+export interface SubagentMessage {
+  /** Timeline seq of the chunk that opened it; orders it among the subagent's tool calls. */
+  seq: number
+  timestamp: number
+  text: string
+  /** ACP `messageId` of its chunks, when the agent sent one. */
+  messageId?: string
+}
+
 export interface ToolCall {
   toolCallId: string
   title?: string
@@ -216,6 +241,9 @@ export interface ToolCall {
   /** True for a restored durable file-change summary (payload `toolCalls`):
    * feeds the changed-files list but never renders as a timeline card. */
   restoredSummary?: boolean
+  /** Plan/todo write. The sticky plan panel owns it; the timeline skips it.
+   * Set at ingest and kept on the durable record so a reload stays hidden. */
+  planTool?: boolean
   /** The host's canonical record when this call dispatches a subagent, lifted
    * from `_meta["termul/subagent"]` at ingest. Absent on later events = unchanged. */
   subagent?: Subagent
@@ -224,8 +252,8 @@ export interface ToolCall {
   /** Subagent dispatch that made this call (`_meta.claudeCode.parentToolUseId`).
    * The timeline shows such a call inside its subagent, not in the main turn. */
   parentToolCallId?: string
-  /** Latest text the subagent wrote (bounded tail), kept on its dispatch call. */
-  subagentText?: string
+  /** What the subagent wrote between its tool calls, oldest first (bounded), kept on its dispatch call. */
+  subagentMessages?: SubagentMessage[]
   [k: string]: unknown
 }
 
@@ -314,13 +342,15 @@ export type McpServerConfig = McpStdioServer | McpHttpServer | McpSseServer
 
 // --- MCP client probe (on-demand `initialize` + `tools/list`) -------------
 
-/** Per-server probe status (Termul's own client connection, not the agent's). */
+/** Per-server probe status (Troupe's own client connection, not the agent's). */
 export type ProbeStatus = 'connected' | 'disconnected' | 'authRequired'
 
 /** A tool exposed by a probed MCP server (`tools/list` output, UI subset). */
 export interface McpToolInfo {
   name: string
   description?: string
+  /** The tool's `inputSchema`; null when the server sent none or not an object. */
+  inputSchema?: Record<string, unknown> | null
 }
 
 /** Probe result. On `disconnected`, `error` is a short, value-free message.
@@ -348,6 +378,8 @@ export interface AgentConfig {
 
 export interface NewSessionOutcome {
   sessionId: SessionId
+  /** Host-derived folder for a quick chat. Absent for a project chat. */
+  cwd?: string | null
   modes?: SessionModeState | null
   models?: SessionModelState | null
   configOptions?: SessionConfigOption[] | null
@@ -714,6 +746,11 @@ export interface AgentWorkingEvent {
   sessionId: SessionId
   working: boolean
 }
+/** The commands the agent left running in a session now (the whole list). */
+export interface BackgroundCommandsEvent extends BackgroundCommandList {
+  agentId: AgentId
+  sessionId: SessionId
+}
 export interface SessionClosedEvent {
   agentId: AgentId
   sessionId: SessionId
@@ -775,6 +812,11 @@ export interface UsageUpdateEvent {
   cost?: UsageCost | null
   /** Claude plan rate-limit state, when the Claude ACP adapter sends it. */
   rateLimit?: ClaudeRateLimit | null
+  /**
+   * The rate-limit state that blocks the chat. The host never sends it as
+   * `rateLimit`, so clients that predate the host's account switch ignore it.
+   */
+  limitReached?: ClaudeRateLimit | null
 }
 
 /** Agent-reported context window state for a session. */
@@ -804,6 +846,9 @@ export const ACP_EVENTS = {
   permissionRequest: 'acp:permission_request',
   questionRequest: 'acp:question_request',
   questionCancelled: 'acp:question_cancelled',
+  mcpInstallRequest: 'acp:mcp_install_request',
+  mcpInstallResolved: 'acp:mcp_install_resolved',
+  mcpRegistryChanged: 'acp:mcp_registry_changed',
   elicitationRequest: 'acp:elicitation_request',
   promptComplete: 'acp:prompt_complete',
   agentError: 'acp:agent_error',
@@ -813,7 +858,10 @@ export const ACP_EVENTS = {
   sessionInfoUpdate: 'acp:session_info_update',
   agentSwitch: 'acp:agent_switch',
   usageUpdate: 'acp:usage_update',
+  claudeLimitAction: 'acp:claude_limit_action',
+  codexLimitAction: 'acp:codex_limit_action',
   agentWorking: 'acp:agent_working',
+  backgroundCommands: 'acp:background_commands',
   browserOpenRequest: 'acp:browser_open_request',
   agentSignInRequest: 'acp:agent_sign_in_request',
   agentSignInResolved: 'acp:agent_sign_in_resolved',
@@ -931,57 +979,125 @@ export class McpOAuthError extends Error {
   }
 }
 
+/** Code of the {@link McpOAuthError} a web flow rejects with once its
+ * `signal` aborts (the user dismissed the paste-back dialog). Callers treat
+ * it as a quiet cancel, not a failure. */
+export const MCP_OAUTH_CANCELLED = 'OAUTH_CANCELLED'
+
+export interface McpOAuthStartOptions {
+  /** Web only: called once the host returns the sign-in link and the
+   * loopback redirect it registered, so the paste-back dialog can open. */
+  onAuthUrl?: (authUrl: string, redirectUri: string) => void
+  /** Web only: aborting stops the status poll and rejects with
+   * {@link MCP_OAUTH_CANCELLED}. */
+  signal?: AbortSignal
+}
+
+function oauthCancelled(): McpOAuthError {
+  return new McpOAuthError('OAuth sign-in cancelled', MCP_OAUTH_CANCELLED)
+}
+
+/** Resolves after `ms`, or rejects as cancelled as soon as `signal` aborts. */
+function waitOrCancel(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(oauthCancelled())
+      return
+    }
+    const onAbort = (): void => {
+      clearTimeout(timer)
+      reject(oauthCancelled())
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
 /** Start the OAuth flow for an MCP server URL on behalf of `projectId` (the
  * web host authorizes the URL against that project's MCP list; the desktop
  * Tauri command authorizes nothing and takes the URL only). On desktop, opens the system
  * browser and waits for the callback (the Tauri command blocks until the
- * token is stored). On web, opens a blank window first (preserves transient
- * user activation for the popup), navigates it to the auth URL once returned,
- * then polls the status endpoint until the token is stored. Throws on
- * failure (discovery, registration, timeout), as an {@link McpOAuthError}
- * with code {@link MCP_UNSAFE_URL} when the host refused the sign-in link. */
-export async function startMcpOAuth(projectId: string, serverUrl: string): Promise<void> {
+ * token is stored; `options` are unused). On web, opens a blank window first
+ * (preserves transient user activation for the popup), navigates it to the
+ * auth URL once returned, hands the URL to `onAuthUrl` (the paste-back
+ * dialog), then polls the status endpoint until the token is stored — by the
+ * host's own callback or by a pasted redirect. A blocked popup is not fatal on
+ * web: the dialog's Open button is the fallback. Throws on failure
+ * (discovery, registration, timeout), as an {@link McpOAuthError} with code
+ * {@link MCP_UNSAFE_URL} when the host refused the sign-in link, or
+ * {@link MCP_OAUTH_CANCELLED} once `signal` aborts. */
+export async function startMcpOAuth(
+  projectId: string,
+  serverUrl: string,
+  options: McpOAuthStartOptions = {}
+): Promise<void> {
   if (isTauriContext()) {
     const result = await invokeIpc<void>('acp_mcp_oauth_start', { serverUrl })
     if (!result.success) throw new McpOAuthError(result.error, result.code)
     return
   }
+  const { onAuthUrl, signal } = options
+  if (signal?.aborted) throw oauthCancelled()
   // Web path: open a blank window BEFORE the async request so the browser
   // does not block the popup (transient user activation window). Navigate it
   // once the auth URL is returned. No `noopener` feature: the HTML spec makes
   // window.open return null with it even though the window opened, so the
   // handle would be lost (#1541).
   const popup = window.open('about:blank', '_blank')
-  if (!popup) {
-    throw new Error('Popup blocked — allow popups for this site to start OAuth')
-  }
-  popup.opener = null
+  if (popup) popup.opener = null
   let authUrl: string
+  let redirectUri: string
   try {
     const result = await webServerMcpOAuth.start(projectId, serverUrl)
     if (!result.success) {
       throw new McpOAuthError(result.error ?? 'OAuth start failed', result.code)
     }
+    if (signal?.aborted) throw oauthCancelled()
     authUrl = result.data.authUrl
+    redirectUri = result.data.redirectUri
   } catch (err) {
-    popup.close()
+    popup?.close()
     throw err
   }
-  popup.location.href = authUrl
+  if (popup) popup.location.href = authUrl
+  onAuthUrl?.(authUrl, redirectUri)
   // Wait for OAuth completion by polling the status endpoint until the token
-  // is stored. The OAuth callback redirect processes on the server side; once
-  // `hasToken` is true, the flow is complete.
+  // is stored. Either the host's `/oauth/callback` (a browser on the host's
+  // machine) or a pasted redirect (`complete`) stores it; once `hasToken` is
+  // true, the flow is complete.
   const POLL_INTERVAL_MS = 1000
   const POLL_TIMEOUT_MS = 300_000 // 5 min — matches OAUTH_FLOW_TIMEOUT_SECS
   const deadline = Date.now() + POLL_TIMEOUT_MS
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS))
-    const status = await webServerMcpOAuth.status(projectId, serverUrl)
-    if (status.success && status.data?.hasToken) {
-      return
+  try {
+    while (Date.now() < deadline) {
+      await waitOrCancel(POLL_INTERVAL_MS, signal)
+      // The signal also aborts a status request that hangs.
+      const status = await webServerMcpOAuth.status(projectId, serverUrl, signal)
+      if (signal?.aborted) throw oauthCancelled()
+      if (status.success && status.data?.hasToken) {
+        return
+      }
     }
+    throw new Error('OAuth flow timed out — user did not complete authorization in time')
+  } catch (err) {
+    // A cancelled or timed-out sign-in closes its provider window.
+    popup?.close()
+    throw err
   }
-  throw new Error('OAuth flow timed out — user did not complete authorization in time')
+}
+
+/** Web only: finish a pending OAuth flow with the loopback redirect address
+ * the user pasted back. Throws an {@link McpOAuthError} carrying the host's
+ * code (`OAUTH_BAD_REDIRECT`, `OAUTH_UNKNOWN_STATE`, `OAUTH_DENIED`,
+ * `OAUTH_EXCHANGE_FAILED`) on failure. */
+export async function completeMcpOAuth(projectId: string, callbackUrl: string): Promise<void> {
+  const result = await webServerMcpOAuth.complete(projectId, callbackUrl)
+  if (!result.success) {
+    throw new McpOAuthError(result.error || 'OAuth sign-in failed', result.code)
+  }
 }
 
 /** Check whether a stored OAuth token exists for a server URL (`projectId` is
@@ -1057,16 +1173,17 @@ export async function acpFetchRegistrySnapshot(
 
 export async function acpSpawnAgent(
   config: AgentConfig,
-  projectId?: string | null
+  projectId?: string | null,
+  sessionId?: string | null
 ): Promise<SpawnAgentResult> {
   const run = await ledgered(
     'spawn_agent',
     // args/env are digested (env can hold credentials): a changed launch is a
     // different spawn, and no raw value reaches the journal or engine state.
-    `${config.configId ?? ''}|${config.name}|${config.command}|${projectId ?? ''}|${keyDigest(
+    `${config.configId ?? ''}|${config.name}|${config.command}|${projectId ?? ''}|${sessionId ?? ''}|${keyDigest(
       JSON.stringify([config.args, config.env, config.allowTerminal ?? false])
     )}`,
-    (call) => getAcpTransport().spawnAgent(config, call, projectId)
+    (call) => getAcpTransport().spawnAgent(config, call, projectId, sessionId)
   )
   return run.result
 }
@@ -1077,6 +1194,15 @@ export async function acpKillAgent(agentId: AgentId): Promise<void> {
 
 export async function acpListAgents(): Promise<AgentId[]> {
   return getAcpTransport().listAgents()
+}
+
+/** Rename a quick chat. The host stores a local alias and ignores project chats. */
+export async function acpRenameQuickChat(sessionId: string, title: string): Promise<void> {
+  const transport = getAcpTransport()
+  if (!transport.renameSession) {
+    throw new Error('This host cannot rename a quick chat')
+  }
+  await transport.renameSession(sessionId, title)
 }
 
 export async function acpNewSession(
@@ -1092,6 +1218,8 @@ export async function acpNewSession(
     worktreePath?: string
     worktreeBranch?: string
     additionalDirectories?: string[]
+    /** `quick` asks the host to create the folder. The client sends no cwd. */
+    kind?: 'quick'
   }
 ): Promise<NewSessionOutcome> {
   // The key names every field that distinguishes one create from another (the
@@ -1105,6 +1233,7 @@ export async function acpNewSession(
     options?.promotable ? 'p' : '',
     options?.worktreePath ?? '',
     options?.worktreeBranch ?? '',
+    options?.kind === 'quick' ? `quick:${randomUUID()}` : '',
     // Content-derived parts (MCP servers can carry env / headers): digest only,
     // so a different server set or extra roots is a different create.
     keyDigest(JSON.stringify([mcpServers ?? null, options?.additionalDirectories ?? []]))
@@ -1256,9 +1385,10 @@ export async function acpPromoteSession(agentId: AgentId, sessionId: SessionId):
 export async function acpListSessions(
   agentId: AgentId,
   cwd?: string,
-  cursor?: string
+  cursor?: string,
+  projectId?: string
 ): Promise<ListSessionsResponse> {
-  return getAcpTransport().listSessions(agentId, cwd, cursor)
+  return getAcpTransport().listSessions(agentId, cwd, cursor, projectId)
 }
 
 export async function acpRegisterDiscoveredSession(input: {
@@ -1273,6 +1403,34 @@ export async function acpRegisterDiscoveredSession(input: {
     'register_discovered_session',
     `${input.agentId}|${input.sessionId}|${input.cwd}|${input.projectId ?? ''}`,
     (call) => getAcpTransport().registerDiscoveredSession(input, call)
+  )
+  return run.result
+}
+
+/**
+ * Import a session another client created (such as a Claude Code chat) into
+ * the durable chat history. The host captures the history the agent replays
+ * and closes the agent session; open the chat afterwards to resume it.
+ * Rejects with an `AcpTransportError` of code `duplicate` when the session is
+ * already in the history.
+ */
+export async function acpImportAgentSession(input: {
+  sessionId: SessionId
+  agentId: AgentId
+  cwd: string
+  title?: string | null
+  updatedAt?: number
+  projectId?: string
+}): Promise<import('@shared/types/web-protocol.types').PersistedSessionSummary> {
+  const run = await ledgered(
+    'import_agent_session',
+    JSON.stringify([
+      input.agentId.trim(),
+      input.sessionId.trim(),
+      input.cwd.trim(),
+      input.projectId?.trim() ?? ''
+    ]),
+    (call) => getAcpTransport().importAgentSession(input, call)
   )
   return run.result
 }
@@ -1385,6 +1543,30 @@ export async function acpRespondPermission(
  * Answer a structured question (issue #411). `values == null`/empty cancels;
  * otherwise submits the selected option values exactly once.
  */
+/**
+ * Send the approval card's decision. Secret values are not logged or journaled.
+ * Desktop answers through the `main` webview command. A remote client answers
+ * over `/ws`, and only when that connection is an authorized subscriber of the session.
+ */
+export async function answerMcpInstall(request: McpInstallAnswer): Promise<void> {
+  if (isTauriContext()) {
+    const result = await invokeIpc<null>('acp_answer_mcp_install', {
+      answer: {
+        requestId: request.requestId,
+        sessionId: request.sessionId,
+        decision: request.decision,
+        inputs: request.inputs ?? {},
+        secretValues: request.secretValues ?? {},
+        planId: request.planId ?? null,
+        launchDigest: request.launchDigest ?? null
+      }
+    })
+    if (!result.success) throw new Error(result.error)
+    return
+  }
+  await getAcpTransport().answerMcpInstall(request)
+}
+
 export async function acpAnswerQuestion(
   agentId: AgentId,
   questionId: string,
@@ -1475,6 +1657,18 @@ export async function acpGetAgentIdleWindow(): Promise<AgentIdleWindowStatus> {
   return getAcpTransport().getAgentIdleWindow()
 }
 
+// The sub-agent orchestrator's settings view (every carrier's one engine).
+export async function acpGetSubagentSettings(): Promise<SubagentSettingsView> {
+  return getAcpTransport().getSubagentSettings()
+}
+
+// Change the sub-agent settings; the reply is the new full view.
+export async function acpSetSubagentSettings(
+  input: SubagentSettingsInput
+): Promise<SubagentSettingsView> {
+  return getAcpTransport().setSubagentSettings(input)
+}
+
 // --- Event subscription ----------------------------------------------------
 
 /**
@@ -1505,6 +1699,7 @@ export const acpApi = {
   disposeEphemeralSession: acpDisposeEphemeralSession,
   promoteSession: acpPromoteSession,
   listSessions: acpListSessions,
+  importAgentSession: acpImportAgentSession,
   sendPrompt: acpSendPrompt,
   sendPromptBlocks: acpSendPromptBlocks,
   cancelPrompt: acpCancelPrompt,
@@ -1522,12 +1717,15 @@ export const acpApi = {
   setSessionReopenTimeout: acpSetSessionReopenTimeout,
   setAgentIdleWindow: acpSetAgentIdleWindow,
   getAgentIdleWindow: acpGetAgentIdleWindow,
+  getSubagentSettings: acpGetSubagentSettings,
+  setSubagentSettings: acpSetSubagentSettings,
   installRegistryBinary: acpInstallRegistryBinary,
   installAcpAgent: acpInstallAcpAgent,
   probeRuntime: acpProbeRuntime,
   probeMcpServer,
   listMcpTools,
   startMcpOAuth,
+  completeMcpOAuth,
   hasMcpOAuthToken,
   disconnectMcpOAuth,
   fetchRegistrySnapshot: acpFetchRegistrySnapshot,

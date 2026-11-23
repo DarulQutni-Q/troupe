@@ -11,10 +11,10 @@ export interface TopRowValue {
   roles: TopRowRoles
   platform: TopRowPlatform
   /**
-   * Start padding for the main card's top row so it clears the macOS traffic
-   * lights (Rail collapsed, no Side panel column). `0` otherwise.
+   * The Rail is collapsed: the main area's top row starts with the
+   * expand-Rail toggle (`TopRowStartSlot`).
    */
-  mainStartInsetPx: number
+  railToggleInMain: boolean
 }
 
 const TopRowContext = createContext<TopRowValue | null>(null)
@@ -23,15 +23,15 @@ const TopRowContext = createContext<TopRowValue | null>(null)
 export function TopRowProvider({
   roles,
   platform,
-  mainStartInsetPx = 0,
+  railToggleInMain = false,
   children
-}: Omit<TopRowValue, 'mainStartInsetPx'> & {
-  mainStartInsetPx?: number
+}: Omit<TopRowValue, 'railToggleInMain'> & {
+  railToggleInMain?: boolean
   children: React.ReactNode
 }): React.JSX.Element {
   const value = useMemo<TopRowValue>(
-    () => ({ roles, platform, mainStartInsetPx }),
-    [roles, platform, mainStartInsetPx]
+    () => ({ roles, platform, railToggleInMain }),
+    [roles, platform, railToggleInMain]
   )
   return <TopRowContext.Provider value={value}>{children}</TopRowContext.Provider>
 }

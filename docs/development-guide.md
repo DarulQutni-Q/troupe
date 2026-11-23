@@ -1,10 +1,10 @@
-# Termul Manager - Development Guide
+# Troupe - Development Guide
 
 **Date:** 2026-05-09
 
 ## Overview
 
-Termul Manager is developed as a Tauri-first desktop application. Day-to-day development primarily happens in the TypeScript renderer while native desktop runtime concerns live in the Rust `src-tauri/` workspace.
+Troupe is developed as a Tauri-first desktop application. Day-to-day development primarily happens in the TypeScript renderer while native desktop runtime concerns live in the Rust `src-tauri/` workspace.
 
 ## Prerequisites
 
@@ -94,11 +94,11 @@ bun scripts/canvas/fetch-figcraft-bundle.mjs
 bun run build:tauri --no-bundle
 ```
 
-Every release-profile build, desktop or `termul-server`, needs `canvas/bundle/` from the fetch script. Without it the build fails with a message that names the script. To build without the design canvas on purpose, set `TERMUL_ALLOW_MISSING_CANVAS_BUNDLE=1` (or `true`). The canvas in that binary answers `BUNDLE_MISSING`.
+Every release-profile build, desktop or `troupe-server`, needs `canvas/bundle/` from the fetch script. Without it the build fails with a message that names the script. To build without the design canvas on purpose, set `TERMUL_ALLOW_MISSING_CANVAS_BUNDLE=1` (or `true`). The canvas in that binary answers `BUNDLE_MISSING`.
 
 To install the desktop binary with cargo, enable the feature the same way: `cargo install --path src-tauri --features custom-protocol`.
 
-A release-profile build that lacks `custom-protocol` fails to compile the desktop binary and prints these fixes: `src-tauri/build.rs` sets a cfg, and a `compile_error!` in the desktop entry point (`src-tauri/src/main.rs`) enforces it. The check reads Tauri's own computed dev state, so it passes whenever `tauri/custom-protocol` is on, however it was enabled. Because the error lives in the desktop entry point, it blocks only the desktop binary, whatever features are on: debug-profile builds, the library, and the `termul-server` binary (`cargo build --release --bin termul-server --features standalone-server`) are never blocked.
+A release-profile build that lacks `custom-protocol` fails to compile the desktop binary and prints these fixes: `src-tauri/build.rs` sets a cfg, and a `compile_error!` in the desktop entry point (`src-tauri/src/main.rs`) enforces it. The check reads Tauri's own computed dev state, so it passes whenever `tauri/custom-protocol` is on, however it was enabled. Because the error lives in the desktop entry point, it blocks only the desktop binary, whatever features are on: debug-profile builds, the library, and the `troupe-server` binary (`cargo build --release --bin troupe-server --features standalone-server`) are never blocked.
 
 For `cargo test --release` and `cargo clippy --release`, which compile the desktop entry point but never ship it, set `TERMUL_ALLOW_RELEASE_WITHOUT_CUSTOM_PROTOCOL=1` (or `true`) to skip the check. Never use the override for a command that installs or distributes a binary (`cargo build`, `cargo install`): a binary built under it loads `devUrl`.
 
@@ -119,18 +119,21 @@ bun run typecheck
 ### Tests
 
 ```bash
-bun run test
+bun run test                        # every test file, in parallel
+bun run test src/renderer/foo.test.ts
 bun run test:watch
 ```
 
+`bun run test` runs `bun test` on a pinned Bun canary (`scripts/test.ts`), because stable Bun lacks the jsdom environment, `--parallel` and `--files-from`. The first run downloads the canary into `node_modules/.cache/bun-canary/` and checks its npm sha512 integrity. Test files keep their `vitest` imports. `bun test` maps `vi`, `expect` and the hooks itself, and the `vitest` package stays only for its types. Each file runs in a fresh global, and tests run in random order. The run prints `--seed=<n>`. Pass the same `--seed` and files to reproduce an order. The test files are the tracked files that match the globs in `scripts/ci/test-files.ts`.
+
 ### Web end-to-end suite
 
-`tests/e2e` holds Playwright specs that drive a release `termul-server` and the built web client against a fake ACP agent (`tests/e2e/fake-longrun-agent.ts`). The suite starts its own server on `127.0.0.1:8188`, so it needs the web build, the canvas bundle and a release server build first:
+`tests/e2e` holds Playwright specs that drive a release `troupe-server` and the built web client against a fake ACP agent (`tests/e2e/fake-longrun-agent.ts`). The suite starts its own server on `127.0.0.1:8188`, so it needs the web build, the canvas bundle and a release server build first:
 
 ```bash
 bun run build:web
 bun scripts/canvas/fetch-figcraft-bundle.mjs
-cargo build --release --bin termul-server --features standalone-server   # run in src-tauri
+cargo build --release --bin troupe-server --features standalone-server   # run in src-tauri
 bun run playwright install chromium
 bun run test:e2e
 ```
@@ -174,7 +177,7 @@ Typical renderer changes involve:
 1. Updating UI components in `src/renderer/components/`
 2. Adjusting state logic in one or more Zustand stores
 3. Using `@/lib/api` adapters rather than calling Tauri APIs directly from presentation components
-4. Adding Vitest/Testing Library coverage near the affected files
+4. Adding Testing Library coverage near the affected files (`bun run test`)
 
 ### Working on Native Features
 
@@ -209,7 +212,7 @@ Browser tab work spans:
 
 The app keeps its state in the host store on every surface; the desktop reaches it
 over its Tauri channel connection, and the store file is `store.json` in the app data
-directory (`termul-server`: its state directory). Keys are logical, for example
+directory (`troupe-server`: its state directory). Keys are logical, for example
 `projects`, `terminals/{projectId}`, `snapshots/{projectId}` and `window-state`; the
 host scopes them per device or shares them (see `docs/api-contracts.md`).
 
@@ -230,18 +233,15 @@ The file explorer and editor support live file watching through the filesystem A
 
 ### Pull Requests
 
-`.github/workflows/pr-validation.yml` runs:
+`.github/workflows/pr-metadata.yml` validates the PR title (conventional commits) and the PR description (template sections). It also runs when you edit the title or description.
 
-- PR title conventional-commit validation
-- `bun run lint`
-- `bun run typecheck`
-- `bun run test`
-- `cargo check --all-targets`
-- `cargo test`
-- `cargo clippy --all-targets -- -D warnings`
-- frontend Tauri build verification
+`.github/workflows/pr-validation.yml` runs on every push to the PR, but not on title or description edits. Its jobs run in parallel and none waits on another:
 
-`.github/workflows/e2e.yml` builds `dist-web/` and a release `termul-server`, then runs the Playwright suite. It runs the ACP lifecycle specs on a pull request that changes ACP, relay, protocol or e2e files, and daily. A manual dispatch takes a `specs` input to run other specs. The job uploads Playwright traces when it fails.
+- Checks: `bun scripts/ci/checks.ts` runs the rebrand check, `bun run ci` (Biome), the three typechecks, the shell tests, `bun run build:web` and `bun run build:frontend:tauri` at once, then lists every failure. Run it locally the same way, or name checks to run a subset: `bun scripts/ci/checks.ts biome tsc:web`.
+- Test (1/12) to Test (12/12): `bun run test`, split into 12 shards on 4-vCPU runners with 4 workers each. The frontend suite uses no database, so the shards share nothing. `scripts/ci/shard.ts` splits the files longest first by the file times of the newest dev run that finished before the PR run started, or by `scripts/ci/test-timings.json` when there is none. Every shard checks that the split covers each file exactly once, and that its junit report has exactly its own files. Together the two checks prove that the shards ran every file once. The Test step fails after 1 minute. The seed comes from the run id, so a rerun runs the same order. Each shard uploads its junit report as `bun-junit-<n>`, and dev runs also upload `test-timings-<n>`. `bun tools/ci-audit/test-parity.ts <run-id>` prints each shard's step and job times and the totals.
+- Rust Checks, Standalone Server Build and Rust Windows Smoke Check, when the PR changes Rust inputs: `cargo clippy --all-targets -- -D warnings` (it type-checks every target, so there is no separate `cargo check` on Linux), `cargo test`, the `troupe-server` build, and a Windows `cargo check --all-targets` plus build. They also run on every push to `dev`, which seeds the Rust caches that PRs restore.
+
+`.github/workflows/e2e.yml` builds `dist-web/` and a release `troupe-server`, then runs the Playwright suite. It runs the ACP lifecycle specs on a pull request that changes ACP, relay, protocol or e2e files, and daily. A manual dispatch takes a `specs` input to run other specs. The job uploads Playwright traces when it fails.
 
 ### Releases
 

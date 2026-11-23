@@ -206,6 +206,10 @@ vi.mock('@/stores/keyboard-shortcuts-store', () => ({
   matchesShortcut: () => false
 }))
 
+vi.mock('@/components/onboarding/onboarding-gate', () => ({
+  useOnboardingGate: () => ({ state: 'skip', close: () => {} })
+}))
+
 vi.mock('@/stores/app-settings-store', () => ({
   useAppSettingsStore: (selector: (state: Record<string, unknown>) => unknown) =>
     selector({ settings: { shellLayout: 'classic' }, isLoaded: true }),
@@ -282,10 +286,6 @@ vi.mock('@/components/shell/ShellFrame', () => ({
 
 vi.mock('@/components/workspace/PaneRenderer', () => ({
   PaneRenderer: () => <div data-testid="pane-renderer" />
-}))
-
-vi.mock('@/components/StatusBar', () => ({
-  StatusBar: () => <div data-testid="status-bar" />
 }))
 
 vi.mock('@/components/NewProjectModal', () => ({
@@ -576,8 +576,8 @@ describe('WorkspaceLayout close persistence', () => {
   })
 
   // Story 10: the global connection-health feeds are wired from the layout
-  // exactly once per mount — losing this call leaves the StatusBar
-  // indicator, terminal overlay, and Explorer recovery inert.
+  // exactly once per mount — losing this call leaves the connection lamp,
+  // terminal overlay, and Explorer recovery inert.
   it('wires connection-status tracking once on mount (Story 10)', () => {
     renderLayout()
     expect(mockWireConnectionStatusTracking).toHaveBeenCalledTimes(1)

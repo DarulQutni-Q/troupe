@@ -1,4 +1,4 @@
-# Termul Manager - API Contracts
+# Troupe - API Contracts
 
 **Date:** 2026-05-09
 **Surface:** Internal Tauri command and event API
@@ -7,7 +7,7 @@
 
 This page covers the desktop app's **internal IPC contract** between the React renderer and the Rust/Tauri runtime.
 
-`termul-server` and the desktop shared-live host also expose an HTTP and WebSocket API. Its HTTP routes are described by an OpenAPI 3.1 spec that the server builds from the `ROUTES` table in `src-tauri/src/web/openapi/`. A running server serves it at `GET /openapi.json`, `termul-server openapi` prints it, and each release attaches it as `openapi.yaml`. The WebSocket protocol is defined in `src/shared/types/web-protocol.types.ts`. The user guide is `website-docs/content/docs/server-api.mdx`.
+`troupe-server` and the desktop shared-live host also expose an HTTP and WebSocket API. Its HTTP routes are described by an OpenAPI 3.1 spec that the server builds from the `ROUTES` table in `src-tauri/src/web/openapi/`. A running server serves it at `GET /openapi.json`, `troupe-server openapi` prints it, and each release attaches it as `openapi.yaml`. The WebSocket protocol is defined in `src/shared/types/web-protocol.types.ts`. The user guide is `website-docs/content/docs/server-api.mdx`.
 
 This contract is implemented through:
 
@@ -173,12 +173,15 @@ Tauri commands take camelCase arguments and run only from the `main` webview. Ot
 | `automation_get` | `GET /api/automations/{id}` | `id` | `AutomationDetail` (`{automation, issues, policy}`) |
 | `automation_create` | `POST /api/automations` | `projectId`, `name` | `Automation` |
 | `automation_apply_ops` | `POST /api/automations/{id}/ops` | `id`, `baseRevision`, `ops` | `ApplyOpsResult` (`{automation, issues}`) |
+| `automation_preview_ops` | `POST /api/automations/{id}/ops/preview` | `id`, `baseRevision`, `ops` | `AutomationDetail`. A dry run of `automation_apply_ops` that saves and announces nothing. The automation is what a save would store: the next revision, so an approval of `baseRevision` no longer arms it and `next_run_at` is null. A stale `baseRevision` is the same `revision_conflict`. |
+| `automation_set_layout` | `POST /api/automations/{id}/layout` | `id`, `layout` | `Automation`. Saves canvas node positions (`{ [nodeId or "trigger"]: {x, y} }`) without a new revision, so an approval stands. A NaN or infinite coordinate under any key is `invalid_input` and nothing is saved. Otherwise keys that are not `trigger` or a node are dropped, and removing a node drops its position. |
 | `automation_delete` | `DELETE /api/automations/{id}` | `id` | `null` |
 | `automation_set_enabled` | `POST /api/automations/{id}/enabled` | `id`, `enabled` | `Automation` |
 | `automation_approve` | `POST /api/automations/{id}/approve` | `id`, `revision` | `Automation` |
 | `automation_run_now` | `POST /api/automations/{id}/run` | `id` | `AutomationRun` (status `running`) |
 | `automation_cancel_run` | `POST /api/automation-runs/{run_id}/cancel` | `runId` | `boolean`. `false` when the run is not in flight. |
-| `automation_list_runs` | `GET /api/automations/{id}/runs?limit=` | `id`, `limit` | `AutomationRun[]`, newest first, at most 200. The route's default `limit` is 50. |
+| `automation_decide_approval` | `POST /api/automation-runs/{run_id}/approval` | `runId`, `nodeId`, `approved` | `boolean`. `false` when the run is no longer parked on that approval node, or its deadline passed. |
+| `automation_list_runs` | `GET /api/automations/{id}/runs?limit=` | `id`, `limit` | `AutomationRun[]`, the run in progress first, then newest first, at most 200. The route's default `limit` is 50. |
 | `automation_run_steps` | `GET /api/automation-runs/{run_id}/steps` | `runId` | `AutomationStep[]` |
 | `automation_mark_seen` | `POST /api/automations/{id}/seen` | `id` | `null` |
 | `automation_preview_schedule` | `POST /api/automations/preview-schedule` | `schedule` | `{next_runs, error}`. An invalid schedule is a success with `next_runs: []` and the reason in `error`. |
@@ -187,9 +190,9 @@ Tauri commands take camelCase arguments and run only from the `main` webview. Ot
 | `automation_set_secret` | `PUT /api/automation-secrets` | `projectId`, `name`, `value` | `null` |
 | `automation_delete_secret` | `DELETE /api/automation-secrets?project_id=&name=` | `projectId`, `name` | `null` |
 
-Secret values go in and never come back out. The host stores them in the OS keychain. A host whose keychain does not answer at startup, such as `termul-server` on headless Linux, stores them instead in `automation-secrets.json` in its data directory: an owner-only (`0600`) JSON object keyed like the keychain entries, `automation:<project_id>:<NAME>`. A host that already has that file keeps using it. The log names the backend once at startup and never carries a value.
+Secret values go in and never come back out. The host stores them in the OS keychain. A host whose keychain does not answer at startup, such as `troupe-server` on headless Linux, stores them instead in `automation-secrets.json` in its data directory: an owner-only (`0600`) JSON object keyed like the keychain entries, `automation:<project_id>:<NAME>`. A host that already has that file keeps using it. The log names the backend once at startup and never carries a value.
 
-The `/api/automation` prefix is bearer-gated. A host without a token gate serves only loopback peers. Every `POST`, `PUT` and `DELETE` except `preview-schedule` passes the remote-write guard: the desktop shared-live host refuses them, and `termul-server` admits a non-loopback peer only with `--allow-remote-writes`.
+The `/api/automation` prefix is bearer-gated. A host without a token gate serves only loopback peers. Every `POST`, `PUT` and `DELETE` except `preview-schedule` and `ops/preview` passes the remote-write guard: the desktop shared-live host refuses them, and `troupe-server` admits a non-loopback peer only with `--allow-remote-writes`.
 
 A failure carries the service's code. On HTTP it also sets the status:
 
@@ -228,7 +231,7 @@ Runs rollback logic for a migration.
 
 ## Desktop ACP Chat History Commands
 
-The host owns durable chat history. The desktop and `termul-server` both write every non-ephemeral session to `SessionPersistence` (`src-tauri/src/acp/session_persistence/`), and the desktop keeps it under `<app data dir>/acp-sessions`. `acp_history_list`, `acp_history_get`, `acp_history_get_tail` and `acp_history_delete` read and change that store. `SessionPayload` is `{ metadata, messages, toolCalls? }`. `toolCalls` mirrors the session's ACP tool calls so a reopened or resumed chat restores its tool cards. Persisted tool calls drop `rawOutput` and unknown fields, normalize mid-flight statuses to `failed`, keep only the most recent calls, and stay within a per-call serialized byte budget (`sanitizeToolCallsForPersistence`).
+The host owns durable chat history. The desktop and `troupe-server` both write every non-ephemeral session to `SessionPersistence` (`src-tauri/src/acp/session_persistence/`), and the desktop keeps it under `<app data dir>/acp-sessions`. `acp_history_list`, `acp_history_get`, `acp_history_get_tail` and `acp_history_delete` read and change that store. `SessionPayload` is `{ metadata, messages, toolCalls? }`. `toolCalls` mirrors the session's ACP tool calls so a reopened or resumed chat restores its tool cards. Persisted tool calls drop `rawOutput` and unknown fields, normalize mid-flight statuses to `failed`, keep only the most recent calls, and stay within a per-call serialized byte budget (`sanitizeToolCallsForPersistence`).
 
 The renderer-authored store under `<app data dir>/acp-chat-history` (`ChatHistoryStore`) is legacy. The one-shot renderer wipe migration is the only caller of `acp_history_save`, `acp_history_flush`, `acp_history_mark_legacy_import_complete`, `acp_history_list_legacy` and `acp_history_get_legacy`. Each of them is listed in the command table above. After every legacy write the host imports the new entries into `SessionPersistence` (`import_chat_history`), so a following `acp_history_list` returns what the migration saved. The migration deletes the old Tauri Store ACP keys only after `acp_history_list_legacy` and `acp_history_get_legacy` return what it wrote. Unrelated preferences stay.
 
@@ -236,7 +239,7 @@ The `/ws` requests `list_persisted_sessions`, `get_session_payload` and `get_ses
 
 ## GitHub Issues and PRs
 
-The host runs the user's `gh` CLI for every GitHub read and write. Termul stores no GitHub token. The contract is `src/shared/types/github.types.ts`, and the renderer facade is `src/renderer/lib/github-api.ts`. `GithubService` (`src-tauri/src/github/`) implements each operation once. The desktop calls it through a Tauri command, and the browser and `termul-server` call it through an HTTP route.
+The host runs the user's `gh` CLI for every GitHub read and write. Troupe stores no GitHub token. The contract is `src/shared/types/github.types.ts`, and the renderer facade is `src/renderer/lib/github-api.ts`. `GithubService` (`src-tauri/src/github/`) implements each operation once. The desktop calls it through a Tauri command, and the browser and `troupe-server` call it through an HTTP route.
 
 | Facade method | Tauri command | Web route | Reply `data` |
 |---|---|---|---|
@@ -271,7 +274,7 @@ Each Tauri command takes one argument, `request`. Each route takes the same obje
 - **Create label.** `createLabel` runs `gh label create`. The name is trimmed and must have 1 to 50 characters. The colour must be six hex digits (a leading `#` is dropped). The description is optional, at most 100 characters. Invalid input is refused with `GH_FAILED` before any `gh` call. An existing label name fails; the host never passes `--force`. When `gh` times out, the error says the change may already be applied.
 - **Edit item.** `editItem` adds and removes labels and assignees by name or login, matched without case. The host reads the item and the repository's labels and assignable users, resolves each name to its id, and refuses a name it cannot resolve before it writes. It sends one GraphQL mutation on stdin. The label and assignee changes in it run in order and are not a transaction: when one fails, the earlier ones may already be applied, so the client re-reads the item. An edit with no names succeeds without a write. When `gh` times out, the error says the change may already be applied.
 - **Item state.** `setItemState` closes or reopens an issue or PR (`closeIssue` with `stateReason`, `reopenIssue`, `closePullRequest`, `reopenPullRequest`). A PR close ignores `reason`. When `gh` times out, the error says the change may already be applied.
-- **Checkout PR.** `cwd` must be a clean Termul chat worktree: a linked worktree under its repository's `.termul/worktrees/`, on a `chat/` branch, with no uncommitted or untracked changes. Any other path is `PATH_VALIDATION_FAILED`. The host refuses with `GH_FORK_PUSH_BLOCKED` unless the user can write to the PR's head repository, or the PR allows maintainer edits and the user can write to the base repository. It checks this before it changes the worktree. Then it runs `gh pr checkout <n> --detach` in the worktree, which, like `git checkout`, refuses to overwrite local changes made since the cleanliness check. It then points the chat branch at the PR head with `git switch -C <chat branch>`. `headSha` is the commit the worktree is at, and it must equal the PR head. `pushCommand` is `git push <remote> HEAD:<headRefName>`, shell-quoted, where `<remote>` is the remote for the PR's head repository (or its URL).
+- **Checkout PR.** `cwd` must be a clean Troupe chat worktree: a linked worktree under its repository's `.termul/worktrees/`, on a `chat/` branch, with no uncommitted or untracked changes. Any other path is `PATH_VALIDATION_FAILED`. The host refuses with `GH_FORK_PUSH_BLOCKED` unless the user can write to the PR's head repository, or the PR allows maintainer edits and the user can write to the base repository. It checks this before it changes the worktree. Then it runs `gh pr checkout <n> --detach` in the worktree, which, like `git checkout`, refuses to overwrite local changes made since the cleanliness check. It then points the chat branch at the PR head with `git switch -C <chat branch>`. `headSha` is the commit the worktree is at, and it must equal the PR head. `pushCommand` is `git push <remote> HEAD:<headRefName>`, shell-quoted, where `<remote>` is the remote for the PR's head repository (or its URL).
 - **Errors.** The failure codes are `GITHUB_ERROR_CODES` in the contract file, plus `PATH_VALIDATION_FAILED` (desktop) and `OUTSIDE_PROJECT_ROOT` (web).
 - **Logging.** Each operation logs its start, success or failure with the repository, operation and code. The logs never include tokens, `gh` output, request bodies or remote URLs.
 
@@ -352,7 +355,7 @@ and, before creating a session (`create_session`), runs `authenticate_agent`
 - no method (or only empty/whitespace ids) → unchanged spawn → `session/new` flow.
 
 For the default `agent` auth type the provider owns the login UX (it may open its
-own browser); Termul never invents a client-side login-URL redirect. Apart
+own browser); Troupe never invents a client-side login-URL redirect. Apart
 from the opt-in Factory key described below, it does not store provider
 credentials. The `authenticate` invoke uses `{ agentId, methodId }`.
 
@@ -369,7 +372,7 @@ return only whether a key is stored. Subsequent Factory Droid spawns overlay the
 stored key, leaving active processes and sessions untouched. A missing or
 unusable OS secret store rejects saving, but browser Login and explicitly
 configured environment keys still work. The web endpoints require an enabled
-Termul web-auth gate; the browser only submits a key over HTTPS or loopback.
+Troupe web-auth gate; the browser only submits a key over HTTPS or loopback.
 Factory Login remains an explicit choice even with a stored key.
 The key form is offered when Factory requests authentication, not in the
 agent picker after an existing browser login. Saving checks through a
@@ -379,13 +382,13 @@ The bundled Factory launcher uses `droid exec --output-format acp`. The host
 also upgrades the old `acp-daemon` argument when spawning a registry-backed
 Factory config, including saved configs and remote catalog entries: the old
 mode initializes but its Droid child exits with code 1 at `session/new` when
-Termul attaches its plan MCP server.
+Troupe attaches its plan MCP server.
 Factory Droid may acknowledge `session/set_config_option` with `{}` rather than
 the ACP-required `configOptions` snapshot. Only for this agent, the host
 interprets that response as success without a snapshot; desktop and web
 clients retain their known options and update the chosen value locally.
 Creating another Factory session in the same Droid process resets the model
-of its existing sessions. Termul therefore does not refill a Factory warm
+of its existing sessions. Troupe therefore does not refill a Factory warm
 session after launch; a later chat uses a new Droid process while keeping
 earlier sessions alive. Login remains available in the auth-required banner,
 not as a permanent composer button once a session is ready.
@@ -393,7 +396,7 @@ With no stored Factory key, a new Droid process tries `session/new` using the
 CLI's existing browser-login state before offering the auth-required banner.
 
 **2a. Terminal auth methods (headless login).** Clicking a `terminal` method in the
-auth banner spawns an ordinary termul terminal tab (`kind:'shell'`, titled
+auth banner spawns an ordinary Troupe terminal tab (`kind:'shell'`, titled
 `Sign in — <agent>`) running the agent binary with the method's `args`/`env` in the
 session cwd. Exit code 0 → `authenticate(methodId)` runs and session creation
 proceeds; non-zero → toast and the banner stays. No live PTY is killed or
@@ -500,11 +503,12 @@ These are the `acp_*`, `claude_accounts_*`, `ws_channel_*` and `codex_cli_auth_s
 | `acp_mcp_oauth_start` | Starts the MCP OAuth flow for a server URL. Discovers the endpoints, registers a PKCE client, opens the authorization URL in the system browser, waits for the redirect on a local HTTP server, and stores the token. Desktop only. |
 | `acp_mcp_oauth_has_token` | Returns whether a stored OAuth token exists for a server URL. Does not check the token's validity. |
 | `acp_mcp_oauth_disconnect` | Deletes the stored OAuth token for a server URL. |
-| `acp_set_turn_timeout` | Sets or clears (`null`) the hard turn timeout override, in seconds. `TERMUL_ACP_TURN_TIMEOUT_SECS` takes precedence. |
-| `acp_set_turn_idle_timeout` | Sets or clears the turn idle timeout override. `0` is rejected. `TERMUL_ACP_TURN_IDLE_TIMEOUT_SECS` takes precedence. |
-| `acp_set_session_new_timeout` | Sets or clears the `session/new` timeout override. `0` is rejected. `TERMUL_ACP_SESSION_NEW_TIMEOUT_SECS` takes precedence. |
-| `acp_set_session_reopen_timeout` | Sets or clears the `session/load` and `session/resume` timeout override. `0` is rejected. `TERMUL_ACP_SESSION_REOPEN_TIMEOUT_SECS` takes precedence. |
-| `acp_set_agent_idle_window` | Sets or clears the App Preferences override of how long an idle agent stays alive. `0` is rejected. `TERMUL_AGENT_IDLE_REAP_SECS` and a locked server window take precedence. Browser equivalent: `POST /host/agent-idle-window`. |
+| `acp_answer_mcp_install` | Desktop answer to a chat MCP install card, from the `main` webview only. Payload: `requestId`, `sessionId`, `decision` (`decline`, `preview`, or `approve`), optional `inputs` and `secretValues`, and `planId` plus `launchDigest` on approve. The first answer wins. A remote client uses the `/ws` request instead. |
+| `acp_set_turn_timeout` | Sets or clears (`null`) the hard turn timeout override, in seconds. `TROUPE_ACP_TURN_TIMEOUT_SECS` takes precedence. |
+| `acp_set_turn_idle_timeout` | Sets or clears the turn idle timeout override. `0` is rejected. `TROUPE_ACP_TURN_IDLE_TIMEOUT_SECS` takes precedence. |
+| `acp_set_session_new_timeout` | Sets or clears the `session/new` timeout override. `0` is rejected. `TROUPE_ACP_SESSION_NEW_TIMEOUT_SECS` takes precedence. |
+| `acp_set_session_reopen_timeout` | Sets or clears the `session/load` and `session/resume` timeout override. `0` is rejected. `TROUPE_ACP_SESSION_REOPEN_TIMEOUT_SECS` takes precedence. |
+| `acp_set_agent_idle_window` | Sets or clears the App Preferences override of how long an idle agent stays alive. `0` is rejected. `TROUPE_AGENT_IDLE_REAP_SECS` and a locked server window take precedence. Browser equivalent: `POST /host/agent-idle-window`. |
 | `acp_get_agent_idle_window` | Returns the idle window in use as `{secs, source}`, with `source` one of `env`, `operator`, `setting` or `default`. Browser equivalent: `GET /host/agent-idle-window`. |
 | `acp_fetch_registry_snapshot` | The registry check behind "Check for updates". Takes `forceRefresh?`, shares the catalog's snapshot cache, and fails when the host has no catalog store. `/ws` equivalent: `fetch_acp_registry_snapshot`. |
 | `acp_install_registry_binary` | Legacy desktop-only install of a registry release archive (`agentId`, `archiveUrl`, `cmd`, `args?`) into `<app data dir>/acp-registry-binaries/<agentId>`. The archive URL must be `https`. The verified install is `install_acp_agent`. |
@@ -513,6 +517,7 @@ These are the `acp_*`, `claude_accounts_*`, `ws_channel_*` and `codex_cli_auth_s
 | `claude_accounts_login` | Runs the Claude browser login for one Account and resolves when it finishes. Desktop only. `/ws` `cancel_claude_login` stops it. |
 | `claude_accounts_set_default` | Chooses the Default Account. `/ws` equivalent: `set_default_claude_account`. |
 | `claude_accounts_set_project` | Chooses a Project's Account, or clears it with `null`. With `expectedAccountId`, applies only while the Project still uses that Account; returns whether it applied. `/ws` equivalent: `set_project_claude_account`. |
+| `claude_accounts_set_chat` | Chooses the Account of one chat, or makes it follow its Project again with `null`. With `expectedAccountId`, applies only while the chat still runs on that Account; returns whether it applied. `/ws` equivalent: `set_chat_claude_account`. |
 | `claude_accounts_set_auto_switch` | Turns automatic switching at a usage limit on or off (default on). `/ws` equivalent: `set_claude_auto_switch`. |
 | `acp_history_list` | Returns `{sessions, legacyImportComplete}`. The sessions come from the host's durable session index (`SessionPersistence`) and are empty when the host opened no persistence. |
 | `acp_history_get` | Returns one session's `{metadata, messages, toolCalls?}` payload from the host store, or `null` when absent. |
@@ -523,6 +528,8 @@ These are the `acp_*`, `claude_accounts_*`, `ws_channel_*` and `codex_cli_auth_s
 | `acp_history_mark_legacy_import_complete` | Marks the legacy store as imported and converges the host store. |
 | `acp_history_list_legacy` | Lists the legacy store so the wipe migration can verify what it wrote. |
 | `acp_history_get_legacy` | Reads one legacy payload for the same verification. |
+
+Each `TROUPE_*` variable in these rows is also read under its old `TERMUL_*` name, which logs one deprecation warning per process. A `TROUPE_*` value that is not blank wins.
 
 ### `/ws` requests
 
@@ -535,7 +542,7 @@ The class column is the request's command class, defined in `src-tauri/src/web/c
 | --- | --- | --- |
 | `authenticate` | read | Connection handshake, not agent sign-in. Checks `protocolVersion` and the `deviceId` and `clientInstanceId` identity, then the web token when the host has a gate. |
 | `ping` | read | Keeps the host's silent-peer watchdog fed and returns an ok reply. |
-| `spawn_agent` | create | Starts an agent subprocess, completes `initialize`, and returns the spawn metadata and the agent's capabilities. |
+| `spawn_agent` | create | Starts an agent subprocess, completes `initialize`, and returns the spawn metadata and the agent's capabilities. Optional `projectId` selects the Project's Claude and Codex Account. Optional `sessionId` names the existing chat the agent opens; a managed Claude agent then runs that chat's own Account when it has one. |
 | `kill_agent` | idempotent | Stops an agent. Every live session of the agent ends with `session_closed`. |
 | `list_agents` | read | Returns the live agents as identity-and-capability summaries. |
 | `authenticate_agent` | command | Runs one of the agent's advertised ACP auth methods (`{agentId, methodId}`). Stores no reply. |
@@ -545,29 +552,34 @@ The class column is the request's command class, defined in `src-tauri/src/web/c
 | `load_session` | command | Reopens an agent session with ACP `session/load`. |
 | `resume_session` | command | Reopens an agent session with ACP `session/resume`. The reply carries `replaySnapshot: null`, because history comes from `get_session_payload` and `recover_session_snapshot`. |
 | `close_session` | command | Closes a session and leaves the agent running. A running turn is cancelled first. |
-| `list_sessions` | read | Lists the sessions the agent reports (`session/list`), with optional `cwd` and `cursor`. |
+| `list_sessions` | read | Lists the sessions the agent reports (`session/list`). Optional `projectId`, `cwd` and `cursor`. On the web `/ws` carrier (including view-only peers) a supplied `cwd` is canonicalized — it must exist; `..` and symlinks cannot walk out — and is accepted only when the resolved path sits inside a registered project's canonical root (both sides are canonicalized and compared component-wise). With `projectId`, that project only; without `projectId`, any registered project. If `cwd` is omitted, the host uses the named project or the host default. Desktop IPC still takes `cwd` as the listing folder. |
 | `register_discovered_session` | command | Persists metadata for an agent-owned session that `list_sessions` returned. |
+| `import_agent_session` | command | Imports a session another client created, such as a Claude Code chat. Payload: `agentId`, `sessionId`, `cwd`, optional `title`, `updatedAt` (ms) and `projectId`. The host registers the session, captures the history that ACP `session/load` replays into the durable log, then closes the agent session. The reply carries the session metadata. Errors: `duplicate` when the id is already in the chat history or an import of it is running; `unsupported` when the request is invalid, the agent replays no history or the session cannot be saved; any other agent error (such as `not_implemented`, `not_found` or `agent_auth_required`) keeps its mapped code. Open the imported chat with `resume_session`, or with `load_session` for an agent without `session/resume`. |
 | `delete_agent_session` | idempotent | Asks the agent to delete one of its sessions. |
 | `dispose_ephemeral_session` | command | Disposes a backend-ephemeral session, such as a warm-pool or utility session. |
 | `promote_session` | command | Turns an ephemeral session into a durable one, so its first real prompt persists. |
 | `send_prompt` | command | Starts a prompt turn. `turnId` is the `command_id`. The reply is the stop reason or a receipt. |
 | `cancel_prompt` | idempotent | Cancels the running turn of a session. |
 | `stop_subagent` | idempotent | Stops one subagent of a chat: `session/cancel` for its child session when the agent offers a stop. Replies `{ outcome: "sent" \| "already_ended" }`; `not_found` or `unsupported` otherwise. |
+| `subagent_settings_get` | read | The orchestrated sub-agent settings: `{ enabled, maxRunning, maxDepth, agents: [{ agentId, name, allowed, model }] }`, where `model` is the agent's default sub-agent model or `null`. Open to view-only peers; `unsupported` on a host without the engine. |
+| `subagent_settings_set` | idempotent | Merges a partial of that view (an omitted field keeps its value; `agents` carries `{ agentId, allowed }` toggles, `models` carries `{ agentId, model }` defaults where `null` clears) and replies the new view. `VALIDATION_ERROR` for an unknown field or an out-of-bounds value. |
 | `set_config_option` | idempotent | Sets one session config option. |
 | `set_mode` | idempotent | Sets the session mode. |
 | `set_model` | idempotent | Sets the session model. |
 | `respond_permission` | command | Answers a `permission_request`. The first answer wins and a later one is `already_resolved`. A `host:` request id is a browser consent ticket: only a connection that passed the host's web-token gate and is subscribed to the ticket's session may answer it (`permission_denied` otherwise), and an answer within 750 ms of the prompt is `rate_limited`. |
 | `browser_stop` | idempotent | Stops agent browsing for `{sessionId}` until the user's next prompt, with the same approver rule as browser consent tickets. Desktop parity with the `browser_stop` Tauri command. `unsupported` on a host without the browser. |
 | `answer_question` | command | Answers a `question_request`. The first answer wins. |
+| `answer_mcp_install` | command | Answers an `mcp_install_request`. Payload: `requestId`, `sessionId`, `decision` (`decline`, `preview`, or `approve`), optional `inputs` and `secretValues`. Approve also sends the card's `planId` and `launchDigest`. A mismatch or a missing plan does not commit. Only a connection that passed the host's web-token gate and is subscribed to that session may answer (`permission_denied` otherwise). The session id must be the install's session. The first answer wins; a later one is `already_resolved`, and an unknown id is `stale`. An answer within 750 ms of the card is `rate_limited`, the same floor as a host ticket. `secretValues` are not logged and the request never enters the receipt ledger. Desktop parity with `acp_answer_mcp_install`. |
 | `respond_elicitation` | command | Answers an `elicitation_request`. Stores no reply. |
 | `subscribe` | read | Binds the connection to a session log. Takes an optional `lastSeq` and `logEpoch` cursor and replies `{sessionId, replayed, logEpoch, headSeq}`. |
 | `recover_session_snapshot` | read | Returns `{sessionId, watermark, headSeq, logEpoch, events}` so a client can rebuild a session after a `gap` or a `stale` cursor. |
 | `get_session_cursor` | read | Returns the durable `{sessionId, watermark}` and, for a known session, `logEpoch` and `headSeq`. |
-| `list_persisted_sessions` | read | Returns the durable session index. Empty without durable history. |
+| `list_persisted_sessions` | read | Returns the durable session index. Empty without durable history. An entry has `startedBy`, the parent chat id, when an agent started the chat with the `start_chat` host tool. |
 | `open_persisted_session` | read | Subscribes to a persisted session like `subscribe`. `unsupported` when the host keeps no durable history. |
 | `get_session_payload` | read | Returns a session's full payload from the durable log. `not_found` for an unknown id. |
 | `get_session_payload_tail` | read | Returns the last `limit` messages of a session and their tool calls. |
-| `delete_session` | idempotent | Deletes a persisted session. Replies `true` when it deleted and `false` when it was already absent. |
+| `delete_session` | idempotent | Deletes a persisted session. Replies `true` when it deleted and `false` when it was already absent. A quick chat also deletes its folder. |
+| `rename_session` | idempotent | Sets a quick chat's local title (`LocalAlias`). Refuses a project chat. |
 | `record_agent_switch` | command | Appends a durable `agent_switch` record to a session and delivers it live under the same seq. |
 | `mark_chat_read` | idempotent | Moves the host's shared last-read marker of a chat forward. An older seq is a no-op. |
 | `list_acp_catalog` | read | Returns the host's agent catalog with per-agent availability. Takes an optional `refresh`. |
@@ -582,17 +594,30 @@ The class column is the request's command class, defined in `src-tauri/src/web/c
 | `commit_mcp_install` | command | Commits a plan once with `{planId, launchDigest, secretValues}` and returns the resolved entry, secret values included. A changed digest is `MCP_PLAN_MISMATCH`, an old plan `MCP_PLAN_EXPIRED`, and a repeat `MCP_PLAN_CONSUMED`. It never enters the receipt ledger, so a resend of the same `command_id` runs again and gets `MCP_PLAN_CONSUMED` instead of a stored reply. Needs write. HTTP: `POST /mcp-catalog/install/commit`. |
 | `cancel_mcp_install` | idempotent | Drops the caller's plan (`{planId}`). Needs write. HTTP: `POST /mcp-catalog/install/cancel`. |
 | `get_mcp_catalog_icon` | read | Returns a catalog server's logo, `{contentType, base64}` (`{name}`). Only the host fetches the publisher URL; rows carry `hasIcon`, never the URL. `GET /mcp-catalog/icon/<name>` serves the raw bytes to a browser. |
-| `list_claude_accounts` | read | Returns the Claude Accounts snapshot. |
+| `list_claude_accounts` | read | Returns the Claude Accounts snapshot: `accounts`, `defaultAccountId`, `projectAccounts` (Project id to Account id), `chatAccounts` (chat id to Account id, only chats with their own choice) and `autoSwitch`. |
 | `list_claude_usage` | read | Returns Account usage windows. The host caches reads for 5 minutes. |
 | `set_default_claude_account` | idempotent | Chooses the Default Account. |
 | `set_project_claude_account` | idempotent | Chooses a Project's Account, or clears it with `null`. With `expectedAccountId`, applies only while the Project still uses that Account; replies `{ applied }`. |
+| `set_chat_claude_account` | idempotent | `{projectId, sessionId, accountId, expectedAccountId?}`: chooses the Account of one chat, or makes it follow its Project again with `accountId: null`. With `expectedAccountId`, applies only while the chat still runs on that Account (its own, else its Project's, else the default); replies `{ applied }`. The caller restarts the chat on the new Account. |
 | `set_claude_auto_switch` | idempotent | Turns automatic switching at a usage limit on or off (default on). |
+| `set_claude_resume` | idempotent | `{sessionId, at}`: the host continues the chat at `at` (epoch ms) after its Claude limit resets, or cancels that with `at: null`, and replies `{}`. Refused for a chat that does not run on a Troupe-managed Claude Account. A turn of the chat, or closing it, also cancels the resume. |
 | `add_claude_account` | command | Adds a signed-out Account named `{name}` and replies with it. A resent command replays the first reply. |
 | `rename_claude_account` | idempotent | Renames `{accountId}` to `{name}` and replies `{}`. Renaming to the current name succeeds. |
-| `remove_claude_account` | idempotent | Signs the Claude CLI out of `{accountId}`, removes it and replies `{movedProjectIds}`, the Projects that moved to the Default Account. An Account that is already gone replies `{movedProjectIds: []}`. The built-in Account is refused. |
+| `remove_claude_account` | idempotent | Signs the Claude CLI out of `{accountId}`, removes it and replies `{movedProjectIds, movedChatIds}`: the Projects that moved to the Default Account, and the chats that had the Account as their own and now follow their Project. Clients restart the open chats of both lists. An Account that is already gone replies `{movedProjectIds: [], movedChatIds: []}`. A client reads a missing `movedChatIds` (an older host) as `[]`. The built-in Account is refused. |
 | `start_claude_link_login` | idempotent | Starts a link sign-in for `{accountId}` and replies `{url}`, the Claude sign-in link. Stops a sign-in already running for the Account. |
 | `finish_claude_link_login` | command | Writes `{code}` from the Claude page to the link sign-in of `{accountId}`. Replies `{}` once the Claude CLI stored the login. Two errors leave the sign-in running: `claude_login_code_incomplete` (it still waits for the whole code) and `claude_login_busy` (the CLI still checks an earlier code, whose sender gets the verdict). Any other error ended the sign-in for this caller, including a code that reaches a newer sign-in still waiting for its link. Receipt-only: the code is never stored or digested. |
 | `cancel_claude_login` | idempotent | Stops the browser or link sign-in of `{accountId}`. Replies `{cancelled}`, `false` when none was running. On one connection it runs after a `start_claude_link_login` of the same Account sent before it, so a cancel sent while the link loads stops that sign-in. |
+| `list_codex_accounts` | read | Returns the Codex Accounts snapshot: `accounts`, `defaultAccountId`, `projectAccounts`, `chatAccounts` (chat id to Account id, only chats with their own choice) and `autoSwitch`. ChatGPT logins only. No secrets. |
+| `list_codex_usage` | read | Returns the plan windows of every Codex Account. The host caches reads for 5 minutes. `force` still reuses a read younger than 60 seconds. A failed read keeps the last good windows. |
+| `set_default_codex_account` | idempotent | Chooses the Default Codex Account. The Account must be signed in. |
+| `set_project_codex_account` | idempotent | Chooses a Project's Codex Account, or clears it with `null`. With `expectedAccountId`, applies only while the Project still uses that Account; replies `{ applied }`. |
+| `set_chat_codex_account` | idempotent | `{projectId, sessionId, accountId, expectedAccountId?}`: chooses the Account of one chat, or makes it follow its Project again with `accountId: null`. With `expectedAccountId`, applies only while the chat still runs on that Account (its own, else its Project's, else the default); replies `{ applied }`. The caller restarts the chat on the new Account. |
+| `set_codex_auto_switch` | idempotent | Turns automatic switching at a Codex usage limit on or off (default on). |
+| `set_codex_resume` | idempotent | `{sessionId, at}`: the host continues the chat at `at` (epoch ms) after its Codex limit resets, or cancels that with `at: null`, and replies `{}`. Refused for a chat that does not run on a Troupe-managed Codex Account. A turn of the chat, or closing it, also cancels the resume. |
+| `add_codex_account` | command | Adds a signed-out Codex Account named `{name}` and replies with it. A resent command replays the first reply. |
+| `rename_codex_account` | idempotent | Renames `{accountId}` to `{name}` and replies `{}`. |
+| `remove_codex_account` | idempotent | Runs `codex logout` for `{accountId}`, removes it and replies `{movedProjectIds, movedChatIds}`: the Projects that moved to the Default Account, and the chats that had the Account as their own and now follow their Project. An Account that is already gone replies `{movedProjectIds: [], movedChatIds: []}`. The built-in Account is refused. |
+| `start_codex_account_login` | command | Spawns the Codex agent with that Account's home and replies with the spawn outcome. The client then calls `authenticate_agent` with `chat-gpt` or `chat-gpt-device-code`. The config env is not stored in the ledger. |
 | `add_project` | idempotent | Adds a project to the host registry. See "Project registry commands". |
 | `update_project` | idempotent | Changes a project's name, color, archive flag or root. See "Project registry commands". |
 | `remove_project` | idempotent | Removes a project. See "Project registry commands". |
@@ -631,10 +656,16 @@ A session log event has one of three delivery tiers (`tier_of` in `src-tauri/src
 | `acp:mode_update` | session | Session log event (reliable). |
 | `acp:config_options_update` | session | Session log event (reliable). |
 | `acp:usage_update` | session | Session log event (reliable). Context-window use and optional cost. |
+| `acp:claude_limit_action` | session | Session log event (reliable). The host acted on a Claude chat at its Account's limit, `{sessionId, projectId, action}`. `action` is `switched` (`{from, to, fromAgentId, newAgentId}`), `resume_scheduled` (`{at}`, epoch ms), `resume_cancelled`, `resumed` (`{fromAgentId, newAgentId}`) or `failed` (`{reason}`). `switched` moves only that chat; other chats on the same agent keep running there. |
+| `acp:codex_limit_action` | session | Session log event (reliable). The host acted on a Codex chat at its Account's limit, `{sessionId, projectId, action}`. `action` is `switched` (`{from, to, fromAgentId, newAgentId}`), `resume_scheduled` (`{at}`, epoch ms), `resume_cancelled`, `resumed` (`{fromAgentId, newAgentId}`) or `failed` (`{reason}`). `switched` moves only that chat; other chats on the same agent keep running there. |
 | `acp:agent_working` | session | Session log event (reliable). Live only. The agent started or stopped working in the session outside a prompt turn, `{agentId, sessionId, working}`. The `list_agents` summary carries the current set as `workingSessions`. |
+| `acp:background_commands` | session | Session log event (reliable). Live only. The whole list of commands the agent left running in the session, `{agentId, sessionId, revision, commands}`. Every change on the agent takes the next `revision`, so a client replaces its list only with one of a higher revision from the same agent; two lists can arrive out of order. Each command is `{toolCallId, title, command, startedAtMs, state}`, with `endedAtMs` when `state` is `ended`. A command runs from a tool call that showed `terminal_info` and reported a final status without `terminal_exit`, or from a tool call still open when its prompt turn ended. After a turn that ended with any stop reason except `cancelled`, every open call counts. After a cancel, only a call `in_progress` that showed `terminal_info` counts. After an error or a timeout, none does. A call whose permission request the host cancelled never counts, and a call opened between turns does not count at the next turn end. It ends at its `terminal_exit`, at the final status of a call left open, or at a Qwen Code `background_task_completed` chunk naming it. An ended command stays listed until the session's next prompt starts. When the session listed commands, a close sends an empty list before `session_closed`, and so do a delete and the disposal of an ephemeral session. A stopped agent drops the list without this event (`session_closed` follows). The `list_agents` summary carries the lists as `backgroundCommands: {revision, sessions}`, where `sessions` is keyed by session id and leaves out a session with no command. |
 | `acp:permission_request` | session | Session log event (reliable). Live only: never written to the durable log. A `host:` request id with `_meta.termul.origin_kind = "browser"` is a host-originated browser consent ticket with the fixed options `allow_session`, `allow_project` and `deny`. |
 | `acp:question_request` | session | Session log event (reliable). A structured question from the agent, including one from the host `ask_user` tool. |
 | `acp:question_cancelled` | session | Session log event (reliable). A pending question can no longer be answered. |
+| `acp:mcp_install_request` | session | Session log event (reliable). Live only. The chat approval card for `mcp_install`, `{agentId, sessionId, requestId, name, title, transport, form, consent, planId, launchDigest, error?}`. `name` is the server name that will be saved. `consent` is the same review as Settings: command, arguments, URL, environment variables, headers, host mounts, provenance, and warnings. Secret values the user types are not in the event. A subscribe reply lists the ones still waiting as `pendingMcpInstalls`. |
+| `acp:mcp_install_resolved` | session | Session log event (reliable). Live only. The card finished, `{agentId, sessionId, requestId, outcome, name?, serverId?, nextSteps, oauth}`. No secret values. |
+| `acp:mcp_registry_changed` | session | Session log event (reliable). Live only. The host MCP list changed after an install, `{agentId, sessionId, serverId, name}`. Clients reload the list. |
 | `acp:elicitation_request` | session | Session log event (reliable). The agent asks for structured user input. |
 | `acp:prompt_complete` | session | Session log event (idempotent). Exactly one per accepted turn, with a `stopReason`. |
 | `acp:agent_switch` | session | Session log event (reliable). Durable agent-switch marker. |
@@ -756,11 +787,12 @@ from the plan store (logged `source: 'planRehydrate'`); the agent can still emit
 >   a `[termul: tool output truncated]` marker on live update (logged once per toolCallId
 >   without content; non-string values pass through).
 
-The `termul-plan` fence is rendered inline inside historical (non-streaming) messages by
-`TermulPlanRenderer` (`src/renderer/components/chat/ChatMarkdownPlanFence.tsx`) as a read-only
-`PlanPanel`. The live streaming turn shows the sticky `PlanPanel` pinned in `AgentChatPanel`
-instead — the inline renderer is gated to `!streaming` so an in-flight turn never renders a
-duplicate plan UI.
+The `termul-plan` fence is **not** rendered. The sticky `PlanPanel` in `AgentChatPanel` is the
+only plan UI, for the live turn and for a reopened chat. Display and copy paths strip the fence
+(`stripTermulPlanFences`). On `openHistorySession` the fence still restores `plans[sessionId]`.
+A finished turn's restored plan has no `in_progress` items: turn end, and a reopen of a finished
+turn, return those items to `pending`. See `docs/acp-agent-plan-compliance.md` for the new-plan
+vs in-place-update rule.
 
 ### `acp:usage_update`
 
@@ -778,11 +810,14 @@ duplicate plan UI.
     amount: number
     currency: string
   }
+  rateLimit?: ClaudeRateLimit
+  limitReached?: ClaudeRateLimit
 }
 ```
 
 **Semantics:**
 
+- `rateLimit` is the Claude plan rate-limit state when it does not block the chat. A state that blocks the chat (`rejected` with no overage in use) travels only as `limitReached`, so clients that predate the host's account switch never run their own switch on it.
 - Emitted when the agent pushes a usage update; Rust forwards `used`/`size`/`cost` without additional gating (`UsageUpdateEvent` in `src-tauri/src/acp/events.rs`).
 - Each event **replaces** the renderer’s current usage state for that session (`used`/`size`; optional `cost` when accepted).
 - Renderer validation (`_onUsageUpdate` in `acp-store.ts`):
@@ -880,7 +915,7 @@ A project's open files and pane layout live only in the device's own store key `
 
 ### Project registry commands
 
-One durable `ProjectRegistry` per host owns the project list: `termul-server` keeps it in its projects file, the desktop in `<app data dir>/projects.json` (locked beside `store.json`, opened once at setup, **not** cleared by `remote_server_stop`). Every command below runs through one host command service: it validates, writes the candidate to disk (temp file, fsync, rename) and only then swaps memory, so a failed write replies an error and changes nothing; then it publishes the new state to every `projects` watcher.
+One durable `ProjectRegistry` per host owns the project list: `troupe-server` keeps it in its projects file, the desktop in `<app data dir>/projects.json` (locked beside `store.json`, opened once at setup, **not** cleared by `remote_server_stop`). Every command below runs through one host command service: it validates, writes the candidate to disk (temp file, fsync, rename) and only then swaps memory, so a failed write replies an error and changes nothing; then it publishes the new state to every `projects` watcher.
 
 | `/ws` request | HTTP | Request fields | Reply |
 | --- | --- | --- | --- |
@@ -895,20 +930,26 @@ One durable `ProjectRegistry` per host owns the project list: `termul-server` ke
 - Registry file: schema 4 (`imported: bool` added to v3). A v1-v3 file loads and is copied to `<name>.pre-v4-<ts>.bak` before its first rewrite; a newer schema is refused and never overwritten; a corrupt file is copied to `<name>.corrupt-<ts>.bak`. The synthetic seed project (only from the removed `--project-root` / `$TERMUL_PROJECT_ROOT`) lives in memory only; the desktop never seeds one.
 - Tauri: `project_registry_import({projects: ProjectSummary[], defaultProjectId?}) -> {imported: boolean}` is the desktop's one-shot import of the renderer's old project list. It runs only while the file says nothing was imported, adds ids that are not registered (existing ids are kept, never overwritten), applies the default only when none is set (the synthetic seed does not count as one) and sets `imported` durably even for an empty list; a repeat replies `{imported: false}`. The renderer imports once at the first desktop start after the upgrade, then deletes its old `projects` key and keeps its per-project settings, groups and order under the device key `project-prefs`. `remote_sync_projects` (full-list push) and `set_host_default_project` no longer exist: the renderer, on the browser and the desktop alike, reads the list from the `projects` watch and changes it with the `/ws` requests above (`path` on `update_project` moves a root).
 
-### MCP and OAuth operations name a project
+### MCP server list and OAuth operations
 
-The MCP server list is a file per project, `{project root}/.termul/mcp-servers.json`; there is no single host project root. Every operation names `projectId`, resolved through `ProjectRegistry::canonical_root`: an unknown, archived or pathless project (or one whose folder is gone) is refused `NOT_FOUND` and nothing is read or written.
+The MCP server list is one host-wide value, the same on the desktop, the desktop shared-live host and `troupe-server`: the logical persistence key `acp/mcp-servers` (host store key `shared/lww/acp/mcp-servers`), an array of `{id, enabled?, name, type?, command?, args?, env?, url?, headers?, catalog?}` in the `{_version, data}` envelope. Every client reads and writes it with `store_read` / `store_write` like any shared key, so a write needs the connection's write capability (the same remote-write predicate as `check_local_only`: a non-loopback peer only with `--allow-remote-writes`, never in shared-live mode). There is no `/mcp-servers` read or write route and no per-project list.
+
+On its first start with no stored list, `troupe-server` merges the legacy `<project root>/.termul/mcp-servers.json` of each registered, non-archived project whose folder exists into the store once, in registry order: a later entry with an id already taken (the same server copied between projects), or with a taken name and the same launch (transport, command and args or URL, env or header names, not their values), is dropped, so the first project's values win; a taken name with a different launch gets the first free `<name>-<n>` (n from 2). Unreadable or malformed files are skipped with a warning. The files stay on disk and nothing reads them afterwards. The import writes once, even an empty list, so a restart does nothing.
+
+A dropped entry with a taken name and the same launch but its own id (two projects that each added the same server) leaves an automation `mcp_tool` step that names that id. The import records each such id as an alias of the kept entry in the host store key `shared/lww/acp/mcp-server-aliases`, a `{droppedId: keptId}` object in the `{_version, data}` envelope, both ids trimmed. The import replaces that key on each attempt before it inserts the list, so the map that stays is the one merged with the stored list; clients never write it. Automation validation, run policy and runs resolve a `server_id` to the entry with that id first, then to an enabled entry that holds it as an alias. An alias of an entry that is deleted or disabled resolves to nothing: validation reports the issue `unknown_mcp_server` and a run fails the step with `mcp_server_unknown:<server_id>`. An id that any stored entry has, enabled or not, is never an alias: it names that entry, and nothing while that entry is disabled.
+
+OAuth requests still name the project they act for, resolved through `ProjectRegistry::canonical_root`: an unknown, archived or pathless project (or one whose folder is gone) is refused `NOT_FOUND`.
 
 | Operation | HTTP | Request | Reply |
 | --- | --- | --- | --- |
-| Read the list | `GET /mcp-servers?projectId=` | n/a | `[McpServer…]` (empty when the file is absent) |
-| Write the list | `PUT /mcp-servers?projectId=` | JSON array | `{}`; a write guard (`FORBIDDEN`) applies before the project is resolved |
-| Start OAuth | `POST /mcp-servers/oauth/start` | `{projectId, serverUrl}` | `{authUrl, redirectUri}`; the URL must be an enabled http/sse entry of THAT project's list, else `UNAUTHORIZED_SERVER_URL` |
+| Start OAuth | `POST /mcp-servers/oauth/start` | `{projectId, serverUrl}` | `{authUrl, redirectUri}`; the URL must be an enabled http/sse entry of the host list, else `UNAUTHORIZED_SERVER_URL` |
+| Finish OAuth (paste-back) | `POST /mcp-servers/oauth/complete` | `{projectId, callbackUrl}` | `{}`; `callbackUrl` is the address the browser landed on. Its scheme, host, port and path must equal the flow's `redirectUri`. Same local-only write guard as `start`. Errors: `OAUTH_BAD_REDIRECT` (400, flow kept), `OAUTH_UNKNOWN_STATE` (400), `OAUTH_DENIED` (400), `OAUTH_EXCHANGE_FAILED` (502) |
 | OAuth status | `POST /mcp-servers/oauth/status` | `{projectId, serverUrl}` | `{hasToken}` |
 | OAuth disconnect | `POST /mcp-servers/oauth/disconnect` | `{projectId, serverUrl}` | `{}` |
 
+- The web redirect URI is always `http://127.0.0.1:{port}/oauth/callback`, because authorization servers accept plain http only on loopback. When the server listens on all interfaces or on loopback, a browser on the host reaches `GET /oauth/callback` directly. A browser on another device lands on a page that does not load, and the user pastes that address into `complete`. Both paths exchange the code with the session kept from `start` (same PKCE verifier and client id). Pending flows expire after 5 minutes.
 - OAuth tokens stay keyed by server URL and are host-global (`acp/mcp_oauth.rs`): a token is the host's credential for that URL, not a project's. `status` and `disconnect` validate the project but read and delete the one URL-keyed token.
-- Tauri: `remote_sync_mcp_registry({projectId, registry})` writes that project's file (same refusal as above, no default-project or home-directory fallback). The desktop OAuth/probe commands (`acp_mcp_oauth_*`, `acp_probe_mcp_server`) authorize and write nothing, so they take the server URL / config only. `POST /mcp-servers/probe` is unchanged.
+- Automation `mcp_tool` steps read the same host list on every host. The desktop OAuth/probe commands (`acp_mcp_oauth_*`, `acp_probe_mcp_server`) read no server list and write none: they take the server URL / config only (a successful OAuth start still stores the token and a disconnect deletes it, in the host token store). `POST /mcp-servers/probe` is unchanged.
 - `--project-root` (and `$TERMUL_PROJECT_ROOT`) are removed options: still parsed for one minor release with a startup warning, they only seed one in-memory project while the registry has no usable project. No flag, no seed; the onboard wizard no longer asks for a root.
 
 ### Host offline

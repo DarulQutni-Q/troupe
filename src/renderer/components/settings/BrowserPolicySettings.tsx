@@ -27,7 +27,7 @@ function Loading(): React.JSX.Element {
 function ReadOnlyNotice(): React.JSX.Element {
   return (
     <SettingsNotice>
-      These rules were saved by a newer version of Termul, or their file is damaged. You can read
+      These rules were saved by a newer version of Troupe, or their file is damaged. You can read
       them but not change them.
     </SettingsNotice>
   )
@@ -209,6 +209,17 @@ export function BrowserAppPolicy(): React.JSX.Element {
             disabled={locked}
             onToggle={(enabled) => {
               void edit({ op: 'set_global_profile', enabled }).then(settle)
+            }}
+          />
+          <SwitchRow
+            id={BROWSER_ANCHORS.appSitePrompt}
+            controlId="browser-site-prompt"
+            label="Ask before opening new sites"
+            description="Off: agents open public sites and devices on your local network without asking. Sign-ins, payments, uploads and downloads follow their own rules."
+            checked={policy.askBeforeOpeningSites}
+            disabled={locked}
+            onToggle={(enabled) => {
+              void edit({ op: 'set_ask_before_opening_sites', enabled }).then(settle)
             }}
           />
           <SwitchRow

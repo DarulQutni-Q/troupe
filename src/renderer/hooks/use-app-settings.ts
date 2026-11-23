@@ -1,3 +1,4 @@
+import type { IpcResult } from '@shared/types/ipc.types'
 import { PersistenceKeys } from '@shared/types/persistence.types'
 import { useCallback, useEffect } from 'react'
 import { acpApi, persistenceApi } from '@/lib/api'
@@ -73,7 +74,9 @@ function normalizeStoredSettings(data: AppSettings): { settings: AppSettings; ch
   let settings: AppSettings = {
     ...DEFAULT_APP_SETTINGS,
     ...data,
-    terminalProfiles: normalizeTerminalProfiles(data.terminalProfiles)
+    terminalProfiles: normalizeTerminalProfiles(data.terminalProfiles),
+    onboardingCompletedAt:
+      typeof data.onboardingCompletedAt === 'string' ? data.onboardingCompletedAt : null
   }
   let changed = false
 
@@ -138,13 +141,21 @@ export function useAppSettingsLoader(): void {
       if (result.success && result.data) {
         const normalized = normalizeStoredSettings(result.data)
         settings = normalized.settings
-        setSettings(settings)
+        setSettings(settings, 'found')
         if (normalized.changed) {
           void persistenceApi.writeDebounced(PersistenceKeys.appSettings, settings)
         }
       } else {
         settings = DEFAULT_APP_SETTINGS
-        setSettings(settings)
+        const failedCode = result.success || result.code === 'KEY_NOT_FOUND' ? null : result.code
+        setSettings(settings, failedCode === null ? 'missing' : 'failed')
+        if (failedCode !== null) {
+          void logFrontendError({
+            level: 'warn',
+            source: 'useAppSettingsLoader',
+            message: `App settings read failed (${failedCode}); using defaults`
+          })
+        }
       }
 
       // Push the ACP timeout overrides to the Rust core (desktop-only via the
@@ -236,6 +247,16 @@ export function useUpdateAppSettings(): (updates: AppSettingsUpdate) => Promise<
 }
 
 /**
+ * Applies `updates` and writes settings/app at once instead of debounced. The
+ * immediate write supersedes a pending debounced write of the key, so the
+ * stored record carries `updates` even if the app quits right after.
+ */
+export async function writeAppSettingsNow(updates: AppSettingsUpdate): Promise<IpcResult<void>> {
+  useAppSettingsStore.getState().updateSettings(updates)
+  return persistenceApi.write(PersistenceKeys.appSettings, useAppSettingsStore.getState().settings)
+}
+
+/**
  * Panel visibility lives in the shell-layout store (single owner); this hook
  * only dispatches to its actions, which keep their own hydration gate and
  * persistence. It never reads or writes `AppSettings`.
@@ -254,9 +275,10 @@ export function useResetAppSettings(): () => Promise<void> {
 
   return useCallback(async () => {
     resetToDefaults()
-    // Reset reopens all three panels, through the shell-layout actions.
+    // Reset returns the panels to their defaults through the shell-layout
+    // actions: Rail and SSH section open, right panel closed (Paper 2.2).
     applyPanelVisibility('sidebarVisible', true)
-    applyPanelVisibility('fileExplorerVisible', true)
+    applyPanelVisibility('fileExplorerVisible', false)
     applyPanelVisibility('sshPanelVisible', true)
 
     await persistenceApi.write(PersistenceKeys.appSettings, useAppSettingsStore.getState().settings)

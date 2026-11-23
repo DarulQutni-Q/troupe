@@ -1,6 +1,7 @@
 import type { SSHProfile } from '@shared/types/ssh.types'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render as rtlRender, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import { SSHPanel } from './SSHPanel'
 import type { SSHPanelDialogsController } from './SSHPanelDialogs'
 
@@ -51,6 +52,8 @@ function makeDialogs(): SSHPanelDialogsController {
   }
 }
 
+const render = (ui: React.ReactElement) => rtlRender(ui, { wrapper: TooltipProvider })
+
 describe('SSHPanel popover hooks', () => {
   afterEach(() => {
     cleanup()
@@ -75,11 +78,12 @@ describe('SSHPanel popover hooks', () => {
     expect(screen.getByTestId('ssh-profile-form')).toBeInTheDocument()
   })
 
-  it('renders the header lead before the SSH label', () => {
-    render(<SSHPanel headerLead={<span data-testid="lead" />} />)
-    const lead = screen.getByTestId('lead')
-    const label = screen.getByText('SSH')
-    expect(lead.compareDocumentPosition(label) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  it('starts a collapsible header with the toggle (chevron, label, count)', () => {
+    profilesRef.current = [makeProfile('a'), makeProfile('b')]
+    render(<SSHPanel collapsible />)
+    const toggle = screen.getByRole('button', { name: 'Collapse SSH section' })
+    expect(toggle).toHaveTextContent('SSH2')
+    expect(screen.getByTestId('ssh-section-header').firstElementChild).toBe(toggle)
   })
 
   it('rows are not focusable by default', () => {

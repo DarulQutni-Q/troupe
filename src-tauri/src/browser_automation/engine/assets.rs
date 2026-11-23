@@ -8,9 +8,16 @@
 //! pins a fingerprint of the element (its telling attributes, the text of
 //! the list item or card holding it, and for an element with no name the
 //! text before it), so a path that now leads to another element finds
-//! nothing. Helpers keep no state between calls.
+//! nothing. Helpers keep no state between calls, save two exceptions, both
+//! kept on the agent world's own document wrapper, where page script cannot
+//! reach them: an upload's `input`/`change` watch leaves the hook that ends
+//! it early, and removes it when it ends; and hiding the agent overlay
+//! leaves the timer that shows it again should the host's show never come,
+//! which the show clears.
 
 use serde_json::{json, Value};
+
+use crate::browser_automation::budgets;
 
 /// The isolated script world every helper runs in.
 pub const WORLD_NAME: &str = "termul_agent";
@@ -63,6 +70,11 @@ pub const OWNER_PATH: Helper = helper!("owner_path");
 pub const CONSOLE_PULL: Helper = helper!("console_pull");
 pub const SENSITIVITY: Helper = helper!("sensitivity");
 pub const CARD_FIELDS: Helper = helper!("card_fields");
+pub const OVERLAY_VISIBILITY: Helper = helper!("overlay_visibility");
+pub const FRAME_SOURCES: Helper = helper!("frame_sources");
+/// The conformance suite's probe of the agent overlay.
+#[cfg(any(test, feature = "conformance"))]
+pub const OVERLAY_STATE: Helper = helper!("overlay_state");
 /// Only CDP engines set a file input through the element itself.
 #[cfg(any(test, target_os = "windows"))]
 pub const FILE_INPUT: Helper = helper!("file_input");
@@ -72,6 +84,12 @@ pub const OPEN_FILE_CHOOSER: Helper = helper!("open_file_chooser");
 /// WebKit engines confirm the answered chooser filled the input.
 #[cfg(any(test, target_os = "macos", target_os = "linux"))]
 pub const INPUT_FILE_COUNT: Helper = helper!("input_file_count");
+/// WebKit engines also hear the input change, for a page that clears it.
+#[cfg(any(test, target_os = "macos", target_os = "linux"))]
+pub const WATCH_INPUT_FILES: Helper = helper!("watch_input_files");
+/// And end that watch once the upload settled.
+#[cfg(any(test, target_os = "macos", target_os = "linux"))]
+pub const END_INPUT_WATCH: Helper = helper!("end_input_watch");
 
 /// Main-world script every agent tab frame runs at document start on
 /// engines whose console is observed by page script: it buffers console
@@ -79,6 +97,17 @@ pub const INPUT_FILE_COUNT: Helper = helper!("input_file_count");
 /// script can read, forge or bypass it, so its entries are synthetic.
 #[cfg_attr(target_os = "windows", allow(dead_code, reason = "WebView2 reads the console through CDP"))]
 pub const CONSOLE_SHIM: &str = include_str!("assets/console_shim.js");
+
+/// Main-world script every agent tab's main frame runs at document start:
+/// the "Iris" agent-control overlay, a pointer-transparent pixel grid on a
+/// closed shadow root under `<html>`. Page script can find or tamper with
+/// it (accepted); the trusted agent indicators live outside the page.
+pub const AGENT_OVERLAY: &str = include_str!("assets/agent_overlay.js");
+
+/// The tag of the overlay's host element, which [`overlay_visibility`]
+/// finds it by.
+#[cfg(test)]
+pub const OVERLAY_TAG: &str = "termul-agent-overlay";
 
 /// A helper with its parameters, ready for an engine.
 #[derive(Debug, Clone, PartialEq)]
@@ -91,6 +120,30 @@ impl Script {
     fn new(helper: Helper, params: Value) -> Self {
         Self { helper, params }
     }
+}
+
+/// Hide (`false`) or show the agent overlay. Best effort: hiding waits for
+/// two frames, or 100ms when the tab's frames are throttled, and none on a
+/// hidden tab; a hide that fails or times out lets the capture go ahead
+/// with the overlay in it. A hidden overlay shows itself again after
+/// [`budgets::OVERLAY_SELF_RESTORE`] unless a show came first.
+pub fn overlay_visibility(visible: bool) -> Script {
+    let restore_ms = u64::try_from(budgets::OVERLAY_SELF_RESTORE.as_millis()).unwrap_or(u64::MAX);
+    Script::new(
+        OVERLAY_VISIBILITY,
+        json!({ "visible": visible, "restoreMs": restore_ms }),
+    )
+}
+
+/// How many agent overlays hang off `<html>`, and whether the first shows.
+#[cfg(any(test, feature = "conformance"))]
+pub fn overlay_state() -> Script {
+    Script::new(OVERLAY_STATE, json!({}))
+}
+
+/// The absolute URLs the document's frames, objects and embeds point at.
+pub fn frame_sources() -> Script {
+    Script::new(FRAME_SOURCES, json!({}))
 }
 
 /// `document.readyState`, to settle after a navigation.
@@ -216,6 +269,27 @@ pub fn open_file_chooser(path: &str) -> Script {
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn input_file_count(path: &str) -> Script {
     Script::new(INPUT_FILE_COUNT, json!({ "path": path }))
+}
+
+/// Resolves true once the file input at `path` fires a trusted `input` or
+/// `change`, false after `wait`, when [`end_input_watch`] ends watch `id`,
+/// or at once when `path` names anything else. Issued before the chooser
+/// opens, so it hears the upload land even when the page clears the input
+/// in its handler.
+#[cfg(any(test, target_os = "macos", target_os = "linux"))]
+pub fn watch_input_files(path: &str, id: u64, wait: std::time::Duration) -> Script {
+    let ms = u64::try_from(wait.as_millis()).unwrap_or(u64::MAX);
+    Script::new(
+        WATCH_INPUT_FILES,
+        json!({ "path": path, "id": id.to_string(), "ms": ms }),
+    )
+}
+
+/// End watch `id` from [`watch_input_files`] now, releasing its listeners
+/// and timer; true when it was still listening.
+#[cfg(any(test, target_os = "macos", target_os = "linux"))]
+pub fn end_input_watch(id: u64) -> Script {
+    Script::new(END_INPUT_WATCH, json!({ "id": id.to_string() }))
 }
 
 /// Up to `limit` UTF-16 units of the rendered text of the element at

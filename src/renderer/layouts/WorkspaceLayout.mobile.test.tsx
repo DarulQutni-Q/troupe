@@ -147,6 +147,10 @@ vi.mock('@/stores/terminal-store', () => ({
   cleanupProjectTerminals: vi.fn()
 }))
 
+vi.mock('@/components/onboarding/onboarding-gate', () => ({
+  useOnboardingGate: () => ({ state: 'skip', close: () => {} })
+}))
+
 vi.mock('@/stores/app-settings-store', () => ({
   useAppSettingsStore: vi.fn(
     (selector?: (state: { settings: { remoteBindMode: 'localhost' } }) => unknown) => {
@@ -256,7 +260,7 @@ vi.mock('@/components/CommandPalette', () => ({
   }) =>
     isOpen ? (
       <div data-palette-new-project={onNewProject ? 'wired' : 'absent'}>
-        <input placeholder="Search commands, projects, settings..." readOnly />
+        <input placeholder="Search commands, projects, settings…" readOnly />
         <button type="button" onClick={onOpenCommandHistory}>
           Open command history
         </button>
@@ -585,6 +589,20 @@ describe('WorkspaceLayout mobile branch', () => {
     expect(screen.getByRole('button', { name: 'New terminal' })).toBeInTheDocument()
   })
 
+  it('mounts none of the desktop shell: no Rail, tool strip or right panel', async () => {
+    renderLayout()
+
+    await waitFor(() => expect(document.querySelector('[data-mobile-chat-shell]')).toBeTruthy(), {
+      timeout: 15000
+    })
+    expect(screen.queryByTestId('shell-row')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('shell-rail')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('rail-project-chats')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('tool-strip')).not.toBeInTheDocument()
+    expect(screen.queryByRole('toolbar', { name: 'Tools' })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('right-panel')).not.toBeInTheDocument()
+  })
+
   it('threads the project sheet through the header subtitle, not a header icon', async () => {
     renderLayout()
 
@@ -625,9 +643,8 @@ describe('WorkspaceLayout mobile branch', () => {
       })
     }
   })
-  // The mobile revamp retires the desktop StatusBar on the phone shell:
-  // connection health moved to the drawer footer and ContextBarSettingsPopover
-  // (a StatusBar child) is not mounted. Desktop keeps it (see the breakpoint suite).
+  // The phone shell has no status bar: connection health lives in the drawer
+  // footer.
   describe('terminal ⋯ sheet navigation rows (L-14)', () => {
     beforeEach(() => {
       act(() => {
@@ -689,7 +706,7 @@ describe('WorkspaceLayout mobile branch', () => {
       await chooseTerminalItem('Command palette')
 
       expect(
-        await screen.findByPlaceholderText('Search commands, projects, settings...')
+        await screen.findByPlaceholderText('Search commands, projects, settings…')
       ).toBeInTheDocument()
     })
 
@@ -738,7 +755,7 @@ describe('WorkspaceLayout mobile branch', () => {
       // The palette still closes on select; the project sheet is where badges show.
       await waitFor(() =>
         expect(
-          screen.queryByPlaceholderText('Search commands, projects, settings...')
+          screen.queryByPlaceholderText('Search commands, projects, settings…')
         ).not.toBeInTheDocument()
       )
     })
@@ -755,12 +772,12 @@ describe('WorkspaceLayout mobile branch', () => {
     renderLayout()
 
     expect(
-      screen.queryByPlaceholderText('Search commands, projects, settings...')
+      screen.queryByPlaceholderText('Search commands, projects, settings…')
     ).not.toBeInTheDocument()
     // MobileChatShell is React.lazy — wait for the ⋯ button, then the row.
     await chooseMoreItem('Command palette')
     expect(
-      await screen.findByPlaceholderText('Search commands, projects, settings...')
+      await screen.findByPlaceholderText('Search commands, projects, settings…')
     ).toBeInTheDocument()
   })
 
@@ -923,10 +940,16 @@ describe('WorkspaceLayout mobile branch', () => {
     const sheetContent = filter.closest('[data-sheet]')
     expect(sheetContent).not.toBeNull()
     const cls = sheetContent?.className ?? ''
-    expect(cls).toContain('rounded-t-xl')
-    expect(cls).toContain('max-h-[90vh]')
+    // The phone sheet (MobileSheetContent): 14px top corners, a grab handle.
+    expect(cls).toContain('rounded-t-[14px]')
+    // dvh, not vh: on iOS Safari 90vh runs under the browser toolbar.
+    expect(cls).toContain('max-h-[calc(90dvh-env(safe-area-inset-top))]')
     expect(cls).not.toContain('h-full')
-    expect(cls).toContain('pb-[env(safe-area-inset-bottom)]')
+    expect(
+      within(sheetContent as HTMLElement).getByRole('button', { name: 'Close' })
+    ).toBeInTheDocument()
+    // The home-indicator inset sits on the scrolling body around GitPanel.
+    expect(sheetContent?.innerHTML).toContain('pb-[env(safe-area-inset-bottom)]')
   })
 
   it('omits the Git changes row when no active project path', async () => {
@@ -1159,7 +1182,7 @@ describe('WorkspaceLayout mobile branch', () => {
 
       await chooseMoreItem('Command palette')
       expect(
-        await screen.findByPlaceholderText('Search commands, projects, settings...')
+        await screen.findByPlaceholderText('Search commands, projects, settings…')
       ).toBeInTheDocument()
 
       await waitForSentinelDepth(1)
@@ -1167,7 +1190,7 @@ describe('WorkspaceLayout mobile branch', () => {
 
       await waitFor(() =>
         expect(
-          screen.queryByPlaceholderText('Search commands, projects, settings...')
+          screen.queryByPlaceholderText('Search commands, projects, settings…')
         ).not.toBeInTheDocument()
       )
       expect(readOverlaySentinelDepth(window.history.state)).toBe(0)
@@ -1223,7 +1246,7 @@ describe('WorkspaceLayout mobile branch', () => {
         renderLayout()
 
         await chooseMoreItem('Command palette')
-        await screen.findByPlaceholderText('Search commands, projects, settings...')
+        await screen.findByPlaceholderText('Search commands, projects, settings…')
         await waitForSentinelDepth(1)
         const backSpy = vi.spyOn(window.history, 'back')
         const goSpy = vi.spyOn(window.history, 'go')
@@ -1233,7 +1256,7 @@ describe('WorkspaceLayout mobile branch', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Open command history' }))
         expect(await screen.findByText('command-history-modal')).toBeInTheDocument()
         expect(
-          screen.queryByPlaceholderText('Search commands, projects, settings...')
+          screen.queryByPlaceholderText('Search commands, projects, settings…')
         ).not.toBeInTheDocument()
         await settleOverlayBackStack()
 
@@ -1401,7 +1424,7 @@ describe('WorkspaceLayout mobile branch', () => {
       // The header no longer carries a palette icon; the palette lives in the header ⋯ sheet.
       await chooseMoreItem('Command palette')
       expect(
-        await screen.findByPlaceholderText('Search commands, projects, settings...')
+        await screen.findByPlaceholderText('Search commands, projects, settings…')
       ).toBeInTheDocument()
       expect(document.querySelector('[data-palette-new-project]')).toHaveAttribute(
         'data-palette-new-project',
@@ -1414,7 +1437,7 @@ describe('WorkspaceLayout mobile branch', () => {
       // Selecting it closes the palette, then opens the modal.
       await waitFor(() =>
         expect(
-          screen.queryByPlaceholderText('Search commands, projects, settings...')
+          screen.queryByPlaceholderText('Search commands, projects, settings…')
         ).not.toBeInTheDocument()
       )
       expect(await screen.findByTestId('new-project-modal-stub')).toBeInTheDocument()
@@ -1485,7 +1508,7 @@ describe('WorkspaceLayout mobile branch', () => {
     /** Open the drawer, switch it to `section` with its nav row, and tap `row`. */
     const tapSectionRow = async (section: string, row: string): Promise<void> => {
       fireEvent.click(await screen.findByLabelText('Open menu'))
-      const drawer = await screen.findByRole('dialog', { name: 'Termul' })
+      const drawer = await screen.findByRole('dialog', { name: 'Troupe' })
       fireEvent.click(
         within(within(drawer).getByRole('navigation', { name: 'Sections' })).getByRole('button', {
           name: section
@@ -1567,7 +1590,7 @@ describe('WorkspaceLayout mobile branch', () => {
 
       // Opening and closing the drawer re-renders the shell around the pane.
       fireEvent.click(await screen.findByLabelText('Open menu'))
-      await screen.findByRole('dialog', { name: 'Termul' })
+      await screen.findByRole('dialog', { name: 'Troupe' })
       fireEvent.keyDown(document.body, { key: 'Escape' })
 
       await waitFor(() =>
@@ -1696,12 +1719,12 @@ describe('WorkspaceLayout mobile branch', () => {
       renderLayout()
       const menu = await screen.findByLabelText('Open menu')
       fireEvent.click(menu)
-      const drawer = await screen.findByRole('dialog', { name: 'Termul' })
+      const drawer = await screen.findByRole('dialog', { name: 'Troupe' })
 
       fireEvent.click(within(drawer).getByRole('button', { name: 'Close terminal' }))
 
       // The drawer is gone, so its overlay no longer covers the confirm.
-      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Termul' })).toBeNull())
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Troupe' })).toBeNull())
       expect(await screen.findByText('Close Terminal')).toBeVisible()
       expect(screen.getByRole('button', { name: 'Cancel' })).toBeVisible()
       expect(tabIds()).toEqual(['term-t1'])
@@ -1718,7 +1741,7 @@ describe('WorkspaceLayout mobile branch', () => {
       renderLayout()
       const menu = await screen.findByLabelText('Open menu')
       fireEvent.click(menu)
-      const drawer = await screen.findByRole('dialog', { name: 'Termul' })
+      const drawer = await screen.findByRole('dialog', { name: 'Troupe' })
       fireEvent.click(within(drawer).getByRole('button', { name: 'Close terminal' }))
       await screen.findByText('Close Terminal')
 
@@ -1742,11 +1765,11 @@ describe('WorkspaceLayout mobile branch', () => {
       renderLayout()
       const menu = await screen.findByLabelText('Open menu')
       fireEvent.click(menu)
-      const drawer = await screen.findByRole('dialog', { name: 'Termul' })
+      const drawer = await screen.findByRole('dialog', { name: 'Troupe' })
 
       fireEvent.click(within(drawer).getByRole('button', { name: 'Close a.ts' }))
 
-      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Termul' })).toBeNull())
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Troupe' })).toBeNull())
       expect(await screen.findByText('Unsaved Changes')).toBeVisible()
       fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
       await waitFor(() => expect(screen.queryByText('Unsaved Changes')).toBeNull())
@@ -1759,12 +1782,12 @@ describe('WorkspaceLayout mobile branch', () => {
       seedLeaf(leafWith([{ type: 'terminal', id: 'term-t1', terminalId: 't1' }], 'term-t1'))
       renderLayout()
       fireEvent.click(await screen.findByLabelText('Open menu'))
-      const drawer = await screen.findByRole('dialog', { name: 'Termul' })
+      const drawer = await screen.findByRole('dialog', { name: 'Troupe' })
 
       fireEvent.click(within(drawer).getByRole('button', { name: 'Close terminal' }))
 
       await settleOverlayBackStack()
-      expect(screen.getByRole('dialog', { name: 'Termul' })).toBe(drawer)
+      expect(screen.getByRole('dialog', { name: 'Troupe' })).toBe(drawer)
       expect(screen.queryByText('Close Terminal')).not.toBeInTheDocument()
     })
 
@@ -1780,12 +1803,12 @@ describe('WorkspaceLayout mobile branch', () => {
       )
       renderLayout()
       fireEvent.click(await screen.findByLabelText('Open menu'))
-      const drawer = await screen.findByRole('dialog', { name: 'Termul' })
+      const drawer = await screen.findByRole('dialog', { name: 'Troupe' })
 
       fireEvent.click(within(drawer).getByRole('button', { name: 'Close a.ts' }))
 
       await settleOverlayBackStack()
-      expect(screen.getByRole('dialog', { name: 'Termul' })).toBe(drawer)
+      expect(screen.getByRole('dialog', { name: 'Troupe' })).toBe(drawer)
       expect(screen.queryByText('Unsaved Changes')).not.toBeInTheDocument()
       expect(tabIds()).toEqual(['edit-/demo/a.ts'])
     })
@@ -1799,14 +1822,14 @@ describe('WorkspaceLayout mobile branch', () => {
       )
       renderLayout()
       fireEvent.click(await screen.findByLabelText('Open menu'))
-      const drawer = await screen.findByRole('dialog', { name: 'Termul' })
+      const drawer = await screen.findByRole('dialog', { name: 'Troupe' })
       const close = within(drawer).getByRole('button', { name: 'Close a.ts' })
       close.focus()
 
       fireEvent.click(close)
 
       await waitFor(() => expect(tabIds()).toEqual([]))
-      expect(screen.getByRole('dialog', { name: 'Termul' })).toBe(drawer)
+      expect(screen.getByRole('dialog', { name: 'Troupe' })).toBe(drawer)
       expect(screen.queryByText('Unsaved Changes')).not.toBeInTheDocument()
       // The row (and its ✕) is gone; focus did not fall to <body> inside the trap.
       expect(drawer.contains(document.activeElement)).toBe(true)

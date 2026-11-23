@@ -201,6 +201,22 @@ struct CachedRoot {
     canonical: Option<PathBuf>,
 }
 
+static INSTALLED: std::sync::OnceLock<std::sync::Arc<ProjectRegistry>> =
+    std::sync::OnceLock::new();
+
+/// Make the host's registry reachable by the host MCP tools, which are built
+/// without a handle to it. The first call wins.
+pub fn install(registry: std::sync::Arc<ProjectRegistry>) {
+    if INSTALLED.set(registry).is_err() {
+        tracing::warn!("a project registry was already installed");
+    }
+}
+
+#[must_use]
+pub fn installed() -> Option<std::sync::Arc<ProjectRegistry>> {
+    INSTALLED.get().cloned()
+}
+
 /// The host's project registry (see the module docs).
 ///
 /// `Arc<ProjectRegistry>` is shared between the router (read path + switch
@@ -301,6 +317,17 @@ impl ProjectRegistry {
         if target.is_empty() {
             return None;
         }
+        // A quick chat lives under `~/.troupe/quick-chats`. A project that
+        // contains that root (home, or `~/.troupe`) must not claim the chat.
+        if crate::acp::quick_chat::is_quick_chat_path(target) {
+            return None;
+        }
+        // Compare in git's plain spelling so a verbatim (`\\?\C:\…`) root and
+        // the plain path returned by worktree create still match (#1724).
+        // `git_path` only rewrites on Windows and only when both forms name
+        // the same folder.
+        let target_owned = crate::path_validation::git_path(target).into_owned();
+        let target = target_owned.as_str();
         let g = self.inner.lock();
         // Track the LONGEST matching ancestor dir, not the first one. When two
         // registered projects nest (e.g. `/dev` and `/dev/app`), a cwd of
@@ -314,7 +341,8 @@ impl ProjectRegistry {
             let Some(path) = project.path.as_deref() else {
                 continue;
             };
-            let path = path.trim();
+            let path = crate::path_validation::git_path(path.trim());
+            let path = path.as_ref();
             if path == target {
                 return Some(project.id.clone());
             }

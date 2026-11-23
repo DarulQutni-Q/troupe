@@ -21,6 +21,12 @@ export interface SessionState {
   committedSubmit: boolean
   completionPending: boolean
   alternateScreen: boolean
+  /**
+   * Generation of a mountable prompt that arrived while the alternate screen was
+   * still active. PromptReady can win the race against xterm parsing the
+   * alternate-screen exit, so the leave mounts the editor for it.
+   */
+  heldPromptGeneration: number | null
 }
 
 /** Safe metadata describing a session fallback. */
@@ -73,21 +79,34 @@ function fallbackRaw(state: SessionState, detail: string): SessionReduction {
       mode: 'raw',
       phase: 'Unknown',
       trusted: false,
-      completionPending: false
+      completionPending: false,
+      heldPromptGeneration: null
     },
     writeDraft: false,
     log: { name: 'fallback', detail }
   }
 }
 
-function canMountEditor(state: SessionState, frame: PromptReadyFrame, generation: number): boolean {
+function isNewerPrompt(state: SessionState, generation: number): boolean {
+  return state.promptGeneration === null || generation > state.promptGeneration
+}
+
+/** Every editor condition except the alternate screen, which may clear later. */
+function isMountablePrompt(
+  state: SessionState,
+  frame: PromptReadyFrame,
+  generation: number
+): boolean {
   return (
     frame.prompt_suppressed === true &&
     frame.line_empty === true &&
-    !state.alternateScreen &&
-    (state.promptGeneration === null || generation > state.promptGeneration) &&
+    isNewerPrompt(state, generation) &&
     !(state.committedSubmit && state.phase !== 'Executing')
   )
+}
+
+function dropHeldPrompt(state: SessionState): SessionState {
+  return state.heldPromptGeneration === null ? state : { ...state, heldPromptGeneration: null }
 }
 
 function openEditor(state: SessionState, generation: number): SessionReduction {
@@ -99,7 +118,8 @@ function openEditor(state: SessionState, generation: number): SessionReduction {
     buffer: state.committedSubmit || isSubmittingTransaction(state) ? '' : state.buffer,
     committedSubmit: false,
     completionPending: false,
-    promptGeneration: generation
+    promptGeneration: generation,
+    heldPromptGeneration: null
   })
 }
 
@@ -126,16 +146,22 @@ export function authenticated(state: SessionState, event: LifecycleEvent): boole
 
 function reducePrompt(state: SessionState, frame: PromptReadyFrame): SessionReduction {
   const generation = frame.prompt_generation
-  if (typeof generation === 'number' && canMountEditor(state, frame, generation)) {
-    return openEditor(state, generation)
+  if (typeof generation === 'number' && isMountablePrompt(state, frame, generation)) {
+    if (!state.alternateScreen) return openEditor(state, generation)
+    return hold({ ...state, heldPromptGeneration: generation })
   }
   if (
     isSubmittingTransaction(state) &&
     typeof generation === 'number' &&
-    (state.promptGeneration === null || generation > state.promptGeneration) &&
+    isNewerPrompt(state, generation) &&
     (!frame.prompt_suppressed || !frame.line_empty)
   ) {
     return fallbackRaw(state, 'mode=raw reason=unsuppressed_prompt')
+  }
+  // A newer prompt that cannot mount supersedes a held one.
+  const held = state.heldPromptGeneration
+  if (typeof generation === 'number' && held !== null && generation > held) {
+    return hold(dropHeldPrompt(state))
   }
   return hold(state)
 }
@@ -151,9 +177,10 @@ function reduceLifecycle(state: SessionState, event: LifecycleEvent): SessionRed
             mode: 'PTY',
             phase: 'Executing',
             committedSubmit: true,
-            completionPending: false
+            completionPending: false,
+            heldPromptGeneration: null
           }
-        : state
+        : dropHeldPrompt(state)
     )
   }
   if (state.mode === 'Editor' && !state.committedSubmit) return hold(state)
@@ -174,7 +201,8 @@ function reduceExitOrFallback(state: SessionState, event: SessionEvent): Session
       alive: false,
       phase: 'Terminated',
       trusted: false,
-      completionPending: false
+      completionPending: false,
+      heldPromptGeneration: null
     })
   }
   if (event.type === 'Desync' || event.type === 'IntegrationLost') {
@@ -186,6 +214,53 @@ function reduceExitOrFallback(state: SessionState, event: SessionEvent): Session
   return null
 }
 
+/** A trusted editor mounted for a prompt and not yet handed to a command. */
+function isMountedPrompt(
+  state: SessionState
+): state is SessionState & { promptGeneration: number } {
+  return (
+    state.mode === 'Editor' &&
+    state.phase === 'AtPrompt' &&
+    state.trusted &&
+    !state.committedSubmit &&
+    state.promptGeneration !== null
+  )
+}
+
+/**
+ * The alternate screen always takes the PTY. PromptReady can also win the race
+ * the other way: it mounts the editor before xterm parses the output that came
+ * before the prompt, such as a fast `CSI ? 1049 h` ... `CSI ? 1049 l`. So the
+ * mounted prompt is held, and the leave mounts it again unless a command starts
+ * or a newer prompt replaces it first.
+ */
+function enterAlternateScreen(state: SessionState): SessionReduction {
+  return hold({
+    ...state,
+    alternateScreen: true,
+    mode: 'PTY',
+    completionPending: false,
+    heldPromptGeneration: isMountedPrompt(state)
+      ? state.promptGeneration
+      : state.heldPromptGeneration
+  })
+}
+
+/**
+ * Leaving the alternate screen alone never returns Editor. It mounts the editor
+ * only for a held prompt that was already mountable apart from the screen: a
+ * newer prompt that arrived during the screen, or the prompt the editor was
+ * mounted for when the screen was entered.
+ */
+function leaveAlternateScreen(state: SessionState): SessionReduction {
+  const held = state.heldPromptGeneration
+  const left = { ...state, alternateScreen: false, heldPromptGeneration: null }
+  if (held === null) return hold(left)
+  const remount = held === state.promptGeneration && state.phase === 'AtPrompt'
+  if (!remount && !isNewerPrompt(left, held)) return hold(left)
+  return openEditor(left, held)
+}
+
 /** Pure session reducer. Only an authenticated suppressed prompt mounts the editor. */
 export function reduceSession(state: SessionState, event: SessionEvent): SessionReduction {
   if (!state.alive || state.mode === 'exited') return hold(state)
@@ -194,9 +269,9 @@ export function reduceSession(state: SessionState, event: SessionEvent): Session
   if (exitOrFallback) return exitOrFallback
   switch (event.type) {
     case 'AlternateScreenEnter':
-      return hold({ ...state, alternateScreen: true, mode: 'PTY', completionPending: false })
+      return enterAlternateScreen(state)
     case 'AlternateScreenLeave':
-      return hold({ ...state, alternateScreen: false })
+      return leaveAlternateScreen(state)
     case 'CompletionPending':
       if (
         !state.trusted ||

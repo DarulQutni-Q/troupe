@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { useHead, useSeoMeta } from '@unhead/react';
+import { usePageMeta } from '@/lib/page-meta';
 
 type LegalPageProps = {
   title: string;
@@ -16,14 +16,7 @@ export function LegalPage({
   lastUpdated,
   children,
 }: LegalPageProps) {
-  useSeoMeta({
-    title: `${title} — Termul`,
-    description,
-    robots: 'index,follow',
-  });
-  useHead({
-    link: [{ rel: 'canonical', href: `https://termul.dev${path}` }],
-  });
+  usePageMeta({ title: `${title} — Troupe`, description, path });
 
   return (
     <main id="main-content" className="px-6 pb-24 pt-32">
@@ -33,7 +26,7 @@ export function LegalPage({
         </h1>
         <p className="mt-3 text-sm">Last updated: {lastUpdated}</p>
         <p className="mt-6 rounded-lg border border-border-subtle p-4 text-sm">
-          This page is a plain-language draft. It describes what the Termul
+          This page is a plain-language draft. It describes what the Troupe
           website and app do today, as far as we could verify in the source
           code. It is not legal advice.
         </p>

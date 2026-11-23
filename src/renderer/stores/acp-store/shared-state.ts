@@ -7,18 +7,23 @@
 
 import type { WsAgentSummary } from '@shared/types/web-protocol.types'
 import { sessionModelSnapshot } from '@/components/chat/chat-input-bar-config'
-import type { AgentId, SessionId, ToolCall } from '@/lib/acp-api'
+import type { AgentId, BackgroundCommandList, SessionId, ToolCall } from '@/lib/acp-api'
 import {
   deriveTitle,
+  isUntitledTitle,
   maxPayloadSeq,
+  payloadSeqFloor,
   type SessionIndexEntry,
-  type SessionPayload
+  type SessionPayload,
+  UNTITLED_CHAT_RE
 } from '@/lib/acp-history-persistence'
 import { getAcpTransport } from '@/lib/acp-transport'
 import {
   isClaudeAccountSignedOutError,
+  isCodexAccountSignedOutError,
   isDefiniteSpawnRejection
 } from '@/lib/agents/acp-spawn-errors'
+import { findStoredAgentConfig } from '@/lib/agents/agent-aliases'
 import { __resetCommandEngineForTesting } from '@/lib/command-engine'
 import { __clearCommandJournalForTesting } from '@/lib/command-journal'
 import { projectForCwd, resolveAgentSpawnEnv } from '@/lib/env-parser'
@@ -73,8 +78,7 @@ export function nextUntitledTitle(): string {
   return `Untitled Chat ${untitledChatCounter}`
 }
 
-/** Matches an `Untitled Chat N` placeholder and captures its numeric suffix. */
-export const UNTITLED_CHAT_RE = /^Untitled Chat (\d+)$/
+export { UNTITLED_CHAT_RE }
 
 /**
  * Lift `untitledChatCounter` to at least the highest `Untitled Chat N` suffix
@@ -167,7 +171,7 @@ export function noteHistoryWatermark(sessionId: SessionId, payload: SessionPaylo
   // Keep the local seq counter above the server watermark (the recovery path
   // rebases the same way) so post-install live messages never receive local
   // stamps below the envelope seqs they arrived with.
-  rebaseSeqCounter(watermark)
+  rebaseSeqCounter(Math.max(watermark, payloadSeqFloor(payload)))
 }
 
 /** Test-only: clear per-session history watermarks between tests. */
@@ -224,11 +228,34 @@ export function persistSession(
   const recordedModel = sessionModelSnapshot(session)
   const modelId = recordedModel?.modelId ?? existingEntry?.modelId
   const modelName = recordedModel?.modelName ?? existingEntry?.modelName
+  // Prefer a real title over the `Untitled Chat` placeholder (issue #1798). A
+  // watching device installs the payload's placeholder into `session.title`
+  // before the host derives the first-message title; a later `chat_history`
+  // delta then titles the INDEX row but never the live session. Re-stamping
+  // `session.title` verbatim here would clobber that derived title with the
+  // stale placeholder and, with a fresh `lastActivityAt`, let
+  // `mergeSessionIndexEntries` keep the local placeholder on every refetch.
+  // Fall through to the existing/derived title whenever the live title is a
+  // placeholder; a real local title (e.g. a rename) still wins. When the live
+  // title is a placeholder, a real index title (host-derived or
+  // background-generated, which only reaches the index) beats re-deriving one
+  // from the first message. A null live title keeps the old derive-first path.
+  const derivedTitle = deriveTitle(liveMessages, fallbackTitle)
+  const title =
+    session.title && !isUntitledTitle(session.title)
+      ? session.title
+      : isUntitledTitle(session.title) &&
+          existingEntry?.title &&
+          !isUntitledTitle(existingEntry.title)
+        ? existingEntry.title
+        : isUntitledTitle(derivedTitle)
+          ? (session.title ?? derivedTitle)
+          : derivedTitle
   const entry: SessionIndexEntry = {
     id: sessionId,
     agentId: session.agentId,
     agentConfigId,
-    title: session.title ?? deriveTitle(liveMessages, fallbackTitle),
+    title,
     cwd: session.cwd,
     projectId: session.projectId,
     createdAt: keepCreatedAt(existingEntry?.createdAt, session.createdAt),
@@ -243,7 +270,7 @@ export function persistSession(
     // so launch recovery can prefer the chat whose turn is still running.
     turnActive: session.activeTurn === true || session.openTurnId != null ? true : undefined,
     // Preserve the origin flag so a discovered (external) session re-projected
-    // here can't lose `discovered: true` and leak into the Termul-only sidebar.
+    // here can't lose `discovered: true` and leak into the Troupe-only sidebar.
     // Prefer the live-session marker (set by openDiscoveredSession) over the
     // existing index entry, so the disconnect/close path stays correct even when
     // no sessionIndex entry exists yet.
@@ -258,7 +285,15 @@ export function persistSession(
     // entry's list forward verbatim so a normal persist never drops (or
     // duplicates) the cache. Absent on unswitched chats — `agentConfigId`
     // above stays the session's own historical attribution.
-    agents: existingEntry?.agents
+    agents: existingEntry?.agents,
+    // Switch-chain edge (CAP-8): like `agents`, the switch orchestration
+    // stamps it once; every other persist carries it forward so a normal
+    // projection never drops the fold's lookup.
+    continuedFrom: existingEntry?.continuedFrom,
+    startedBy: existingEntry?.startedBy,
+    // A local projection must keep `kind: quick`. Dropping it hides the chat
+    // from the Quick chats list until the next host refetch.
+    kind: session.kind ?? existingEntry?.kind
   }
   const nextIndex = [entry, ...state.sessionIndex.filter((e) => e.id !== sessionId)]
   setIndex(nextIndex)
@@ -357,10 +392,10 @@ const definiteSpawnRejections = new Map<string, string>()
 const liveAgentSignatures = new Map<AgentId, string>()
 
 /**
- * Credential epoch per `configId\0projectId`. The host binds a Claude account
- * to an agent process when it spawns it, so after a Project's account changes
- * every agent spawned before is on the old account: it may finish what it
- * serves, but it must never take a new chat or a warm session.
+ * Credential epoch per `configId\0projectId`. The host binds a Claude or Codex
+ * account to an agent process when it spawns it, so after a Project's account
+ * changes every agent spawned before is on the old account: it may finish what
+ * it serves, but it must never take a new chat or a warm session.
  */
 const credentialEpochs = new Map<string, number>()
 
@@ -658,9 +693,11 @@ export function _handoffOnlyTurnIdsForTesting(): ReadonlySet<string> {
  *
  * Adoption seeds the store's agent presence (`agents` + `agentStatus`) from
  * the summary's capabilities and registers the reuse key
- * (`agentReuseKey(configId, cwd, projectId)`) → host agent id, so every later
- * `ensureLiveAgent`/`prepareChat` for that config, cwd, and Project reuses the
- * host process.
+ * (`agentReuseKey(configId, cwd, projectId, reuseScope)`) → host agent id, so
+ * a later reopen of this chat reuses the host process. `reuseScope` is the
+ * chat id when the chat runs its own Claude Account (`readReuseScope`): no
+ * other chat or warm session reuses that owner. Without it, every later
+ * `ensureLiveAgent`/`prepareChat` for that config, cwd, and Project reuses it.
  *
  * Desktop skips the lookup by default (`isTauriContext()`): the desktop store
  * already owns its agents in memory. A reload while a turn is still running
@@ -679,8 +716,18 @@ export async function adoptHostOwnedAgent(
   sessionId: SessionId,
   configId: string,
   cwd: string,
-  options?: { allowDesktop?: boolean; isCurrent?: () => boolean; projectId?: string | null }
-): Promise<{ adopted: AgentId | null; listingTrusted: boolean; working?: boolean }> {
+  options?: {
+    allowDesktop?: boolean
+    isCurrent?: () => boolean
+    projectId?: string | null
+    reuseScope?: string
+  }
+): Promise<{
+  adopted: AgentId | null
+  listingTrusted: boolean
+  working?: boolean
+  backgroundCommands?: BackgroundCommandList
+}> {
   const trimmedCwd = cwd.trim()
   if ((!options?.allowDesktop && isTauriContext()) || trimmedCwd.length === 0) {
     return { adopted: null, listingTrusted: false }
@@ -719,7 +766,7 @@ export async function adoptHostOwnedAgent(
     message: `Reusing host agent ${match.id} that owns session ${sessionId} instead of spawning a duplicate`
   })
   const projectId = resolveSpawnProject(trimmedCwd, options?.projectId)?.id ?? ''
-  const reuseKey = agentReuseKey(configId, trimmedCwd, projectId || undefined)
+  const reuseKey = agentReuseKey(configId, trimmedCwd, projectId || undefined, options?.reuseScope)
   set((s) => ({
     agents: {
       ...s.agents,
@@ -741,7 +788,11 @@ export async function adoptHostOwnedAgent(
   return {
     adopted: match.id,
     listingTrusted: true,
-    working: match.workingSessions?.includes(sessionId) === true
+    working: match.workingSessions?.includes(sessionId) === true,
+    backgroundCommands: {
+      revision: match.backgroundCommands?.revision ?? 0,
+      commands: match.backgroundCommands?.sessions[sessionId] ?? []
+    }
   }
 }
 
@@ -766,6 +817,12 @@ export type EnsureLiveAgentOptions = {
    * agent. Without it, the Project whose folder holds `cwd` is used.
    */
   projectId?: string
+  /**
+   * The existing chat the agent is spawned to open, when that chat runs its
+   * own Claude Account (`reuseScopeFor`). The agent belongs to that chat (its
+   * reuse key names it) and the host starts it with the chat's Account.
+   */
+  sessionId?: string
   /** What the caller puts on the agent; omit for helpers (commit message, prewarm) that may share one. */
   holder?: AgentHolder
 }
@@ -796,7 +853,8 @@ function currentLaunch(
   state: Pick<AcpState, 'agentConfigs'>,
   configId: string,
   cwd: string,
-  projectId?: string | null
+  projectId?: string | null,
+  sessionId?: string
 ): {
   config: AcpState['agentConfigs'][number]
   project: Pick<Project, 'id' | 'envVars'> | null
@@ -805,7 +863,7 @@ function currentLaunch(
   env: Record<string, string>
   signature: string
 } | null {
-  const config = state.agentConfigs.find((c) => c.id === configId)
+  const config = findStoredAgentConfig(state.agentConfigs, configId)
   if (!config) return null
   const project = resolveSpawnProject(cwd, projectId)
   const resolvedProjectId = project?.id ?? ''
@@ -813,13 +871,17 @@ function currentLaunch(
   // terminal tab in that project gets it (`spawnTerminalInPane`) and as a
   // terminal-native agent does (`launchAgentInPane`).
   const env = resolveAgentSpawnEnv(project?.envVars, config.env)
+  // A legacy id such as `opencode-v2` launches the saved config it resolved to.
+  // The process is registered under that saved id, so a later check does not
+  // kill it for failing an exact match on the requested id.
+  const launchId = config.id
   return {
     config,
     project,
     projectId: resolvedProjectId,
-    reuseKey: agentReuseKey(configId, cwd, resolvedProjectId || undefined),
+    reuseKey: agentReuseKey(launchId, cwd, resolvedProjectId || undefined, sessionId),
     env,
-    signature: spawnSignature(config, env, configId, resolvedProjectId)
+    signature: spawnSignature(config, env, launchId, resolvedProjectId)
   }
 }
 
@@ -841,6 +903,22 @@ export function runsCurrentLaunch(
 }
 
 /**
+ * Record that `agentId`, started by the host, runs the launch a new chat of
+ * `configId` in `cwd` would get now, so a later credential renewal retires it
+ * instead of counting it as current.
+ */
+export function recordCurrentLaunch(
+  state: Pick<AcpState, 'agentConfigs'>,
+  agentId: AgentId,
+  configId: string,
+  cwd: string,
+  projectId?: string | null
+): void {
+  const launch = currentLaunch(state, configId, cwd.trim(), projectId)
+  if (launch) liveAgentSignatures.set(agentId, launch.signature)
+}
+
+/**
  * Return a connected agent process for `configId + cwd`, spawning at most one
  * in-flight process per reuse key. Registers `inFlightWarms` synchronously so
  * concurrent `prewarmAgent`, `prepareChat`, and `startChat` cannot race a
@@ -855,7 +933,7 @@ export function ensureLiveAgent(
 ): Promise<AgentId | null> {
   const trimmedCwd = cwd.trim()
   if (trimmedCwd.length === 0) return Promise.resolve(null)
-  const launch = currentLaunch(get(), configId, trimmedCwd, options.projectId)
+  const launch = currentLaunch(get(), configId, trimmedCwd, options.projectId, options.sessionId)
   if (!launch) return Promise.resolve(null)
   const { config, project, projectId, reuseKey, env, signature } = launch
   const currentAgentId = get().configToLiveAgent[reuseKey]
@@ -926,7 +1004,7 @@ export function ensureLiveAgent(
     set((s) => ({ warmingConfigs: { ...s.warmingConfigs, [reuseKey]: true } }))
   }
 
-  if (projectId && otherProjectHoldsAgent(get(), configId, trimmedCwd, projectId)) {
+  if (projectId && otherProjectHoldsAgent(get(), config.id, trimmedCwd, projectId)) {
     void logFrontendError({
       level: 'info',
       source: 'acp-store.ensureLiveAgent',
@@ -947,17 +1025,18 @@ export function ensureLiveAgent(
       }
       const agentId = await get().spawnAgent(
         {
-          configId,
+          configId: config.id,
           name: config.name,
           command: config.command,
           args: config.args,
           env,
           allowTerminal: config.allowTerminal
         },
-        projectId || undefined
+        projectId || undefined,
+        options.sessionId
       )
       definiteSpawnRejections.delete(reuseKey)
-      if (get().agentConfigs.some((c) => c.id === configId)) {
+      if (get().agentConfigs.some((c) => c.id === config.id)) {
         liveAgentSignatures.set(agentId, signature)
         // A newer launch took the key while this spawn ran (the project's
         // Claude account changed): keep this agent for its own caller only.
@@ -1023,8 +1102,8 @@ function otherProjectHoldsAgent(
 
 /**
  * The spawn's outcome as one caller sees it: a silent caller gets `null` for a
- * failure (except a definite rejection or a signed-out Claude Account, when it
- * asked to surface those); any other caller gets the rejection.
+ * failure (except a definite rejection or a signed-out Claude or Codex
+ * Account, when it asked to surface those); any other caller gets the rejection.
  */
 function asCallerView(
   strict: Promise<AgentId | null>,
@@ -1036,7 +1115,9 @@ function asCallerView(
   return strict.catch((err: unknown) => {
     if (
       options.surfaceDefiniteRejection &&
-      (isDefiniteSpawnRejection(err) || isClaudeAccountSignedOutError(err))
+      (isDefiniteSpawnRejection(err) ||
+        isClaudeAccountSignedOutError(err) ||
+        isCodexAccountSignedOutError(err))
     )
       throw err
     console.warn('[acp] ensureLiveAgent failed for', reuseKey, err)

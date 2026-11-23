@@ -29,6 +29,7 @@ use crate::mcp_catalog::{
     CancelRequest, CommitRequest, CommitResult, FormReply, FormRequest, McpCatalogPage,
     McpCatalogSearchRequest, McpCatalogStatus, PlanReply, PlanRequest,
 };
+use crate::link_preview::LinkPreview;
 use crate::project_icon::ProjectIcon;
 use crate::skills::files::SkillFileEntry;
 use crate::skills::{AgentSkillContent, AgentSkillSummary};
@@ -56,10 +57,10 @@ use crate::web::git_hunk_api::GitHunkRequest;
 use crate::web::log_api::FrontendErrorRequest;
 use crate::web::mcp_catalog_api::{SetMcpCatalogSyncRequest, WithClient};
 use crate::web::mcp_oauth_api::{
-    OAuthCallbackQuery, OAuthStartRequest, OAuthStartResponse, OAuthStatusRequest,
-    OAuthStatusResponse,
+    OAuthCallbackQuery, OAuthCompleteRequest, OAuthStartRequest, OAuthStartResponse,
+    OAuthStatusRequest, OAuthStatusResponse,
 };
-use crate::web::mcp_servers_api::McpProjectQuery;
+use crate::web::link_preview_api::LinkPreviewRequest;
 use crate::web::project_icon_api::ProjectIconRequest;
 use crate::web::project_registry::{ProjectListPayload, ProjectSummary};
 use crate::web::projects_api::{
@@ -118,9 +119,6 @@ pub(super) const MEDIA: &[&str] = &[
 ];
 const ANY_CONTENT: &[&str] = &["*/*"];
 
-/// The project's MCP registry file: a JSON array of server entries.
-type McpRegistryFile = Vec<serde_json::Value>;
-
 pub static ROUTES: &[ApiRoute] = &[
     // Host
     ApiRoute::get("/health", Tag::Host, "Liveness and host capabilities").bare::<HealthBody>(),
@@ -169,6 +167,10 @@ pub static ROUTES: &[ApiRoute] = &[
     ApiRoute::post("/project/icon", Tag::Projects, "Resolve a project's icon")
         .json::<ProjectIconRequest>()
         .ipc::<Option<ProjectIcon>>(),
+    ApiRoute::post("/link/preview", Tag::Host, "Resolve a chat link's title and favicon")
+        .json::<LinkPreviewRequest>()
+        .ipc::<Option<LinkPreview>>()
+        .describe("Fetches only public http(s) addresses. `null` means show the plain link."),
     // Files
     ApiRoute::post("/fs/mkdir", Tag::Fs, "Create a directory").json::<MkdirRequest>(),
     ApiRoute::post("/fs/write", Tag::Fs, "Write a text file")
@@ -351,14 +353,6 @@ pub static ROUTES: &[ApiRoute] = &[
         ])
         .describe("Needs a verified bearer token even on loopback."),
     // MCP servers
-    ApiRoute::get("/mcp-servers", Tag::McpServers, "Read a project's MCP registry")
-        .query::<McpProjectQuery>()
-        .ipc::<McpRegistryFile>()
-        .describe("`data` is the project's MCP registry file, `[]` when it does not exist."),
-    ApiRoute::put("/mcp-servers", Tag::McpServers, "Replace a project's MCP registry")
-        .query::<McpProjectQuery>()
-        .json::<McpRegistryFile>()
-        .describe("The body is the whole registry file (at most 1 MiB). Anything but a JSON array is refused with `MCP_REGISTRY_INVALID`."),
     ApiRoute::post("/mcp-servers/probe", Tag::McpServers, "Connect to an MCP server and list its tools")
         .json::<McpServerConfig>()
         .ipc::<ProbeResult>(),
@@ -370,6 +364,9 @@ pub static ROUTES: &[ApiRoute] = &[
         .ipc::<OAuthStatusResponse>(),
     ApiRoute::post("/mcp-servers/oauth/disconnect", Tag::McpServers, "Forget an MCP OAuth token")
         .json::<OAuthStatusRequest>(),
+    ApiRoute::post("/mcp-servers/oauth/complete", Tag::McpServers, "Finish an MCP OAuth flow from a pasted redirect address")
+        .json::<OAuthCompleteRequest>()
+        .describe("`callbackUrl` is the address the browser landed on after sign-in; it is never fetched. Failures answer 400 with `OAUTH_BAD_REDIRECT` (flow kept), `OAUTH_UNKNOWN_STATE` or `OAUTH_DENIED`, or 502 with `OAUTH_EXCHANGE_FAILED`."),
     ApiRoute::get("/oauth/callback", Tag::McpServers, "OAuth redirect target")
         .query::<OAuthCallbackQuery>()
         .reply(Reply::Redirect)
@@ -413,6 +410,14 @@ pub static ROUTES: &[ApiRoute] = &[
         .json::<automation::OpsBody>()
         .ipc::<ApplyOpsResult>()
         .describe("A stale `base_revision` is refused with `revision_conflict` (409) and `current_revision`."),
+    ApiRoute::post("/api/automations/{id}/ops/preview", Tag::Automations, "Dry-run an edit of an automation's graph")
+        .json::<automation::OpsBody>()
+        .ipc::<AutomationDetail>()
+        .describe("Runs the checks of an edit and returns the would-be graph, issues and policy at the revision it was based on. Saves and announces nothing. A stale `base_revision` is refused with `revision_conflict` (409) and `current_revision`."),
+    ApiRoute::post("/api/automations/{id}/layout", Tag::Automations, "Save canvas node positions")
+        .json::<automation::LayoutBody>()
+        .ipc::<Automation>()
+        .describe("Keys are node ids and `trigger`; others are dropped. Does not change the revision or the approval."),
     ApiRoute::post("/api/automations/{id}/enabled", Tag::Automations, "Enable or disable an automation")
         .json::<automation::EnabledBody>()
         .ipc::<Automation>(),
@@ -430,6 +435,9 @@ pub static ROUTES: &[ApiRoute] = &[
         .ipc::<bool>(),
     ApiRoute::get("/api/automation-runs/{run_id}/steps", Tag::Automations, "A run's steps")
         .ipc::<Vec<Step>>(),
+    ApiRoute::post("/api/automation-runs/{run_id}/approval", Tag::Automations, "Approve or reject a parked approval")
+        .json::<automation::ApprovalBody>()
+        .ipc::<bool>(),
     ApiRoute::get("/api/automation-agents", Tag::Automations, "Agents an automation can use")
         .ipc::<Vec<KnownAgent>>(),
     ApiRoute::get("/api/automation-secrets", Tag::Automations, "Names of a project's automation secrets")
@@ -499,10 +507,10 @@ pub static ROUTES: &[ApiRoute] = &[
     // Server admin
     ApiRoute::get("/server/config", Tag::ServerAdmin, "The running server's configuration")
         .ipc::<ServerConfigResponse>()
-        .describe("Standalone `termul-server` only."),
+        .describe("Standalone `troupe-server` only."),
     ApiRoute::post("/server/config", Tag::ServerAdmin, "Reconfigure and restart the server")
         .json::<ServerSetupAnswers>()
         .ipc::<ServerConfigApply>()
-        .describe("Standalone `termul-server` only. Invalid answers come back as `ok: false` with `fieldErrors`. On success the server restarts: reconnect to `host:port` with `webAuthToken`. A host without a token needs a loopback `Origin` header (`403 SERVER_CONFIG_LOCAL_ORIGIN_REQUIRED`). A second apply while a restart is pending answers `409 SERVER_CONFIG_APPLY_IN_PROGRESS`."),
+        .describe("Standalone `troupe-server` only. Invalid answers come back as `ok: false` with `fieldErrors`. On success the server restarts: reconnect to `host:port` with `webAuthToken`. A host without a token needs a loopback `Origin` header (`403 SERVER_CONFIG_LOCAL_ORIGIN_REQUIRED`). A second apply while a restart is pending answers `409 SERVER_CONFIG_APPLY_IN_PROGRESS`."),
 ];
 

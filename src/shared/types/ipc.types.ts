@@ -321,6 +321,24 @@ export interface GitCommitFileDiff {
 }
 
 /**
+ * Title + favicon for a link written in agent chat. Same shape on both
+ * transports: `link_preview_resolve` (Tauri `IpcResult` data) and
+ * `POST /link/preview` (web `IpcBody` data), pinned by the Rust serde
+ * camelCase shape test. `null` (not an error) means "show the plain link".
+ * `iconDataUri` is a `data:` URI so the CSP needs no remote `img-src`.
+ */
+export interface LinkPreview {
+  /** Final URL after redirects. */
+  url: string
+  /** `og:title`, else `twitter:title`, else `<title>`. */
+  title: string | null
+  /** `og:site_name` when the page sets it. */
+  siteName: string | null
+  /** `data:<mime>;base64,…` favicon. */
+  iconDataUri: string | null
+}
+
+/**
  * Resolved project icon (spec-project-icon). Runtime-neutral contract shared
  * by both transports: `project_icon_resolve` (Tauri `IpcResult` data) and
  * `POST /project/icon` (web `IpcBody` data) return this shape byte-for-byte,
@@ -705,11 +723,23 @@ export interface RemoteStatus {
   bindHost: string | null
   /** Ephemeral `https://*.trycloudflare.com` tunnel URL (QR-encoded). */
   tunnelUrl: string | null
+  /**
+   * `true` while remote clients have full control (prompt agents, run
+   * terminals, edit files); `false` when view-only or stopped.
+   */
+  allowWrites: boolean
+}
+
+/** Options for starting the desktop-hosted shared-live server. */
+export interface RemoteServerStartOptions {
+  bindMode?: RemoteBindMode
+  /** Give remote clients full control. Omitted or `false` → view-only. */
+  allowWrites?: boolean
 }
 
 // Remote terminal server control API
 export interface RemoteServerApi {
-  start: (options?: { bindMode?: RemoteBindMode }) => Promise<IpcResult<RemoteStatus>>
+  start: (options?: RemoteServerStartOptions) => Promise<IpcResult<RemoteStatus>>
   stop: () => Promise<IpcResult<RemoteStatus>>
   status: () => Promise<IpcResult<RemoteStatus>>
 }

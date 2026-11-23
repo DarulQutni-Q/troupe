@@ -5,11 +5,19 @@ import { useUpdatePanelVisibility } from '@/hooks/use-app-settings'
 import { cn } from '@/lib/utils'
 
 /**
- * Revamp SSH section collapse chevron (X5): the Archived-projects chevron
- * (`sidebar/project-list.tsx`) reused. Toggles the persisted `sshPanelVisible`
- * with the same error toast as the Activity Rail toggle.
+ * Start of the Rail's SSH section header: one toggle with the chevron, the
+ * `SSH` label and the host count, the same shape as the Rail's "Older chats"
+ * header (the chevron starts on x 20, in line with the row icons). Toggles
+ * the persisted `sshPanelVisible`, with an error toast when saving fails.
  */
-export function SSHSectionChevron({ expanded }: { expanded: boolean }): React.JSX.Element {
+export function SSHSectionChevron({
+  expanded,
+  count = 0
+}: {
+  expanded: boolean
+  /** Hosts in the section; shown after the label when there are any. */
+  count?: number
+}): React.JSX.Element {
   const updatePanelVisibility = useUpdatePanelVisibility()
 
   const handleToggle = async (): Promise<void> => {
@@ -26,14 +34,24 @@ export function SSHSectionChevron({ expanded }: { expanded: boolean }): React.JS
     <button
       type="button"
       onClick={() => void handleToggle()}
-      className={cn('shrink-0 rounded-md', FOCUS_RING_CLASS)}
+      className={cn(
+        'flex min-w-0 items-center gap-1 rounded-md text-muted-foreground transition-colors duration-150 ease-out hover:text-foreground',
+        FOCUS_RING_CLASS
+      )}
       aria-label={label}
       aria-expanded={expanded}
-      title={label}
     >
-      <span className="inline-flex size-4 shrink-0 items-center justify-center text-muted-foreground/70">
-        {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-      </span>
+      {expanded ? (
+        <ChevronDown size={14} aria-hidden="true" />
+      ) : (
+        <ChevronRight size={14} aria-hidden="true" />
+      )}
+      <span className="label-panel">SSH</span>
+      {count > 0 && (
+        <span className="text-2xs tabular-nums text-muted-foreground" data-testid="ssh-host-count">
+          {count}
+        </span>
+      )}
     </button>
   )
 }

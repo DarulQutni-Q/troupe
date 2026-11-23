@@ -7,6 +7,8 @@ mod agentation;
 // Chat-authored automations: model, validation, schedules and store.
 // Tauri-free so the desktop and `termul-server` share it.
 pub mod automation;
+// TROUPE_* environment variables with the TERMUL_* names as a fallback.
+pub mod brand_env;
 mod browser_automation;
 mod browser_tab_manager;
 mod browser_tab_permissions;
@@ -37,6 +39,7 @@ mod migrations;
 mod path_validation;
 // Console-window hiding + Windows kill-on-close Job Objects for spawned processes.
 mod process_util;
+mod link_preview;
 mod project_icon;
 mod pty;
 mod remote;
@@ -60,6 +63,7 @@ mod ssh;
 mod trackers;
 mod updater_api;
 pub mod web;
+mod window_chrome;
 // Main-window show safety net + Wayland detection (gh-719).
 mod window_visibility;
 // Main-window WebView2 crash recovery; the pure decision logic is also
@@ -107,7 +111,7 @@ const TRAY_ID: &str = "termul-tray";
 const TRAY_MENU_SHOW: &str = "tray-show";
 const TRAY_MENU_QUIT: &str = "tray-quit";
 const TRAY_QUIT_REQUESTED_EVENT: &str = "tray:quit-requested";
-const LEARN_MORE_URL: &str = "https://github.com/gnoviawan/termul";
+const LEARN_MORE_URL: &str = "https://github.com/gnoviawan/troupe";
 const DEFAULT_ZOOM_FACTOR: f64 = 1.0;
 const MIN_ZOOM_FACTOR: f64 = 0.5;
 const MAX_ZOOM_FACTOR: f64 = 3.0;
@@ -175,18 +179,30 @@ fn resolve_executable_from_path(command: &str) -> Option<String> {
 // Re-exports for commands
 pub use acp::{
     AcpCatalogService, AcpInstallService, AcpManager, ChatHistoryStore, ClaudeAgentService,
-    ClaudeAuthMode, ClaudeAuthStatus, SessionPersistence,
+    ClaudeAuthMode, ClaudeAuthStatus, CodexAgentService, SessionPersistence,
 };
 // Host-injected `plan` MCP tool: the `--internal-mcp-plan-server`
 // subcommand branch in `main.rs` + `server_main.rs` reaches `host_mcp::CHILD_ARG`
 // + `host_mcp::child::run()` through this re-export (the `acp` module itself is
 // private). See `acp/host_mcp/mod.rs` + spec `spec-acp-host-todo-plan-tool.md`.
 pub use acp::host_mcp;
+// Subagent orchestrator: the binaries install the engine at startup
+// (`lib.rs` desktop setup, `server_main.rs`) through this re-export; the
+// `acp` module itself is private.
+pub use acp::orchestrator;
 // Local-only Claude admin CLI for the standalone `termul-server`
 // (`termul-server claude ...`): same re-export pattern as `host_mcp` — the
 // `acp` module is private, so `server_main.rs` reaches `claude_admin::run()`
 // through this path (mirrors how `onboard::run()` is dispatched).
 pub use acp::claude_admin;
+pub use acp::claude_limit;
+pub use acp::codex_admin;
+pub use acp::codex_limit;
+pub use acp::worker_chats;
+// Codex Account store (PR1). The desktop and `troupe-server` reach it through
+// `AcpManager`; this re-export keeps the secret-free types part of the host
+// library surface the same way the Claude Account types are reachable.
+pub use acp::codex_accounts::{CodexAccount, CodexAccountStore, CodexAccountsSnapshot};
 // Seam for the browser conformance runner (`tests/browser_conformance`), which
 // drives the real automation host from outside the crate. The runner reaches
 // the host only through these names, so a host refactor edits this list and
@@ -203,16 +219,17 @@ pub mod conformance_support {
         ConsentOption, PermissionRequest, PortFuture, TicketOutcome, TicketRequest,
     };
     pub use crate::browser_automation::core::session_dir;
-    pub use crate::browser_automation::engine::{
-        desktop_engine, BrowserEngine, CapabilityId, EngineError, EngineErrorKind, InputMode, Key, KeyInput,
-        KeyKind, NamedKey, Point, Support,
-    };
-    pub use crate::browser_automation::{
-        budgets, create_tab, dispatch, session_ended, set_browser_host,
-        BrowserCall, DesktopBrowserHost, HostServices,
-    };
+    pub use crate::browser_automation::engine::assets::{overlay_state, overlay_visibility};
     pub use crate::browser_automation::engine::events::{NavPolicy, NavVerdict, TabEvents};
     pub use crate::browser_automation::engine::profile::{delete_dir, DataStore};
+    pub use crate::browser_automation::engine::{
+        desktop_engine, BrowserEngine, CapabilityId, EngineError, EngineErrorKind, InputMode, Key,
+        KeyInput, KeyKind, NamedKey, Point, Support,
+    };
+    pub use crate::browser_automation::{
+        budgets, create_tab, dispatch, session_ended, set_browser_host, BrowserCall,
+        DesktopBrowserHost, HostServices,
+    };
     pub use crate::browser_tab_manager::{BrowserBounds, BrowserTabManager};
 }
 pub use pty::PtyManager;
@@ -947,8 +964,8 @@ fn show_log_action_error<R: tauri::Runtime>(app: &tauri::AppHandle<R>, message: 
         .show(|_| {});
 }
 
-/// AD-14 / AD-18 startup refusal: another Termul host owns the data directory,
-/// or a store was written by a newer Termul. Nothing else may open that data,
+/// AD-14 / AD-18 startup refusal: another Troupe host owns the data directory,
+/// or a store was written by a newer Troupe. Nothing else may open that data,
 /// so hide the (still empty) windows, show a native error dialog and exit
 /// non-zero once the user acknowledges it. `setup` returns right after this,
 /// so no store, agent or terminal is ever started.
@@ -959,7 +976,7 @@ fn refuse_startup<R: tauri::Runtime>(app: &tauri::AppHandle<R>, message: &str) {
     }
     app.dialog()
         .message(message)
-        .title("Termul cannot start")
+        .title("Troupe cannot start")
         .kind(MessageDialogKind::Error)
         .show(|_| std::process::exit(1));
 }
@@ -1306,6 +1323,7 @@ pub fn run() {
             // Startup diagnostic banner (issue #244): version, OS/arch, build
             // channel, session id, and resolved log path on a single line.
             logging::log_startup_banner(&handle);
+            brand_env::flush_deprecations();
             for key in &engine_scrub.changed {
                 log::warn!("[perimeter] removed engine debug setting from the environment: {key}");
             }
@@ -1402,7 +1420,7 @@ pub fn run() {
                     handle
                         .dialog()
                         .message(format!(
-                            "Termul could not read its saved project list ({error}). {dialog_note}"
+                            "Troupe could not read its saved project list ({error}). {dialog_note}"
                         ))
                         .title("Project list unavailable")
                         .kind(MessageDialogKind::Error)
@@ -1411,6 +1429,7 @@ pub fn run() {
                 }
             };
             let project_registry = Arc::new(project_registry);
+            web::project_registry::install(Arc::clone(&project_registry));
             app.manage(Arc::clone(&project_registry));
 
             // Window chrome is configured before show(). macOS overlay settings
@@ -1696,6 +1715,10 @@ pub fn run() {
                 acp_install_root.clone(),
             ));
             app.manage(claude_agent_service.clone());
+            let codex_agent_service = Arc::new(crate::acp::codex_agent::CodexAgentService::system(
+                acp_install_root.clone(),
+            ));
+            app.manage(codex_agent_service.clone());
 
             // Create ACP Manager — spawns/owns ACP agent subprocesses.
             //
@@ -1711,29 +1734,53 @@ pub fn run() {
             // The shared-live web server (`remote/host.rs`) pulls both
             // `Arc<AcpManager>` and `Arc<WsRelaySink>` as Tauri state and serves
             // the desktop's live sessions to a browser/phone over the LAN.
+            let (claude_limit, claude_limit_inbox) =
+                acp::claude_limit::ClaudeLimitHandle::channel();
+            let (codex_limit, codex_limit_inbox) = acp::codex_limit::CodexLimitHandle::channel();
             let (ws_relay, acp_manager) = match &session_persistence {
                 Some(persistence) => {
                     let relay = Arc::new(WsRelaySink::with_persistence(
                         4096,
                         Arc::clone(persistence),
                     ));
-                    let manager = Arc::new(AcpManager::with_persistence_and_claude_agent(
-                        vec![relay.clone()],
+                    let manager = Arc::new(AcpManager::with_persistence_and_host_agents(
+                        vec![relay.clone(), claude_limit.sink(), codex_limit.sink()],
                         Arc::clone(persistence),
                         Arc::clone(&claude_agent_service),
+                        Arc::clone(&codex_agent_service),
                     ));
                     (relay, manager)
                 }
                 None => {
                     let relay = Arc::new(WsRelaySink::new());
-                    let manager = Arc::new(AcpManager::with_claude_agent(
-                        vec![relay.clone()],
+                    let manager = Arc::new(AcpManager::with_host_agents(
+                        vec![relay.clone(), claude_limit.sink(), codex_limit.sink()],
                         Arc::clone(&claude_agent_service),
+                        Arc::clone(&codex_agent_service),
                     ));
                     (relay, manager)
                 }
             };
             host_perimeter::claim_for_process(acp_manager.host_plan_server_port());
+            acp::claude_limit::start(
+                &acp_manager,
+                &ws_relay,
+                claude_limit,
+                claude_limit_inbox,
+                tauri::async_runtime::handle().inner(),
+            );
+            acp::codex_limit::start(
+                &acp_manager,
+                &ws_relay,
+                codex_limit,
+                codex_limit_inbox,
+                tauri::async_runtime::handle().inner(),
+            );
+            acp::worker_chats::install(
+                &acp_manager,
+                &ws_relay,
+                tauri::async_runtime::handle().inner(),
+            );
             // Attach the permission and question rendezvous: every `/ws` client
             // (the desktop renderer's channel, a phone, a browser) answers
             // `acp:permission_request` and structured questions through them.
@@ -1777,12 +1824,28 @@ pub fn run() {
                 let registry = Arc::clone(&project_registry);
                 Arc::new(move |project_id| registry.canonical_root(project_id))
             };
-            // `mcp_tool` nodes call the desktop's one MCP server list, kept in
-            // the web store; the project file is only its mirror.
-            let mcp_servers = automation::mcp::desktop_store_servers(
-                handle.state::<remote::SharedLiveData>().store.clone(),
-                project_roots.clone(),
+            // The subagent orchestrator: one engine per process, reached
+            // through `acp::orchestrator::installed` by the host MCP tools,
+            // the stop interception and the chat/agent lifecycle hooks. The
+            // shared-live web server reuses the desktop's engine.
+            let sweep_roots: Vec<std::path::PathBuf> = project_registry
+                .snapshot()
+                .projects
+                .into_iter()
+                .filter(|project| !project.is_archived)
+                .filter_map(|project| project.path.map(std::path::PathBuf::from))
+                .collect();
+            acp::orchestrator::install(
+                Arc::clone(&acp_manager),
+                app_data_dir.clone(),
+                acp_install_service.clone(),
+                sweep_roots,
+                tauri::async_runtime::handle().inner().clone(),
             );
+            // `mcp_tool` nodes call the host's one MCP server list.
+            let mcp_store = handle.state::<remote::SharedLiveData>().store.clone();
+            crate::acp::host_mcp::mcp_install::install_live(Arc::clone(&mcp_store));
+            let mcp_servers = automation::mcp::store_servers(mcp_store);
             match automation::service::AutomationService::open(
                 &app_data_dir,
                 Arc::clone(&acp_manager),
@@ -1984,9 +2047,9 @@ pub fn run() {
                 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem};
                 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
-                let show_item = MenuItemBuilder::with_id(TRAY_MENU_SHOW, "Show Termul")
+                let show_item = MenuItemBuilder::with_id(TRAY_MENU_SHOW, "Show Troupe")
                     .build(app)?;
-                let quit_item = MenuItemBuilder::with_id(TRAY_MENU_QUIT, "Quit Termul")
+                let quit_item = MenuItemBuilder::with_id(TRAY_MENU_QUIT, "Quit Troupe")
                     .build(app)?;
                 let separator = PredefinedMenuItem::separator(app)?;
 
@@ -1997,7 +2060,7 @@ pub fn run() {
                     .build()?;
 
                 let _tray = TrayIconBuilder::with_id(TRAY_ID)
-                    .tooltip("Termul Manager")
+                    .tooltip("Troupe")
                     .icon(app.default_window_icon().cloned().unwrap())
                     .menu(&tray_menu)
                     .show_menu_on_left_click(false)
@@ -2063,6 +2126,8 @@ pub fn run() {
             get_default_shell,
             get_home_directory,
             window_visibility::is_wayland_session,
+            // Collapsed Rail: the macOS traffic lights hide
+            window_chrome::set_traffic_lights_hidden,
             suspend_app_menu,
             restore_app_menu,
             reveal_log_dir_command,
@@ -2102,11 +2167,14 @@ pub fn run() {
             commands::automation_get,
             commands::automation_create,
             commands::automation_apply_ops,
+            commands::automation_preview_ops,
+            commands::automation_set_layout,
             commands::automation_delete,
             commands::automation_set_enabled,
             commands::automation_approve,
             commands::automation_run_now,
             commands::automation_cancel_run,
+            commands::automation_decide_approval,
             commands::automation_list_runs,
             commands::automation_run_steps,
             commands::automation_mark_seen,
@@ -2232,6 +2300,8 @@ pub fn run() {
             commands::git_branch_switch,
             // Project icon resolution (local file scan → git-remote fetch)
             commands::project_icon_resolve,
+            // Link preview (favicon + title) for links written in agent chat
+            commands::link_preview_resolve,
             // Secure storage commands
             secure_storage::secure_storage_set,
             secure_storage::secure_storage_get,
@@ -2246,7 +2316,13 @@ pub fn run() {
             acp::commands::claude_accounts_login,
             acp::commands::claude_accounts_set_default,
             acp::commands::claude_accounts_set_project,
+            acp::commands::claude_accounts_set_chat,
             acp::commands::claude_accounts_set_auto_switch,
+            acp::commands::codex_accounts_list,
+            acp::commands::codex_accounts_usage,
+            acp::commands::codex_accounts_set_default,
+            acp::commands::codex_accounts_set_project,
+            acp::commands::codex_accounts_set_auto_switch,
             acp::commands::acp_factory_key_status,
             acp::commands::acp_factory_key_save,
             acp::commands::codex_cli_auth_status,
@@ -2259,6 +2335,7 @@ pub fn run() {
             acp::commands::acp_get_agent_idle_window,
             acp::commands::acp_probe_mcp_server,
             acp::commands::acp_mcp_oauth_start,
+            acp::commands::acp_answer_mcp_install,
             acp::commands::acp_mcp_oauth_has_token,
             acp::commands::acp_mcp_oauth_disconnect,
             acp_registry_snapshot::acp_fetch_registry_snapshot,
@@ -2277,7 +2354,6 @@ pub fn run() {
             commands::remote_server_status,
             commands::project_registry_import,
             commands::remote_sync_chat_history,
-            commands::remote_sync_mcp_registry,
             // Desktop ACP renderer-history storage
             commands::acp_history_list,
             commands::acp_history_get,

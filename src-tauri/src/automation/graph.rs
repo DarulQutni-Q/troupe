@@ -6,8 +6,8 @@ use std::fmt;
 use super::model::{
     wire_name, AgentTool, Automation, ConditionOp, EdgeSource, Graph, Issue, IssueCode, NodeId,
     NodeKind, NodeSpec, Op, Port, Trigger, AGENT_MAX_ATTEMPTS, AGENT_MAX_TIMEOUT_MS,
-    FOR_EACH_MAX_ITERATIONS, WAIT_MAX_MS,
-    MCP_MAX_TIMEOUT_MS,
+    APPROVAL_MAX_TIMEOUT_MS, APPROVAL_MIN_TIMEOUT_MS, FOR_EACH_MAX_ITERATIONS, MCP_MAX_TIMEOUT_MS,
+    WAIT_MAX_MS,
 };
 use super::template::{self, ParsedTemplate, Reference};
 use super::{schedule, schema};
@@ -60,7 +60,13 @@ fn legal_ports(source: Option<NodeKind>) -> &'static [Port] {
         None => &[Port::Out],
         Some(NodeKind::Condition) => &[Port::True, Port::False, Port::Error],
         Some(NodeKind::Fail) => &[],
-        Some(NodeKind::Http | NodeKind::Agent | NodeKind::Transform | NodeKind::McpTool) => {
+        Some(
+            NodeKind::Http
+            | NodeKind::Agent
+            | NodeKind::Transform
+            | NodeKind::Approval
+            | NodeKind::McpTool,
+        ) => {
             &[Port::Out, Port::Error]
         }
         Some(NodeKind::ForEach) => &[Port::Item, Port::Out, Port::Error],
@@ -357,6 +363,8 @@ fn check_node(
             output_schema,
             timeout_ms,
             max_attempts,
+            tools,
+            mcp_servers,
             ..
         } => {
             if let Err(e) = schema::parse(&output_schema.0) {
@@ -378,6 +386,13 @@ fn check_node(
                     Some(id),
                     IssueCode::AgentMaxAttemptsOutOfRange,
                     format!("max_attempts must be 1..={AGENT_MAX_ATTEMPTS}, got {max_attempts}"),
+                ));
+            }
+            if mcp_servers.is_some() && !tools.contains(&AgentTool::Other) {
+                issues.push(issue(
+                    Some(id),
+                    IssueCode::McpServersWithoutOther,
+                    "mcp_servers takes effect only when tools lists other; list other or set mcp_servers to null".to_string(),
                 ));
             }
         }
@@ -428,6 +443,17 @@ fn check_node(
                 Some(id),
                 IssueCode::WaitDurationOutOfRange,
                 format!("duration_ms must be 1..={WAIT_MAX_MS} (7 days), got {duration_ms}"),
+            ));
+        }
+        NodeSpec::Approval { timeout_ms, .. }
+            if !(APPROVAL_MIN_TIMEOUT_MS..=APPROVAL_MAX_TIMEOUT_MS).contains(timeout_ms) =>
+        {
+            issues.push(issue(
+                Some(id),
+                IssueCode::ApprovalTimeoutOutOfRange,
+                format!(
+                    "timeout_ms must be {APPROVAL_MIN_TIMEOUT_MS}..={APPROVAL_MAX_TIMEOUT_MS} (1 minute to 7 days), got {timeout_ms}"
+                ),
             ));
         }
         NodeSpec::Merge { .. } => {

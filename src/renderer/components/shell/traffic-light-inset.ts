@@ -1,43 +1,17 @@
-import { COLLAPSED_WIDTH, SHELL_GAP } from '@/components/shell/rail-layout'
-import { useTopRowPlatform } from '@/components/shell/top-row-context'
-import type { TopRowPlatform } from '@/lib/top-row'
-import { useSidebarVisible } from '@/stores/sidebar-store'
-
-/** Width the native macOS traffic lights need from the window edge (they end near x=66). */
-export const TRAFFIC_LIGHT_CLEARANCE_PX = 80
-
 /**
- * Where the shell steps aside for the macOS traffic lights while the Rail is
- * collapsed. The collapsed Rail (48px) and the shell gap (8px) already sit
- * under the lights, so the bar at the start of the shell row only adds the
- * rest: 80 - 48 - 8 = 24px of start padding. The Side panel header and the
- * main card stay at the top; nothing moves down.
+ * Width the native macOS traffic lights need from the window edge: they sit
+ * at x = 22 and end at x = 74, then a 4px gap to the Troupe mark's 28px box
+ * (Paper S2.0). x = 22 mirrors the Rail toggle on the right, whose glyph ends
+ * 23px from the Rail edge.
+ *
+ * Vertically the lights are centred on the 44px top row (y = 22), the line
+ * of the Troupe mark and the Rail toggle. `trafficLightPosition.y` in
+ * `tauri.conf.json` / `tauri.macos.conf.json` is 24 for that: tao makes
+ * it the title bar height minus the button height, not the button top, so
+ * the value was tuned by eye on macOS 26, not derived.
+ *
+ * Only the expanded Rail header makes this room (`TrafficLightClearance`).
+ * The lights hide while the Rail is collapsed (`ShellRail`), so the main
+ * area never steps aside for them.
  */
-export interface TrafficLightInset {
-  /**
-   * Start padding of the bar that touches the Rail: the Side panel header, or
-   * the main card's top row while no Side panel column shows.
-   */
-  panelHeaderStartPx: number
-}
-
-const INSET: TrafficLightInset = {
-  panelHeaderStartPx: TRAFFIC_LIGHT_CLEARANCE_PX - COLLAPSED_WIDTH - SHELL_GAP
-}
-
-/**
- * The one place that decides the inset: `null` unless the traffic lights are
- * native (Tauri on macOS) and the Rail is collapsed. With the Rail expanded
- * its header carries the lights' clearance itself (`TrafficLightClearance`).
- */
-export function getTrafficLightInset(
-  platform: TopRowPlatform,
-  railExpanded: boolean
-): TrafficLightInset | null {
-  return platform.trafficLights && !railExpanded ? INSET : null
-}
-
-/** {@link getTrafficLightInset} for the current platform and Rail state. */
-export function useTrafficLightInset(): TrafficLightInset | null {
-  return getTrafficLightInset(useTopRowPlatform(), useSidebarVisible())
-}
+export const TRAFFIC_LIGHT_CLEARANCE_PX = 78

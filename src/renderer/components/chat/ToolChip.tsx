@@ -1,16 +1,17 @@
-import { Edit2, Globe, type TermulIcon, Workflow } from '@/components/icons'
+import { Bot, CalendarClock, Canvas, Globe, type TermulIcon } from '@/components/icons'
 import type { TermulToolEntry, TermulToolId } from '@/lib/composer/termul-tools'
 import { cn } from '@/lib/utils'
 
 /** The Rail's icons for the same features (Canvas, Automations). */
 export const TERMUL_TOOL_ICONS: Record<TermulToolId, TermulIcon> = {
   browser: Globe,
-  canvas: Edit2,
-  automations: Workflow
+  canvas: Canvas,
+  automations: CalendarClock,
+  orchestrate: Bot
 }
 
 /**
- * Inline chip for a Termul tool pill, in the composer and the timeline. Same
+ * Inline chip for a Troupe tool pill, in the composer and the timeline. Same
  * inline metrics as `FileChip` so it stays in one line box.
  */
 export function ToolChip({

@@ -7,7 +7,7 @@ import type { IpcResult } from '@shared/types/ipc.types'
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
-import { AlertCircle, KeyRound, Loader2, Trash2 } from '@/components/icons'
+import { AlertCircle, Edit, Hand, KeyRound, Loader2, Trash2 } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import { FOCUS_RING_CLASS } from '@/components/ui/panel-styles'
 import { Switch } from '@/components/ui/switch'
@@ -22,16 +22,17 @@ import {
 } from '@/lib/automation-api'
 import { cn } from '@/lib/utils'
 import { READ_ONLY_SERVER_REASON } from '@/lib/write-gate'
-import { AutomationDiagram } from './AutomationDiagram'
 import { AutomationSecretsDialog } from './AutomationSecretsDialog'
 import {
   automationState,
   formatDateTime,
   formatDuration,
   nodeLabels,
-  STATE_PRESENTATION,
-  STATUS_PRESENTATION
+  parkedApproval,
+  runStatusPresentation,
+  STATE_PRESENTATION
 } from './automation-format'
+import { AutomationCanvas } from './canvas/AutomationCanvas'
 import { RunPolicyCard } from './RunPolicyCard'
 
 interface AutomationDetailProps {
@@ -42,6 +43,8 @@ interface AutomationDetailProps {
   onOpenRun: (runId: RunId) => void
   onDeleted: () => void
   onChanged: () => void
+  /** Opens the canvas editor; absent when this client may not write. */
+  onEdit?: () => void
 }
 
 type Busy = 'approve' | 'run' | 'enable' | 'delete' | null
@@ -53,7 +56,8 @@ export function AutomationDetail({
   isVisible,
   onOpenRun,
   onDeleted,
-  onChanged
+  onChanged,
+  onEdit
 }: AutomationDetailProps): React.JSX.Element {
   const { automation, issues, policy } = detail
   const gated = !useServerAdmitsRemoteWrites()
@@ -63,6 +67,7 @@ export function AutomationDetail({
   const state = STATE_PRESENTATION[automationState(automation)]
   const labels = nodeLabels(automation.graph.nodes)
   const secretNames = [...new Set(policy.secrets.flatMap((entry) => entry.names))]
+  const awaiting = runs?.find((run) => parkedApproval(run) !== null) ?? null
 
   // The runs list is on screen: its failures count as seen.
   const unseen = automation.unseen_failures
@@ -168,6 +173,22 @@ export function AutomationDetail({
         {gated && <p className="text-xs text-muted-foreground">{READ_ONLY_SERVER_REASON}</p>}
       </header>
 
+      {awaiting && (
+        <div className="flex flex-col gap-2 rounded-lg bg-warning/10 px-3 py-2 text-xs text-warning sm:flex-row sm:items-center">
+          <p className="flex flex-1 gap-2">
+            <Hand size={14} className="mt-px shrink-0" />A run is waiting for your approval.
+          </p>
+          <Button
+            variant="outline"
+            size="sm"
+            className="pointer-coarse:h-11"
+            onClick={() => onOpenRun(awaiting.id)}
+          >
+            Review
+          </Button>
+        </div>
+      )}
+
       {issues.length > 0 && (
         <section aria-labelledby="automation-issues" className="flex flex-col gap-1.5">
           <h3 id="automation-issues" className="text-xs font-medium text-destructive">
@@ -208,10 +229,24 @@ export function AutomationDetail({
       />
 
       <section aria-labelledby="automation-diagram-title" className="flex flex-col gap-2">
-        <h3 id="automation-diagram-title" className="text-xs font-medium text-muted-foreground">
-          Diagram
-        </h3>
-        <AutomationDiagram graph={automation.graph} trigger={automation.trigger} narrow={narrow} />
+        <div className="flex items-center gap-2">
+          <h3 id="automation-diagram-title" className="text-xs font-medium text-muted-foreground">
+            Diagram
+          </h3>
+          {/* A read-only server gets no Edit entry at all: the canvas stays in view mode. */}
+          {!gated && onEdit && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="ml-auto pointer-coarse:h-11"
+              onClick={onEdit}
+            >
+              <Edit size={14} />
+              Edit
+            </Button>
+          )}
+        </div>
+        <AutomationCanvas automation={automation} issues={issues} phone={narrow} />
       </section>
 
       <section aria-labelledby="automation-runs-title" className="flex flex-col gap-2">
@@ -254,7 +289,7 @@ function RunList({
   return (
     <ul className="flex flex-col divide-y divide-border rounded-lg border border-border bg-card">
       {runs.map((run) => {
-        const status = STATUS_PRESENTATION[run.status]
+        const status = runStatusPresentation(run)
         return (
           <li key={run.id}>
             <button

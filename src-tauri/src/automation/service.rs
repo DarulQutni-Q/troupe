@@ -13,15 +13,19 @@ use tokio::sync::broadcast;
 use super::agents::{self, AgentRegistry, KnownAgent};
 use super::engine::{Engine, EngineDeps, HttpConfig, ProjectRoots, SystemClock};
 use super::graph::{self, OpError};
-use super::mcp::{Lookup, McpFailure, McpServerEntry, ProjectMcpServers, RmcpClient, ToolSchema};
+use super::mcp::{
+    find_server, literal_argument, Literal, Lookup, McpFailure, McpServerEntry, ProjectMcpServers,
+    RmcpClient, ToolSchema,
+};
 use super::model::{
-    ApplyOpsResult, Automation, AutomationChanged, AutomationId, Issue, IssueCode, NamedTemplate,
-    NodeId, NodeSpec, Op, Run, RunId, RunPolicy, RunTrigger, Schedule, Step,
+    AgentTool, ApplyOpsResult, Automation, AutomationChanged, AutomationId, Issue, IssueCode,
+    Layout, NamedTemplate, NodeId, NodeKind, NodeSpec, Op, Run, RunId, RunPolicy, RunTrigger,
+    Schedule, Step,
 };
 use super::policy;
 use super::schedule;
 use super::secrets::{self, SecretError, Secrets};
-use super::store::{AutomationStore, StoreError, DB_FILE_NAME};
+use super::store::{armed_next_run, AutomationStore, StoreError, DB_FILE_NAME};
 use super::suggest::{self, Candidate, Prompt, PromptHistory, SessionHistory, Suggestion};
 use crate::acp::config::AgentConfig;
 use crate::acp::AcpManager;
@@ -223,13 +227,7 @@ impl AutomationService {
         base_revision: u64,
         ops: &[Op],
     ) -> ServiceResult<ApplyOpsResult> {
-        let current = self.load(id)?;
-        if current.revision != base_revision {
-            return Err(ServiceError::RevisionConflict {
-                current: current.revision,
-            });
-        }
-        let next = graph::apply_ops(&current, ops).map_err(ServiceError::InvalidOps)?;
+        let next = self.staged(id, base_revision, ops)?;
         let saved = self
             .engine
             .store()
@@ -246,6 +244,70 @@ impl AutomationService {
             automation: saved,
             issues,
         })
+    }
+
+    /// What `apply_ops` would answer, without saving or announcing anything:
+    /// the same revision check, the same op rules, the same issues and run
+    /// policy. The automation is the one a save would store: the next
+    /// revision, so an approval of `base_revision` no longer arms it and no
+    /// run is scheduled.
+    pub fn preview_ops(
+        &self,
+        id: &AutomationId,
+        base_revision: u64,
+        ops: &[Op],
+    ) -> ServiceResult<AutomationDetail> {
+        let mut next = self.staged(id, base_revision, ops)?;
+        next.layout.retain_nodes(&next.graph);
+        next.next_run_at = armed_next_run(&next, self.engine.now_ms());
+        let servers = self.mcp_servers(&next);
+        let issues = self.issues_with(&next, &servers);
+        log::debug!(
+            "[Automation] previewed {} ops on {id} at revision {base_revision} ({} issue(s))",
+            ops.len(),
+            issues.len()
+        );
+        Ok(AutomationDetail {
+            issues,
+            policy: self.policy_with(&next, &servers),
+            automation: next,
+        })
+    }
+
+    /// `current` with `ops` applied, for a caller that holds `base_revision`.
+    fn staged(
+        &self,
+        id: &AutomationId,
+        base_revision: u64,
+        ops: &[Op],
+    ) -> ServiceResult<Automation> {
+        let current = self.load(id)?;
+        if current.revision != base_revision {
+            return Err(ServiceError::RevisionConflict {
+                current: current.revision,
+            });
+        }
+        graph::apply_ops(&current, ops).map_err(ServiceError::InvalidOps)
+    }
+
+    /// Saves node positions without a new revision: where a node sits is not
+    /// part of what runs, so an approval stands. Positions of anything that is
+    /// not `trigger` or a node of the stored graph are dropped; NaN and
+    /// infinite coordinates are refused.
+    pub fn set_layout(&self, id: &AutomationId, layout: Layout) -> ServiceResult<Automation> {
+        if let Some(key) = layout.non_finite_key() {
+            log::warn!("[Automation] layout for {id} refused: non-finite position for {key:?}");
+            return Err(ServiceError::InvalidInput(format!(
+                "layout: the position of {key:?} is not a finite number"
+            )));
+        }
+        let saved = self.engine.store().set_layout(id, layout)?;
+        log::info!(
+            "[Automation] layout saved for {id}: {} position(s)",
+            saved.layout.0.len()
+        );
+        self.changed(&saved);
+        Ok(saved)
     }
 
     /// Renames without a new revision: the name is not part of what runs, so
@@ -348,7 +410,36 @@ impl AutomationService {
         Ok(self.engine.cancel_run(run_id))
     }
 
-    /// Newest first, at most 200.
+    /// A person approves or rejects the run parked at the approval
+    /// `node_id`. `false` when it is not parked there: already decided,
+    /// timed out, cancelled or past its deadline. Only people decide: no
+    /// agent tool calls this.
+    pub fn decide_approval(
+        &self,
+        run_id: &RunId,
+        node_id: &NodeId,
+        approved: bool,
+    ) -> ServiceResult<bool> {
+        let run = self
+            .engine
+            .store()
+            .get_run(run_id)?
+            .ok_or_else(|| ServiceError::NotFound(run_id.to_string()))?;
+        if run.graph.node(node_id).map(|n| n.spec.kind()) != Some(NodeKind::Approval) {
+            return Err(ServiceError::InvalidInput(format!(
+                "{node_id} is not an approval node of run {run_id}"
+            )));
+        }
+        let decided = self.engine.decide(run_id, node_id, approved)?;
+        log::info!(
+            "[Automation] approval {node_id} of run {run_id} {} ({})",
+            if approved { "approved" } else { "rejected" },
+            if decided { "applied" } else { "not waiting" }
+        );
+        Ok(decided)
+    }
+
+    /// The run in flight first, then newest first, at most 200.
     pub fn list_runs(&self, id: &AutomationId, limit: usize) -> ServiceResult<Vec<Run>> {
         Ok(self
             .engine
@@ -379,22 +470,17 @@ impl AutomationService {
     }
 
     fn policy_with(&self, automation: &Automation, servers: &[McpServerEntry]) -> RunPolicy {
-        let server_name = |id: &str| {
-            servers
-                .iter()
-                .find(|s| s.server_id == id)
-                .map(|s| s.name.clone())
-        };
-        policy::run_policy(automation, self.engine.now_ms(), &server_name)
+        policy::run_policy(automation, self.engine.now_ms(), servers)
     }
 
-    /// The project's MCP servers, read only when a node calls one.
+    /// The project's MCP servers, read only when a node calls one or an
+    /// agent node may use them.
     fn mcp_servers(&self, automation: &Automation) -> Vec<McpServerEntry> {
-        let calls_mcp = automation
-            .graph
-            .nodes
-            .iter()
-            .any(|n| matches!(n.spec, NodeSpec::McpTool { .. }));
+        let calls_mcp = automation.graph.nodes.iter().any(|n| match &n.spec {
+            NodeSpec::McpTool { .. } => true,
+            NodeSpec::Agent { tools, .. } => tools.contains(&AgentTool::Other),
+            _ => false,
+        });
         if calls_mcp {
             self.engine.mcp().servers(&automation.project_id)
         } else {
@@ -550,6 +636,18 @@ impl AutomationService {
                     _ => None,
                 }),
         );
+        for node in &automation.graph.nodes {
+            if let NodeSpec::Agent {
+                tools,
+                mcp_servers: Some(ids),
+                ..
+            } = &node.spec
+            {
+                if tools.contains(&AgentTool::Other) {
+                    issues.extend(unknown_scope_servers(&node.id, ids, servers));
+                }
+            }
+        }
         let mcp = self.engine.mcp();
         for node in &automation.graph.nodes {
             if let NodeSpec::McpTool {
@@ -570,6 +668,24 @@ impl AutomationService {
         self.engine
             .notify(&automation.project_id, Some(&automation.id));
     }
+}
+
+/// An agent's `mcp_servers` ids that name no enabled server.
+fn unknown_scope_servers(
+    node_id: &NodeId,
+    ids: &[String],
+    servers: &[McpServerEntry],
+) -> Vec<Issue> {
+    ids.iter()
+        .filter(|id| find_server(servers, id).is_none())
+        .map(|id| Issue {
+            node_id: Some(node_id.clone()),
+            code: IssueCode::UnknownMcpServer,
+            message: format!(
+                "mcp_servers names {id:?}, which is not an enabled MCP server of this project; pick a server_id from automation_capabilities"
+            ),
+        })
+        .collect()
 }
 
 fn mcp_issues(
@@ -633,8 +749,9 @@ fn mcp_issues(
         .collect()
 }
 
-/// A `required` input property with no argument, and an argument the
-/// schema does not declare while it sets `additionalProperties: false`.
+/// A `required` input property with no argument, an argument the schema
+/// does not declare while it sets `additionalProperties: false`, and a
+/// literal argument that fits none of its property's declared types.
 fn argument_issues(tool: &ToolSchema, arguments: &[NamedTemplate]) -> Vec<String> {
     let given = |name: &str| arguments.iter().any(|a| a.name == name);
     let schema = &tool.input_schema;
@@ -655,6 +772,14 @@ fn argument_issues(tool: &ToolSchema, arguments: &[NamedTemplate]) -> Vec<String
                 .map(|a| format!("tool {} takes no argument {}", tool.name, a.name)),
         );
     }
+    problems.extend(
+        arguments
+            .iter()
+            .filter_map(|a| match literal_argument(schema, a) {
+                Literal::Mismatch(mismatch) => Some(format!("tool {}: {mismatch}", tool.name)),
+                Literal::Render | Literal::Typed(_) => None,
+            }),
+    );
     problems
 }
 

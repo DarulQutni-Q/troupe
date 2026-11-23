@@ -266,13 +266,13 @@ impl Tag {
             Tag::Search => "Content and file-name search (ripgrep on the host).",
             Tag::Skills => "Agent skills installed for a project.",
             Tag::Acp => "The agent catalog and agent installs.",
-            Tag::McpServers => "A project's MCP server registry, probes and OAuth.",
+            Tag::McpServers => "MCP server probes and OAuth. The server list itself is the store key `acp/mcp-servers`.",
             Tag::McpCatalog => "Search and install servers from the MCP registry.",
             Tag::Automations => "Scheduled and triggered agent automations.",
             Tag::BrowserPolicy => "What agent browser automation may reach.",
             Tag::Canvas => "The design canvas: open, persist and serve the editor bundle.",
             Tag::Diagnostics => "Frontend error forwarding and bug reports.",
-            Tag::ServerAdmin => "Reconfigure a standalone termul-server.",
+            Tag::ServerAdmin => "Reconfigure a standalone troupe-server.",
         }
     }
 }

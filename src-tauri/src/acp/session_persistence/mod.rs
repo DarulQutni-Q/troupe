@@ -28,6 +28,13 @@ const INDEX_FILE: &str = "sessions.json";
 /// opens never re-run it (and never re-stamp a session whose project was
 /// deliberately cleared by a future feature).
 const UNASSIGNED_MIGRATION_MARKER: &str = "unassigned-project-migrated";
+/// One-time backfill of `continued_from` index edges for chains recorded
+/// before the field existed: `record_agent_switch` has stamped the new
+/// session's metadata since the field shipped, but a marker written earlier
+/// left no index edge. The migration reads each log's newest `agent_switch`
+/// once, stamps the target's metadata, and writes this marker so later
+/// launches skip the scan.
+const CONTINUED_FROM_MIGRATION_MARKER: &str = "continued-from-migrated-v1";
 const METADATA_FILE: &str = "metadata.json";
 const MESSAGES_FILE: &str = "messages.jsonl";
 const TOOL_CALLS_FILE: &str = "tool-calls.jsonl";
@@ -55,6 +62,7 @@ const STALE_TEMP_AGE: std::time::Duration = std::time::Duration::from_secs(60 * 
 
 mod controls;
 mod diff_stat;
+mod imported;
 mod jsonl;
 mod model;
 mod normalize;
@@ -390,6 +398,25 @@ impl SessionPersistence {
         &self,
         registration: SessionRegistration,
     ) -> Result<SessionMetadata> {
+        self.register_session_with(registration, None).await
+    }
+
+    /// Register a quick chat. `quick_chat_id` is the host-minted folder id.
+    /// The registration cwd must be that folder; any other path is refused.
+    pub async fn register_quick_session(
+        &self,
+        registration: SessionRegistration,
+        quick_chat_id: String,
+    ) -> Result<SessionMetadata> {
+        self.register_session_with(registration, Some(quick_chat_id))
+            .await
+    }
+
+    async fn register_session_with(
+        &self,
+        registration: SessionRegistration,
+        quick_chat_id: Option<String>,
+    ) -> Result<SessionMetadata> {
         // Idempotent catalog check BEFORE path validation: a duplicate
         // registration must return the existing entry even when its cwd is
         // unavailable (deleted between calls). Canonicalizing first would
@@ -419,6 +446,27 @@ impl SessionPersistence {
         // sanitizer keeps the `?` → an illegal Windows folder name → `mkdir`
         // fails with ENOENT and the resume is skipped (read-only transcript).
         let cwd = strip_verbatim_prefix(&canonical.to_string_lossy()).into_owned();
+        let (kind, quick_chat_id) = match quick_chat_id {
+            Some(id) => {
+                let expected = crate::acp::quick_chat::cwd_for_quick_session(&id).map_err(
+                    |message| SessionPersistenceError::Io(io::Error::other(message)),
+                )?;
+                if cwd != expected {
+                    return Err(SessionPersistenceError::Io(io::Error::other(
+                        "quick chat cwd does not match the host folder",
+                    )));
+                }
+                (SessionKind::Quick, Some(id))
+            }
+            None => {
+                if crate::acp::quick_chat::chat_id_of_canonical(&canonical).is_some() {
+                    return Err(SessionPersistenceError::Io(io::Error::other(
+                        "a project chat cannot use a quick chat folder",
+                    )));
+                }
+                (SessionKind::Project, None)
+            }
+        };
         let storage_key = Uuid::new_v4().to_string();
         let now = now_millis();
         let launch_branch = registration.worktree_branch.clone();
@@ -455,6 +503,10 @@ impl SessionPersistence {
             log_epoch: Some(mint_log_epoch()),
             head_ahead_of_durable: false,
             sweep_checkpoint: None,
+            continued_from: None,
+            kind,
+            quick_chat_id,
+            started_by: registration.started_by,
         };
         self.persist_metadata(&metadata)?;
         if let Err(error) = self.install_runtime(metadata.clone()) {
@@ -564,6 +616,10 @@ impl SessionPersistence {
             log_epoch: Some(mint_log_epoch()),
             head_ahead_of_durable: false,
             sweep_checkpoint: None,
+            continued_from: None,
+            kind: SessionKind::Project,
+            quick_chat_id: None,
+            started_by: None,
         };
         if let Err(error) = self.persist_metadata(&metadata) {
             let _ = fs::remove_dir_all(self.session_dir(&metadata.storage_key)?);
@@ -638,6 +694,10 @@ impl SessionPersistence {
             log_epoch: Some(mint_log_epoch()),
             head_ahead_of_durable: false,
             sweep_checkpoint: None,
+            continued_from: None,
+            kind: SessionKind::Project,
+            quick_chat_id: None,
+            started_by: None,
         };
         self.persist_metadata(&metadata)?;
         if let Err(error) = self.install_runtime(metadata.clone()) {
@@ -747,6 +807,15 @@ impl SessionPersistence {
             return Err(SessionPersistenceError::PersistenceUnhealthy(message));
         }
         Ok(())
+    }
+
+    /// Test seam: flag the session writer unhealthy, as a failed durable
+    /// append or a stopped writer does.
+    #[cfg(test)]
+    pub(crate) fn mark_writer_unhealthy_for_test(&self, session_id: &str, message: &str) {
+        if let Ok(runtime) = self.runtime(session_id) {
+            *runtime.unhealthy.lock() = Some(message.to_string());
+        }
     }
 
     /// Queue `command` under the session send lock, without ever blocking the
@@ -1083,6 +1152,106 @@ impl SessionPersistence {
             .ok_or(SessionPersistenceError::SessionNotFound)
     }
 
+    /// Stamp `session_id`'s metadata + index entry as the continuation of
+    /// `continued_from` — set on the NEW session an in-chat agent switch
+    /// creates (the `agent_switch` marker's `newSessionId`). The marker on
+    /// the SOURCE log stays the authoritative record; this is the O(1)
+    /// index-edge the history fold needs so a switch chain renders as one
+    /// conversation. The mutation lands on the shared catalog metadata the
+    /// session writer snapshots, so a later writer flush cannot lose it.
+    /// Idempotent: a same-value stamp is a no-op; an unknown session is
+    /// `SessionNotFound`; a mismatched prior value wins (a session has at
+    /// most one switch-source). An edge outside the session's project (see
+    /// `continuation_in_scope`) is refused as a logged no-op.
+    pub async fn note_continued_from(&self, session_id: &str, continued_from: &str) -> Result<()> {
+        // `reopen_writer` snapshots the catalog metadata and installs a new
+        // entry under this lock; stamping under it too means a reopen either
+        // runs first (the stamp lands on its new entry) or copies the stamp.
+        let registration = self.inner.registration_lock.lock().await;
+        let (entry, source) = {
+            let catalog = self.inner.catalog.lock();
+            let entry = catalog
+                .get(session_id)
+                .cloned()
+                .ok_or(SessionPersistenceError::SessionNotFound)?;
+            (entry, catalog.get(continued_from).cloned())
+        };
+        let source_project = source.map(|source| source.lock().project_id.clone());
+        {
+            let mut metadata = entry.lock();
+            if metadata.continued_from.as_deref() == Some(continued_from) {
+                return Ok(());
+            }
+            if !continuation_in_scope(&metadata, continued_from, source_project.as_ref()) {
+                log::warn!(
+                    "[acp-history] continued_from refused session_id={} source={}: not a same-project continuation",
+                    crate::logging::redact_session_id(session_id),
+                    crate::logging::redact_session_id(continued_from)
+                );
+                return Ok(());
+            }
+            if let Some(prior) = metadata.continued_from.as_deref() {
+                log::warn!(
+                    "[acp-history] continued_from already set session_id={} prior={} ignored={}",
+                    crate::logging::redact_session_id(session_id),
+                    crate::logging::redact_session_id(prior),
+                    crate::logging::redact_session_id(continued_from)
+                );
+                return Ok(());
+            }
+            metadata.continued_from = Some(continued_from.to_string());
+        }
+        drop(registration);
+        // Route the metadata write through the session writer when one is
+        // installed: it is the one thread that writes this session's
+        // metadata, so no stale snapshot can overtake the stamp. The Flush
+        // ack means `Ok(())` here is durable — `record_agent_switch` treats a
+        // recorded edge as settled, and the one-time migration never rescans
+        // after its marker exists. Without a (working) writer the inline
+        // write runs under the catalog lock so a concurrent `delete_session`
+        // cannot resurrect the directory.
+        let write_error = match self.runtime(session_id) {
+            Ok(runtime) => {
+                if self
+                    .send_command(&runtime, session_id, WriterCommand::PersistMetadata)
+                    .is_err()
+                {
+                    self.persist_mark_inline(session_id, &entry)
+                } else {
+                    let (tx, rx) = oneshot::channel();
+                    if self
+                        .send_command(&runtime, session_id, WriterCommand::Flush(tx))
+                        .is_err()
+                    {
+                        self.persist_mark_inline(session_id, &entry)
+                    } else {
+                        match rx.await {
+                            Ok(Ok(())) => None,
+                            // Flush failed or the writer stopped: fall back to
+                            // the inline write (the writer also marks itself
+                            // unsaved and retries on its next command, so both
+                            // paths converge on the same catalog snapshot).
+                            Ok(Err(_)) | Err(_) => {
+                                self.persist_mark_inline(session_id, &entry)
+                            }
+                        }
+                    }
+                }
+            }
+            Err(_) => self.persist_mark_inline(session_id, &entry),
+        };
+        let result = match write_error {
+            Some(error) => Err(error),
+            None => self.persist_index().await,
+        };
+        if result.is_err() {
+            // Roll the in-memory edge back so a retry re-attempts the durable
+            // write instead of no-opping on the set field.
+            entry.lock().continued_from = None;
+        }
+        result
+    }
+
     pub fn last_seq(&self, session_id: &str) -> Result<u64> {
         self.with_metadata(session_id, |metadata| metadata.last_seq)
     }
@@ -1213,8 +1382,94 @@ impl SessionPersistence {
     /// one is still live, delete the on-disk session directory, drop the
     /// catalog entry, and refresh the index. Unknown ids surface as
     /// [`SessionPersistenceError::SessionNotFound`].
+    /// Set a user-chosen title on a quick chat. Project chats are refused.
+    /// The source is [`TitleSource::LocalAlias`], which later agent titles cannot replace.
+    pub async fn set_local_alias(
+        &self,
+        session_id: &str,
+        raw_title: &str,
+    ) -> Result<SessionMetadata> {
+        let title = normalize_title(raw_title);
+        if title == "Untitled Chat" {
+            return Err(SessionPersistenceError::Io(io::Error::other(
+                "title must not be empty",
+            )));
+        }
+        let registration = self.inner.registration_lock.lock().await;
+        let entry = {
+            let catalog = self.inner.catalog.lock();
+            catalog
+                .get(session_id)
+                .cloned()
+                .ok_or(SessionPersistenceError::SessionNotFound)?
+        };
+        let previous = {
+            let mut metadata = entry.lock();
+            if metadata.kind != SessionKind::Quick {
+                return Err(SessionPersistenceError::Io(io::Error::other(
+                    "local rename is only available for quick chats",
+                )));
+            }
+            let previous = (metadata.title.clone(), metadata.title_source.clone());
+            metadata.title = Some(title);
+            metadata.title_source = Some(TitleSource::LocalAlias);
+            metadata.last_activity_at = now_millis();
+            previous
+        };
+        drop(registration);
+        let write_error = match self.runtime(session_id) {
+            Ok(runtime) => {
+                if self
+                    .send_command(&runtime, session_id, WriterCommand::PersistMetadata)
+                    .is_err()
+                {
+                    self.persist_mark_inline(session_id, &entry)
+                } else {
+                    let (tx, rx) = oneshot::channel();
+                    if self
+                        .send_command(&runtime, session_id, WriterCommand::Flush(tx))
+                        .is_err()
+                    {
+                        self.persist_mark_inline(session_id, &entry)
+                    } else {
+                        match rx.await {
+                            Ok(Ok(())) => None,
+                            Ok(Err(_)) | Err(_) => self.persist_mark_inline(session_id, &entry),
+                        }
+                    }
+                }
+            }
+            Err(_) => self.persist_mark_inline(session_id, &entry),
+        };
+        if let Some(error) = write_error {
+            let mut metadata = entry.lock();
+            metadata.title = previous.0;
+            metadata.title_source = previous.1;
+            return Err(error);
+        }
+        self.persist_index().await?;
+        log::info!(
+            "[quick-chat] renamed session_id={}",
+            crate::logging::redact_session_id(session_id)
+        );
+        self.metadata(session_id)
+    }
+
     pub async fn delete_session(&self, session_id: &str) -> Result<()> {
         let metadata = self.metadata(session_id)?;
+        if metadata.kind == SessionKind::Quick {
+            if let Some(chat_id) = metadata.quick_chat_id.as_deref() {
+                crate::acp::quick_chat::remove_chat_dir(chat_id).map_err(|message| {
+                    log::warn!(
+                        "[quick-chat] folder delete failed session_id={}: {message}",
+                        crate::logging::redact_session_id(session_id)
+                    );
+                    SessionPersistenceError::Io(io::Error::other(
+                        "could not delete the quick chat folder",
+                    ))
+                })?;
+            }
+        }
         // Drain the writer (if any) so a queued append cannot race the
         // directory removal below. The durability result of the drain is
         // irrelevant: the stored bytes are about to be deleted.
@@ -1861,7 +2116,15 @@ impl SessionPersistence {
 
         let migration_marker = self.inner.root.join(UNASSIGNED_MIGRATION_MARKER);
         let migrate_unassigned = !migration_marker.exists();
+        let continued_from_marker = self.inner.root.join(CONTINUED_FROM_MIGRATION_MARKER);
+        let migrate_continued_from = !continued_from_marker.exists();
         let mut unassigned_stamped = 0usize;
+        // `(target, source)` edges found by the migration scan, applied to
+        // the catalog before install so the one index rebuild carries them.
+        let mut continued_from_edges: Vec<(String, String)> = Vec::new();
+        // A scan or stamp failed: keep the migration open so the next
+        // launch retries (same contract as the unassigned migration).
+        let mut continued_from_incomplete = false;
         // Sessions the loop could not visit (unreadable, quarantined,
         // conflicting): they miss the stamping, so they keep the migration open.
         let mut skipped = 0usize;
@@ -1918,6 +2181,26 @@ impl SessionPersistence {
             }
             ensure_log_exists(&dir.join(MESSAGES_FILE))?;
             ensure_log_exists(&dir.join(TOOL_CALLS_FILE))?;
+
+            // One-time chain backfill (see CONTINUED_FROM_MIGRATION_MARKER):
+            // a pre-feature `agent_switch` marker left no index edge on its
+            // target. The newest marker is authoritative; the scan stops at
+            // the first probeable hit from the tail.
+            if migrate_continued_from {
+                match newest_agent_switch_target(&dir.join(MESSAGES_FILE), &metadata.session_id) {
+                    Ok(Some(target)) => {
+                        continued_from_edges.push((target, metadata.session_id.clone()));
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        continued_from_incomplete = true;
+                        log::warn!(
+                            "[acp-history] recover() continued_from scan failed session_id={} error={error}",
+                            crate::logging::redact_session_id(&metadata.session_id)
+                        );
+                    }
+                }
+            }
 
             let mut dirty = false;
 
@@ -2122,6 +2405,39 @@ impl SessionPersistence {
             recovered.insert(metadata.session_id.clone(), metadata);
         }
 
+        // Apply the backfilled chain edges onto the in-memory catalog BEFORE
+        // install, so the single index rebuild below carries them. The
+        // marker's target may be gone (deleted or quarantined) — the edge is
+        // then moot (no row to fold) and does not keep the migration open.
+        let mut continued_from_stamped = 0usize;
+        if migrate_continued_from {
+            for (target, source) in &continued_from_edges {
+                let source_project = recovered.get(source).map(|source| source.project_id.clone());
+                if let Some(metadata) = recovered.get_mut(target) {
+                    if metadata.continued_from.is_none()
+                        && continuation_in_scope(metadata, source, source_project.as_ref())
+                    {
+                        metadata.continued_from = Some(source.clone());
+                        if let Err(error) = self.persist_metadata(metadata) {
+                            continued_from_incomplete = true;
+                            log::warn!(
+                                "[acp-history] recover() continued_from stamp failed session_id={} error={error}",
+                                crate::logging::redact_session_id(target)
+                            );
+                        } else {
+                            continued_from_stamped += 1;
+                        }
+                    }
+                }
+            }
+            if !continued_from_edges.is_empty() {
+                log::info!(
+                    "[acp-history] continued_from backfill stamped={continued_from_stamped} edges={}",
+                    continued_from_edges.len()
+                );
+            }
+        }
+
         for metadata in recovered.values() {
             // Read-only catalog entries: no writer runtime survives a restart.
             self.install_catalog_entry(metadata.clone());
@@ -2133,6 +2449,21 @@ impl SessionPersistence {
         let index_written = self
             .persist_index_unless_unchanged(existing_index.as_deref())
             .await?;
+        if migrate_continued_from && skipped == 0 && !continued_from_incomplete {
+            // Marker last: a crash before this point re-runs the (idempotent)
+            // stamping on the next open. A skipped session keeps the
+            // migration open so its edge is stamped once it is readable.
+            atomic_file::replace(&continued_from_marker, b"1\n")?;
+            log::info!(
+                "[acp-history] continued-from migration complete stamped={continued_from_stamped} edges={}",
+                continued_from_edges.len()
+            );
+        } else if migrate_continued_from {
+            log::warn!(
+                "[acp-history] continued-from migration left open stamped={continued_from_stamped} edges={} skipped={skipped} incomplete={continued_from_incomplete}",
+                continued_from_edges.len()
+            );
+        }
         if migrate_unassigned && skipped == 0 {
             // Marker last: a crash before this point re-runs the (idempotent)
             // stamping on the next open. A skipped session keeps the
@@ -2397,6 +2728,23 @@ fn open_turn_step<'a>(
     }
 }
 
+/// A switch creates its target in the source's project, so a continuation
+/// edge only ever joins two sessions of one project. Any other edge (a WS
+/// caller naming an unrelated `newSessionId`, a stray marker) would fold, and
+/// a chat delete would then remove, another project's history. A source the
+/// catalog does not know cannot be checked; the fold ignores edges to absent
+/// sessions, so it is allowed.
+fn continuation_in_scope(
+    target: &SessionMetadata,
+    source_id: &str,
+    source_project: Option<&Option<String>>,
+) -> bool {
+    target.session_id != source_id
+        && source_project.is_none_or(|project| *project == target.project_id)
+}
+
+#[cfg(test)]
+mod continued_from_tests;
 #[cfg(test)]
 mod diff_stat_tests;
 #[cfg(test)]

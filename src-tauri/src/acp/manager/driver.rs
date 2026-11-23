@@ -117,6 +117,13 @@ pub(super) fn run_agent(
     } else {
         emit_crash_terminators(&driver_state, &sinks, &agent_id);
     }
+    native_subagents::settle_orphaned_runs(
+        &runtime,
+        &driver_state,
+        persistence.as_ref(),
+        &sinks,
+        &agent_id,
+    );
 
     // Self-reap: remove our own registry entry so a crashed/EOFed agent does
     // not linger in `list_agents` with a dead command channel. We do NOT join
@@ -311,8 +318,23 @@ pub(super) async fn handle_session_notification(
     // calls). The persisted JSONL log stays the sole history source. Session
     // state updates (plan, commands, mode, config, usage, session info) are
     // not history and still fan out.
-    if is_replayed_history(&notification.update) && state.lock().note_replayed_update(&session_id) {
-        return Ok(());
+    if is_replayed_history(&notification.update) {
+        let imported = {
+            let mut state = state.lock();
+            if state.is_import_window(&session_id) {
+                state.import_push(&session_id, notification.update.clone())
+            } else if state.note_replayed_update(&session_id) {
+                return Ok(());
+            } else {
+                None
+            }
+        };
+        if let Some(steps) = imported {
+            let failed =
+                super::import_steps::record_import_steps(sinks, agent_id, &session_id, steps);
+            state.lock().note_import_failures(&session_id, failed);
+            return Ok(());
+        }
     }
     let paths = |locations: &[agent_client_protocol::schema::v1::ToolCallLocation]| {
         locations.iter().map(|l| l.path.clone()).collect::<Vec<_>>()
@@ -334,22 +356,37 @@ pub(super) async fn handle_session_notification(
     // (`session::unprompted`). `sweep_unprompted_work` reports its end. Only a
     // session the driver holds counts, and a subagent dispatch never does:
     // the host stamps only changed dispatch records, so the registry decides.
-    let started_working = {
+    // The same rule picks the commands it leaves running
+    // (`session::background_commands`), in or out of a turn.
+    let (started_working, background_commands) = {
         let mut state = state.lock();
         let is_dispatch = tool_call
             .as_ref()
             .is_some_and(|(call, _, _)| state.subagent_records().get(&session_id, call).is_some());
-        !is_dispatch
+        let tracked = !is_dispatch && state.session_root(&session_id).is_some();
+        let started_working = tracked
             && !state.is_turn_active(&session_id)
-            && state.session_root(&session_id).is_some()
             && state.unprompted().note(
                 &session_id,
                 &notification.update,
                 tokio::time::Instant::now(),
-            )
+            );
+        let commands = tracked
+            .then(|| {
+                state.background_commands().note(
+                    &session_id,
+                    &notification.update,
+                    crate::web::store::unix_ms(),
+                )
+            })
+            .flatten();
+        (started_working, commands)
     };
     if started_working {
         crate::acp::events::emit_agent_working(sinks, agent_id, &session_id, true);
+    }
+    if let Some(commands) = background_commands {
+        crate::acp::events::emit_background_commands(sinks, agent_id, &session_id, commands);
     }
     if let Some((tool_call_id, kind, paths)) = tool_call {
         let mut state = state.lock();
@@ -483,7 +520,7 @@ pub(super) async fn drive_connection(
     // so by default those are redacted to direction + byte length — enough to
     // confirm streaming/traffic without writing secrets to disk.
     //
-    // Set `TERMUL_ACP_TRACE_RAW=1` to log the full stdin/stdout JSON-RPC bodies
+    // Set `TROUPE_ACP_TRACE_RAW=1` to log the full stdin/stdout JSON-RPC bodies
     // (diagnostics only — may write secrets to the log; never enable in normal
     // use). Combine with a debug log level to see the trace.
     // Headless browser-open shim (spec-acp-terminal-auth): install a per-agent
@@ -514,9 +551,8 @@ pub(super) async fn drive_connection(
     let debug_agent_id = agent_id.clone();
     let redact_output = profile.redact_output;
     let trace_raw = !redact_output
-        && std::env::var("TERMUL_ACP_TRACE_RAW")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
+        && crate::brand_env::value("ACP_TRACE_RAW")
+            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
     // `TreeKillAgent` is `AcpAgent` on unix; on Windows it puts the agent in a
     // kill-on-close Job Object so killing it also reaps self-spawned workers.
     let agent = TreeKillAgent::new(config.to_mcp_server(shim_dir.as_deref())).with_debug(
@@ -700,7 +736,12 @@ pub(super) async fn drive_connection(
                 // A permission request is agent activity — the turn is waiting
                 // on user input, not wedged. Nudge the idle deadline so a
                 // user-input wait doesn't false-fire the idle timeout.
-                perm_state.lock().signal_idle(&session_string);
+                {
+                    // The chat's turn, and an orchestrated child's own one.
+                    let mut state = perm_state.lock();
+                    state.signal_idle(&session_string);
+                    state.signal_idle(session_id.0.as_ref());
+                }
                 let (request_id, turn_id) = {
                     let mut state = perm_state.lock();
                     state.bind_tool_call(
@@ -708,7 +749,11 @@ pub(super) async fn drive_connection(
                         session_string.clone(),
                     );
                     (
-                        state.register_permission(session_string.clone(), responder),
+                        state.register_permission(
+                            session_string.clone(),
+                            tool_call.tool_call_id.0.to_string(),
+                            responder,
+                        ),
                         state.active_turn_id(&session_string),
                     )
                 };
@@ -761,7 +806,11 @@ pub(super) async fn drive_connection(
                 // A structured question is agent activity — the turn is waiting
                 // on user input, not wedged. Nudge the idle deadline so a
                 // user-input wait doesn't false-fire the idle timeout.
-                question_state.lock().signal_idle(&session_string);
+                {
+                    let mut state = question_state.lock();
+                    state.signal_idle(&session_string);
+                    state.signal_idle(&request.session_id);
+                }
                 let question_id = {
                     let mut state = question_state.lock();
                     state.register_question(session_string.clone(), responder)
@@ -881,6 +930,16 @@ pub(super) async fn drive_connection(
                         ("form".to_string(), None, fields, dropped)
                     }
                     ElicitationMode::Url(url_mode) => {
+                        if let Err(refused) = crate::acp::safe_url::check_safe_url(
+                            &url_mode.url,
+                            crate::acp::safe_url::Opener::Remote,
+                        ) {
+                            log::warn!("[acp] url elicitation cancelled: {refused}");
+                            let _ = responder.respond(CreateElicitationResponse::new(
+                                ElicitationAction::Cancel,
+                            ));
+                            return Ok(());
+                        }
                         ("url".to_string(), Some(url_mode.url.clone()), Vec::new(), 0)
                     }
                     ElicitationMode::Other(_) | _ => {
@@ -931,7 +990,7 @@ pub(super) async fn drive_connection(
                 // large file can't stall connection I/O (M1).
                 let root = {
                     let state = read_state.lock();
-                    if state.is_ephemeral(request.session_id.0.as_ref()) {
+                    if state.is_headless(request.session_id.0.as_ref()) {
                         let denied = Err(agent_client_protocol::Error::method_not_found());
                         let _ = responder.respond_with_result(denied);
                         return Ok(());
@@ -952,7 +1011,7 @@ pub(super) async fn drive_connection(
                         cx| {
                 let root = {
                     let state = write_state.lock();
-                    if state.is_ephemeral(request.session_id.0.as_ref()) {
+                    if state.is_headless(request.session_id.0.as_ref()) {
                         let denied = Err(agent_client_protocol::Error::method_not_found());
                         let _ = responder.respond_with_result(denied);
                         return Ok(());
@@ -975,7 +1034,7 @@ pub(super) async fn drive_connection(
                 if !allow_terminal
                     || term_create_state
                         .lock()
-                        .is_ephemeral(request.session_id.0.as_ref())
+                        .is_headless(request.session_id.0.as_ref())
                 {
                     let denied: Result<CreateTerminalResponse, agent_client_protocol::Error> =
                         Err(agent_client_protocol::Error::method_not_found());
@@ -1016,7 +1075,7 @@ pub(super) async fn drive_connection(
                 use agent_client_protocol::schema::v1::TerminalOutputResponse;
                 if term_output_state
                     .lock()
-                    .is_ephemeral(request.session_id.0.as_ref())
+                    .is_headless(request.session_id.0.as_ref())
                 {
                     let denied: Result<TerminalOutputResponse, agent_client_protocol::Error> =
                         Err(agent_client_protocol::Error::method_not_found());
@@ -1042,7 +1101,7 @@ pub(super) async fn drive_connection(
                 use agent_client_protocol::schema::v1::WaitForTerminalExitResponse;
                 if term_wait_state
                     .lock()
-                    .is_ephemeral(request.session_id.0.as_ref())
+                    .is_headless(request.session_id.0.as_ref())
                 {
                     let denied: Result<WaitForTerminalExitResponse, agent_client_protocol::Error> =
                         Err(agent_client_protocol::Error::method_not_found());
@@ -1090,7 +1149,7 @@ pub(super) async fn drive_connection(
                 use agent_client_protocol::schema::v1::KillTerminalResponse;
                 if term_kill_state
                     .lock()
-                    .is_ephemeral(request.session_id.0.as_ref())
+                    .is_headless(request.session_id.0.as_ref())
                 {
                     let denied: Result<KillTerminalResponse, agent_client_protocol::Error> =
                         Err(agent_client_protocol::Error::method_not_found());
@@ -1114,7 +1173,7 @@ pub(super) async fn drive_connection(
                 use agent_client_protocol::schema::v1::ReleaseTerminalResponse;
                 if term_release_state
                     .lock()
-                    .is_ephemeral(request.session_id.0.as_ref())
+                    .is_headless(request.session_id.0.as_ref())
                 {
                     let denied: Result<ReleaseTerminalResponse, agent_client_protocol::Error> =
                         Err(agent_client_protocol::Error::method_not_found());

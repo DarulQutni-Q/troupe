@@ -488,7 +488,7 @@ describe('ModeChip mode menu (icons and risk groups)', () => {
         agentName="Claude Agent"
       />
     )
-    fireEvent.click(pill(/^Manual$/))
+    fireEvent.click(pill(/^Ask first$/))
 
     const askFirst = screen.getByRole('group', { name: 'Ask first' })
     expect(
@@ -510,7 +510,7 @@ describe('ModeChip mode menu (icons and risk groups)', () => {
 
   it('gives each mode its hugeicons icon', () => {
     render(<ModeChip session={claudeSession()} disabled={false} onSelect={vi.fn()} label="Agent" />)
-    fireEvent.click(pill(/^Manual$/))
+    fireEvent.click(pill(/^Ask first$/))
 
     const icons = Object.fromEntries(
       screen
@@ -527,20 +527,24 @@ describe('ModeChip mode menu (icons and risk groups)', () => {
     })
   })
 
-  it('marks the selected mode with a check only (the fill means hover or focus)', () => {
+  it('marks the picked mode with the model picker fill and no tick; hover is lighter', () => {
     render(<ModeChip session={claudeSession()} disabled={false} onSelect={vi.fn()} label="Agent" />)
-    fireEvent.click(pill(/^Manual$/))
+    fireEvent.click(pill(/^Ask first$/))
 
     const manual = screen.getByRole('button', { name: /^Manual/, pressed: true })
-    expect(manual).not.toHaveClass('bg-foreground/10')
-    expect(manual.querySelector('[data-termul-icon="Check"]')).toHaveClass('opacity-100')
+    expect(manual).toHaveClass('bg-foreground/10')
+    expect(manual.querySelector('[data-termul-icon="Check"]')).toBeNull()
+    const plan = screen.getByRole('button', { name: /^Plan/, pressed: false })
+    expect(plan).not.toHaveClass('bg-foreground/10')
+    expect(plan).toHaveClass('hover:bg-foreground/[0.06]', 'py-1.5', 'text-left')
+    expect(plan.textContent).toContain('Plan')
   })
 
   it('shows the current mode icon on the chip, in yellow for a risky mode', () => {
     const { rerender } = render(
       <ModeChip session={claudeSession()} disabled={false} onSelect={vi.fn()} label="Agent" />
     )
-    expect(iconOf(pill(/^Manual$/))).toBe('Hand')
+    expect(iconOf(pill(/^Ask first$/))).toBe('Hand')
 
     rerender(
       <ModeChip
@@ -552,6 +556,9 @@ describe('ModeChip mode menu (icons and risk groups)', () => {
     )
     const chip = pill(/^Bypass permissions$/)
     expect(chip.querySelector('[data-termul-icon="ShieldAlert"]')).toHaveClass('text-warning')
+    // Composer V2: a risky mode turns the chip into a warning pill.
+    expect(chip).toHaveAttribute('data-mode-risk', 'danger')
+    expect(chip).toHaveClass('text-warning')
   })
 
   it('maps Cursor and Codex modes, and puts unknown modes under Other modes', () => {
@@ -603,7 +610,7 @@ describe('ModeChip mode menu (icons and risk groups)', () => {
     render(
       <ModeChip session={claudeSession()} disabled={false} onSelect={onSelect} label="Agent" />
     )
-    fireEvent.click(pill(/^Manual$/))
+    fireEvent.click(pill(/^Ask first$/))
     fireEvent.click(screen.getByRole('button', { name: /^Auto/ }))
 
     expect(onSelect).toHaveBeenCalledWith('auto')
@@ -618,7 +625,7 @@ describe('composer menus share the dropdown motion', () => {
 
   it('the mode menu opens with the shared dropdown motion', () => {
     render(<ModeChip session={claudeSession()} disabled={false} onSelect={vi.fn()} label="Agent" />)
-    fireEvent.click(pill(/^Manual$/))
+    fireEvent.click(pill(/^Ask first$/))
     expect(screen.getByTestId('mode-chip-options').closest('[data-menu-motion]')).toHaveAttribute(
       'data-menu-motion',
       'dropdown'

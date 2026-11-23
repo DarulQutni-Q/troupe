@@ -17,8 +17,8 @@ const QUICK_SHORTCUT_IDS = [
   'commandHistory',
   'newTerminal',
   'newBrowserTab',
-  'toggleFileExplorer',
   'sidebarToggle',
+  'toggleFileExplorer',
   'settings',
   'zoomIn',
   'zoomOut',
@@ -133,8 +133,10 @@ export function TitleBarShortcutsPopover({
           }}
         >
           {/* The keyboard body sits low in its 24px box (a cable runs to the
-              top): 1px up lines it up with the Palette glyph beside it. */}
-          <Keyboard size={16} className="-translate-y-px" />
+              top): 1px up lines it up with the Palette glyph beside it. It also
+              fills its box edge to edge, so at 16px it reads larger than its
+              neighbours: 14px matches their optical size. */}
+          <Keyboard size={14} className="-translate-y-px" />
         </button>
       </RailTooltip>
 
@@ -144,7 +146,7 @@ export function TitleBarShortcutsPopover({
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[110] flex flex-col items-center pt-[7vh] bg-overlay/40 backdrop-blur-sm"
+            className="fixed inset-0 z-[110] flex flex-col items-center px-4 pt-[max(7dvh,calc(env(safe-area-inset-top)+1rem))] bg-overlay/40 backdrop-blur-sm"
             onClick={() => setOpen(false)}
           >
             <motion.div
@@ -153,7 +155,7 @@ export function TitleBarShortcutsPopover({
               aria-labelledby="shortcut-menu-title"
               initial={{ opacity: 0, scale: 0.97, y: -8 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.97, y: -8 }}
+              exit={{ opacity: 0, scale: 0.97, y: -8, transition: { duration: 0.1 } }}
               transition={{ duration: 0.15 }}
               className="w-full max-w-lg overflow-hidden rounded-lg border border-border bg-card shadow-2xl"
               onClick={(event) => event.stopPropagation()}
@@ -181,7 +183,7 @@ export function TitleBarShortcutsPopover({
                 </button>
               </div>
 
-              <div className="max-h-[52vh] overflow-y-auto px-2 py-2">
+              <div className="max-h-[52dvh] overflow-y-auto overscroll-contain px-2 py-2">
                 {quickShortcuts.length === 0 ? (
                   <div className="px-2 py-6 text-center text-xs text-muted-foreground">
                     No shortcuts available.

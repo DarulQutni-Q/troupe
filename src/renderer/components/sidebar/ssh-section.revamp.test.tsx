@@ -13,11 +13,17 @@ vi.mock('@/lib/tauri-runtime', () => ({ isTauriContext: () => tauriRef.current }
 vi.mock('@/stores/ssh-panel-store', () => ({ useSSHPanelVisible: () => visibleRef.current }))
 vi.mock('@/hooks/use-app-settings', () => ({ useUpdatePanelVisibility: () => updateMock }))
 vi.mock('sonner', () => ({ toast: { error: toastError } }))
-vi.mock('../ssh/SSHPanel', () => ({
-  SSHPanel: ({ headerLead }: { headerLead?: React.ReactNode }) => (
-    <div data-testid="ssh-panel">{headerLead}</div>
-  )
-}))
+vi.mock('../ssh/SSHPanel', async () => {
+  const { SSHSectionChevron } = await import('../ssh/SSHSectionChevron')
+  return {
+    SSHPanel: ({ collapsible }: { collapsible?: boolean }) => (
+      <div data-testid="ssh-panel">{collapsible && <SSHSectionChevron expanded />}</div>
+    ),
+    SSHSectionHeader: ({ start }: { start: React.ReactNode }) => (
+      <div data-testid="ssh-section-header">{start}</div>
+    )
+  }
+})
 
 describe('SSHResizableSection collapse', () => {
   beforeEach(() => {

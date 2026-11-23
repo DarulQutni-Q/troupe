@@ -84,6 +84,7 @@ pub mod command_editor;
 pub mod diagnostics;
 pub mod git;
 pub mod github;
+pub mod link_preview;
 pub mod migrations;
 pub mod misc;
 pub mod notification;
@@ -106,6 +107,7 @@ pub use command_editor::*;
 pub use diagnostics::*;
 pub use git::*;
 pub use github::*;
+pub use link_preview::*;
 pub use migrations::*;
 pub use misc::*;
 pub use notification::*;
@@ -129,9 +131,6 @@ mod search_dirs_tests;
 
 #[cfg(test)]
 mod search_file_hits_tests;
-
-#[cfg(test)]
-mod remote_sync_mcp_registry_tests;
 
 #[cfg(test)]
 mod forwarder_teardown_tests;

@@ -1,10 +1,10 @@
-# Termul Manager - Source Tree Analysis
+# Troupe - Source Tree Analysis
 
 **Date:** 2026-05-09
 
 ## Overview
 
-Termul Manager is organized as a single desktop application repository with a clear split between renderer code, shared contracts, and the Tauri/Rust runtime. The dominant implementation surface is in `src/renderer/`, while `src-tauri/` provides native capabilities and packaging assets.
+Troupe is organized as a single desktop application repository with a clear split between renderer code, shared contracts, and the Tauri/Rust runtime. The dominant implementation surface is in `src/renderer/`, while `src-tauri/` provides native capabilities and packaging assets.
 
 ## Complete Directory Structure
 
@@ -183,7 +183,7 @@ The Rust side groups responsibilities into managers/subsystems rather than a sin
 - `vite.config.tauri.ts` — Tauri-specific frontend build config
 - `tailwind.config.ts` — styling config
 - `eslint.config.js` — linting rules
-- `vitest.config.ts` — test runner config
+- `bunfig.toml` — `bun test` config (jsdom, preload, random order); `scripts/test.ts` runs it
 - `components.json` — UI/component tooling metadata
 
 ## Development Notes

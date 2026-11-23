@@ -1,4 +1,4 @@
-# Termul Manager - Component Inventory
+# Troupe - Component Inventory
 
 **Date:** 2026-05-09
 **Project Type:** Desktop Application
@@ -17,16 +17,17 @@ Supporting these are shared layout, navigation, modal, and design-system compone
 
 ### Layout and Shell
 
-- `shell/ShellFrame.tsx` — the desktop frame: Rail, Side panel and main area, with one top row carrying the Rail and Side panel toggles and the native window controls
-- `StatusBar.tsx` — active project/terminal context bar showing git branch, git status, working directory, exit code, and updater state; rendered on the desktop layout only (the desktop app and the desktop-width web client), not on the mobile web shell, where connection health lives in the `MobileShellDrawer` footer
-- `ProjectSidebar.tsx` — project switcher, reorderable workspace list, archive/restore flows, rename/color operations, shell discovery hooks
+- `shell/ShellFrame.tsx` — the desktop frame, edge to edge: Rail, main area, the right Side panel and the tool strip, with one 44px top row carrying the Rail toggle. On Windows and Linux it draws the window controls (`TopRowChrome.tsx` `WindowControls`) once, in the top-right corner above the tool strip; the top row surface on their left ends with `WindowControlsInset`
+- `shell/tool-strip/` — `ToolStrip` (compound: `ToolStrip.Group`, `.Button`, `.Spacer`) and `ShellToolStrip`: Explorer, Changes and GitHub open the Side panel on that view; Terminal (`TerminalStripButton`: a click opens the default shell, right-click / Shift+F10 lists the detected shells) and Browser open a new tab; Remote access (desktop) or the connection lamp (web)
+- `shell/rail/worktree-switcher.tsx` — the Rail worktree switcher: `RailWorktreeSwitcherProvider`, the working copies popover anchored on a project row (opened from the project row menu, "Switch worktree…"), and `RailWorktreeChip` under the project name when a worktree is picked
+- `ProjectSidebar.tsx` — project switcher, reorderable workspace list, archive/restore flows, rename/color operations, shell discovery hooks. The project row menu (`sidebar/project-context-menu.tsx`; right-click, Shift+F10 or the row "…" button) has "Switch worktree…"; the Projects `+` menu (`sidebar/add-project-menu.tsx`) has New project, New folder group and Import chats
 - `WorkspaceLayout.tsx` — top-level application shell coordinating the Rail, Side panel, pane area, modals, keyboard shortcuts, and close workflows
 
 ### Workspace / Pane System
 
 - `workspace/PaneRenderer.tsx` — recursive pane renderer for split layouts
 - `workspace/PaneContent.tsx` — content host for terminal, editor, and browser tabs inside a leaf pane
-- `workspace/WorkspaceTabBar.tsx` — tab strip for workspace tabs, reordering, terminal/editor/browser tab controls
+- `workspace/WorkspaceTabBar.tsx` — tab strip for workspace tabs, reordering, terminal/editor/browser tab controls; ends with the `+` New tab menu (`workspace/NewTabMenu.tsx`: new chat, terminal or browser tab in that pane)
 - `workspace/EditorTab.tsx` — editor tab presentation
 - `workspace/DropZoneOverlay.tsx` — drag/drop affordance for split and tab interactions
 
@@ -39,7 +40,7 @@ Supporting these are shared layout, navigation, modal, and design-system compone
 - `terminal/ActivityIndicator.tsx` — recent terminal activity indicator
 - `mobile/MobileChatShell.tsx` — narrow web shell: the header over the content (no bottom bar; the terminal key bar is the bottom edge on a terminal), the full-screen drawer and the header-opened sheets (project, Files, header ⋯, terminal ⋯). Hands the drawer the active tab's section to preselect and the attention count. Records the control that opened the drawer (☰ or the attention pill, with ☰ as the fallback) and the openers of its sheets in `lib/sheet-focus-return.ts`, the one focus-return mechanism, so focus returns there on close
 - `mobile/MobileShellHeader.tsx` — shell header: ☰, title block (heading plus the project subtitle button), attention pill, ✎ and ⋯
-- `mobile/MobileShellDrawer.tsx` — full-screen Claude-style drawer (full width, safe-area padded, built-in close; named "Termul", a visually hidden title on web): the project row as the top row beside the close (Tauri, with no project row, shows a small wordmark and title instead), one line of segmented section tabs (Chats with the attention badge, Terminals, Editors; a tap switches the list without closing; the active tab's section is preselected on each open and the list holds still while open), chat search (Chats only), one scrolling list (Chats: `MobileRecentsList`; Terminals and Editors: `MobileDrawerSectionList`; a row opens its tab and closes the drawer), and a pinned footer (Settings, Snapshots, Git history, the section's primary pill: New chat, New terminal or Browse files, labelled connection status). Owns drawer focus on open and, through `lib/sheet-focus-return.ts`, on close (the opener on a dismissal; on a navigation the open question's first option in the visible chat, else the shell title); the unread tracker is mounted once at shell level (`WorkspaceLayout`), not here
+- `mobile/MobileShellDrawer.tsx` — full-screen Claude-style drawer (full width, safe-area padded, built-in close; named "Troupe", a visually hidden title on web): the project row as the top row beside the close (Tauri, with no project row, shows a small wordmark and title instead), one line of segmented section tabs (Chats with the attention badge, Terminals, Editors; a tap switches the list without closing; the active tab's section is preselected on each open and the list holds still while open), chat search (Chats only), one scrolling list (Chats: `MobileRecentsList`; Terminals and Editors: `MobileDrawerSectionList`; a row opens its tab and closes the drawer), and a pinned footer (Settings, Snapshots, Git history, the section's primary pill: New chat, New terminal or Browse files, labelled connection status). Owns drawer focus on open and, through `lib/sheet-focus-return.ts`, on close (the opener on a dismissal; on a navigation the open question's first option in the visible chat, else the shell title); the unread tracker is mounted once at shell level (`WorkspaceLayout`), not here
 - `mobile/MobileRecentsList.tsx` — the drawer's Recents list: open chats merged into the scoped history (each chat once, open ones with live status glyphs shared with the desktop `agent-chat-tab` via `workspace/tabs/agent-chat-status.tsx`), open chats (an `agent-chat` tab in the active project's tree) listed first under Active (never paged out by the lazy window; filtered by search like any row), the rest grouped Today / Yesterday / Earlier by creation time, which reopening never re-stamps (`createdAt`, first-write-wins in `persistSession` and the host merge); Claude-style rows with no trailing icons, only the created time after the status glyphs (clock time today, `Yesterday 14:05`, else a short date; also in the row's accessible name); a long-press or the focus-only row action opens `MobileRecentsActionsSheet` (Close for open chats, Delete behind the shared confirm for history)
 - `mobile/MobileDrawerSectionList.tsx` — the drawer's Terminals list (rename, close) and Editors list (editor files, Git Changes, browser tabs), each row with its guarded close
 - `mobile/MobileRecentsActionsSheet.tsx` — the Recents row actions bottom sheet
@@ -70,8 +71,11 @@ Supporting these are shared layout, navigation, modal, and design-system compone
 - `chat/use-chat-history-entries.ts` — the chat history derivation both lists share: ADR 0002 scoping, query filter on the displayed title, settled-count announcement, lazy window, recency groups, open and delete (the caller names the delete log source)
 - `chat/chat-agent-prose.tsx` — markdown renderer for agent replies (`AgentProse`) with the Streamdown plugin set, external-link confirm modal, inline `termul-image` and `termul-file-path` renderers; split out of `ChatMessage.tsx` to keep it under the file-size limit
 - `chat/ChatInputBar.tsx` — composer with slash commands, `@`-file mentions, config/mode chips, and staged-attachment badges
+- `chat/new-chat/open-new-chat.ts` — `openNewChat`: the one way to start a chat. For a project it opens the composer (the agent launcher) in the pane, and the agent starts on Send; with no project it opens an empty quick chat (`openNewQuickChat`) on the last picked agent and its saved options
+- `chat/new-chat/send-from-chat-start.ts` — applies an empty chat's context-row pick (another folder or a new worktree) on its first send through `launchChat`
+- `chat/ChatStartContextRow.tsx` — the empty chat's context row: the launcher's interactive workspace and base-branch row in a git project (`use-chat-start-pick.ts`), else read-only
 - `chat/AttachmentPreviewGroup.tsx` — staged-attachment badges above the composer using AI Elements `Attachments` inline variant with hover-card image previews and click-to-open for path-backed refs
-- `chat/use-composer-attachments.ts` — hybrid transport hook (OS picker → `resource_link`, drag/paste → inline image or embedded text) shared by the chat input and the new-thread launcher
+- `chat/use-composer-attachments.ts` — hybrid transport hook (OS picker → `resource_link`, drag/paste → inline image or embedded text) shared by the chat input and the agent launcher
 - `chat/chat-attachments.ts` — attachment helpers: MIME guessing, name humanization, ACP block mapping, and `pendingToAttachmentData`/`blockToAttachmentData` adapters into AI Elements `AttachmentData`
 - `ai-elements/attachments.tsx` — vendored [AI SDK Elements Attachments](https://elements.ai-sdk.dev/components/attachments) component (grid/inline/list variants) adapted to the repo's shadcn primitives and `ai` package types
 
@@ -96,7 +100,7 @@ Supporting these are shared layout, navigation, modal, and design-system compone
 
 ### Workspace Actions / Modal Components
 
-- `CommandPalette.tsx` — global command launcher for project switching and workspace actions
+- `CommandPalette.tsx` — global command launcher for project switching and workspace actions; while there is a query, `CommandPaletteChats.tsx` adds a Chats group with the open project's chats
 - `CommandHistoryModal.tsx` — per-project and aggregate command history viewer
 - `NewProjectModal.tsx` — create project workflow
 - `CreateSnapshotModal.tsx` / `RestoreSnapshotModal.tsx` / `DeleteSnapshotModal.tsx` — snapshot lifecycle UI
@@ -104,7 +108,7 @@ Supporting these are shared layout, navigation, modal, and design-system compone
 - `ContextMenu.tsx` — reusable custom context menu shell
 - `ShellSelector.tsx` — shell selection UX
 - `ShortcutRecorder.tsx` — keyboard shortcut recording
-- `ColorPickerPopover.tsx` / `ContextBarSettingsPopover.tsx` — settings micro-interactions
+- `ColorPickerPopover.tsx` — settings micro-interaction
 - `UpdateAvailableToast.tsx` / `UpdateReadyModal.tsx` — updater UX
 
 ### Error Handling
@@ -128,7 +132,6 @@ These components are coordinated by dedicated Zustand stores:
 - `annotation-store.ts` — annotation data model and export concerns
 - `snapshot-store.ts` — workspace snapshots
 - `app-settings-store.ts` — terminal/UI preferences
-- `context-bar-settings-store.ts` — status bar visibility preferences
 - `updater-store.ts` — updater lifecycle and download/install state
 
 ## Design Patterns

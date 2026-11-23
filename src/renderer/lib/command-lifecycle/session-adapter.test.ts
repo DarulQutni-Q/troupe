@@ -164,9 +164,9 @@ it('alternate-screen mode changes reach the session store', async () => {
   forwardSessionLifecycle(event('PromptReady'))
   expect(sessionStore.read('t').mode).not.toBe('Editor')
 
+  // The prompt beat the parsed leave; the leave mounts the editor for it.
   applyMode(1049, false)
-  expect(sessionStore.read('t')).toMatchObject({ alternateScreen: false })
-  expect(sessionStore.read('t').mode).not.toBe('Editor')
+  expect(sessionStore.read('t')).toMatchObject({ alternateScreen: false, mode: 'Editor' })
 })
 
 it('an unmapped mode change applies when the terminal record appears', async () => {
@@ -248,7 +248,7 @@ it('disposal releases the terminal-store subscription so a reload subscribes onc
     useTerminalStore.getState().setTerminals([mockTerminal({ id: 'ta', ptyId: 'pty-a' })])
     expect(sessionStore.read('ta').registered).toBe(true)
   } finally {
-    disposeSessionAdapter()
+    // No trailing dispose: HMR re-evaluates a disposed module, so later tests expect a live screen follower.
     spy.mockRestore()
   }
 })

@@ -18,8 +18,8 @@ import { keepPreviousVersion, setCurrentVersion } from './tauri-rollback-api'
 // Tauri updater plugin's build-time `endpoints` config (which cannot be
 // overridden per check from the renderer) keeps resolving for stable users.
 const STABLE_UPDATE_MANIFEST_URL =
-  'https://github.com/gnoviawan/termul/releases/latest/download/latest.json'
-const UPSTREAM_LATEST_RELEASE_URL = 'https://api.github.com/repos/gnoviawan/termul/releases/latest'
+  'https://github.com/gnoviawan/troupe/releases/latest/download/latest.json'
+const UPSTREAM_LATEST_RELEASE_URL = 'https://api.github.com/repos/gnoviawan/troupe/releases/latest'
 const AUR_UPDATE_CHECK_TIMEOUT_MS = 8000
 // Total cap on the signed package download (reqwest's request timeout covers
 // the whole body). Without one, a stalled connection or proxy left the download
@@ -49,15 +49,15 @@ export const DEFAULT_UPDATE_CHANNEL: UpdateChannel = 'stable'
 // (src-tauri/src/server_update.rs); this constant is now only the error-message
 // + release-page source. Keep them in sync when editing.
 const CHANNEL_MANIFEST_URLS: Record<UpdateChannel, string> = {
-  stable: 'https://github.com/gnoviawan/termul/releases/latest/download/latest-stable.json',
-  insider: 'https://github.com/gnoviawan/termul/releases/download/insider/latest-insider.json',
-  nightly: 'https://github.com/gnoviawan/termul/releases/download/nightly/latest-nightly.json'
+  stable: 'https://github.com/gnoviawan/troupe/releases/latest/download/latest-stable.json',
+  insider: 'https://github.com/gnoviawan/troupe/releases/download/insider/latest-insider.json',
+  nightly: 'https://github.com/gnoviawan/troupe/releases/download/nightly/latest-nightly.json'
 }
 
 const CHANNEL_RELEASE_PAGE_URLS: Record<UpdateChannel, string> = {
-  stable: 'https://github.com/gnoviawan/termul/releases/latest',
-  insider: 'https://github.com/gnoviawan/termul/releases/tag/insider',
-  nightly: 'https://github.com/gnoviawan/termul/releases/tag/nightly'
+  stable: 'https://github.com/gnoviawan/troupe/releases/latest',
+  insider: 'https://github.com/gnoviawan/troupe/releases/tag/insider',
+  nightly: 'https://github.com/gnoviawan/troupe/releases/tag/nightly'
 }
 
 export function getChannelManifestUrl(channel: UpdateChannel): string {
@@ -85,6 +85,8 @@ export function normalizeUpdateChannel(value: string | null | undefined): Update
 export type UpdateMode = 'tauri' | 'aur'
 
 const UPDATE_MODE: UpdateMode = import.meta.env.VITE_TERMUL_UPDATE_MODE === 'aur' ? 'aur' : 'tauri'
+
+export const AUR_UPDATE_COMMAND = 'yay -S troupe'
 
 /**
  * Default mode uses Tauri's signed updater manifest and self-update flow.
@@ -639,7 +641,7 @@ export async function downloadUpdate(
 
     return {
       success: false,
-      error: 'AUR build cannot self-update. Update with: yay -S termul-manager',
+      error: `AUR build cannot self-update. Update with: ${AUR_UPDATE_COMMAND}`,
       code: UpdaterErrorCodes.UPDATE_NOT_AVAILABLE
     }
   }
@@ -731,7 +733,7 @@ export async function installAndRestart(): Promise<IpcResult<void>> {
   if (isAurUpdateMode()) {
     return {
       success: false,
-      error: 'AUR build cannot self-install updates. Update with: yay -S termul-manager',
+      error: `AUR build cannot self-install updates. Update with: ${AUR_UPDATE_COMMAND}`,
       code: UpdaterErrorCodes.UPDATE_NOT_AVAILABLE
     }
   }

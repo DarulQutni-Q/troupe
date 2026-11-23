@@ -235,12 +235,12 @@ describe('ChatMessage', () => {
     expect(screen.getByTestId('streamdown')).toHaveAttribute('data-mode', 'streaming')
   })
 
-  it('uses Streamdown blurIn while a live reply streams', () => {
+  it('uses Streamdown fadeIn while a live reply streams', () => {
     useReducedMotionMock.mockReturnValue(false)
     render(<ChatMessage message={agentMessage(true)} isLast />)
 
     const streamdown = screen.getByTestId('streamdown')
-    expect(streamdown).toHaveAttribute('data-animated', 'blurIn')
+    expect(streamdown).toHaveAttribute('data-animated', 'fadeIn')
     expect(streamdown).toHaveAttribute('data-animated-duration', '350')
     expect(streamdown).toHaveAttribute('data-animated-stagger', '12')
     expect(streamdown).toHaveAttribute('data-animated-easing', 'cubic-bezier(0.22, 1, 0.36, 1)')
@@ -313,22 +313,50 @@ describe('ChatMessage', () => {
     expect(screen.getByTestId('streamdown')).toHaveAttribute('data-mode', 'static')
   })
 
-  it('wires the termul-plan renderer only for non-streaming (historical) messages', () => {
-    // Streaming message: the sticky PlanPanel covers the live turn; the
-    // inline renderer is deliberately absent so no duplicate plan UI shows.
+  it('never wires a termul-plan renderer, live or historical', () => {
     const { unmount: unmountStreaming } = render(
       <ChatMessage message={agentMessage(true)} isLast />
     )
     expect(screen.getByTestId('streamdown')).toHaveAttribute('data-renderer-languages', '')
     unmountStreaming()
 
-    // Historical message: the termul-plan renderer is attached so a
-    // persisted snapshot fence renders an inline read-only PlanPanel.
     render(<ChatMessage message={agentMessage(false)} isLast />)
-    expect(screen.getByTestId('streamdown')).toHaveAttribute(
-      'data-renderer-languages',
-      'termul-plan'
+    expect(screen.getByTestId('streamdown')).toHaveAttribute('data-renderer-languages', '')
+  })
+
+  it('keeps a plan fence the user typed', () => {
+    const fence = '```termul-plan\n[{"content":"Ship the plan","status":"completed"}]\n```'
+    const message: ChatMessageType = {
+      id: 'user-fence',
+      role: 'user',
+      blocks: [{ type: 'text', text: fence }],
+      streaming: false,
+      timestamp: 0
+    }
+    render(
+      <TooltipProvider>
+        <ChatMessage message={message} isLast />
+      </TooltipProvider>
     )
+    expect(screen.getByText(/Ship the plan/)).toBeInTheDocument()
+  })
+
+  it('does not render a persisted plan fence inside a historical reply', () => {
+    const fence = '```termul-plan\n[{"content":"Ship the plan","status":"completed"}]\n```'
+    const message: ChatMessageType = {
+      ...agentMessage(false),
+      blocks: [
+        { type: 'text', text: 'Commit landed.\n' },
+        { type: 'text', text: fence }
+      ]
+    }
+
+    render(<ChatMessage message={message} isLast />)
+
+    expect(screen.getByTestId('streamdown')).toHaveTextContent('Commit landed.')
+    expect(screen.queryByText(/Ship the plan/)).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Execution plan' })).toBeNull()
+    expect(screen.getByTestId('streamdown').textContent).not.toContain('termul-plan')
   })
 
   it('stops the Streamdown caret when a newer timeline item follows', () => {
@@ -359,13 +387,14 @@ describe('ChatMessage', () => {
       JSON.stringify({
         'termul-file-path': ['dataPath'],
         'termul-media': ['dataUrl', 'dataAlt', 'dataLinkPreview'],
-        'termul-gallery': ['dataItems']
+        'termul-gallery': ['dataItems'],
+        'termul-link': ['dataUrl']
       })
     )
     // The image rewrite is always on; the file-path plugin waits for a context.
     expect(bare).toHaveAttribute('data-has-image-component', 'true')
     expect(bare).toHaveAttribute('data-has-file-path-component', 'false')
-    expect(bare).toHaveAttribute('data-remark-plugins', '3')
+    expect(bare).toHaveAttribute('data-remark-plugins', '4')
     unmount()
 
     render(
@@ -374,7 +403,7 @@ describe('ChatMessage', () => {
     const withContext = screen.getByTestId('streamdown')
     expect(withContext).toHaveAttribute('data-has-file-path-component', 'true')
     expect(withContext).toHaveAttribute('data-has-image-component', 'true')
-    expect(withContext).toHaveAttribute('data-remark-plugins', '4')
+    expect(withContext).toHaveAttribute('data-remark-plugins', '5')
   })
 
   it('renders the muted alt-text chip for relative images without Tauri', () => {

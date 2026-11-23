@@ -1,11 +1,19 @@
-import { RAIL_ROW_INSET_CLASS } from '@/components/shell/rail-layout'
+import { useRailCollapsed } from '@/components/shell/rail/rail-density'
+import {
+  RAIL_BLOCK_FADE_CLASS,
+  RAIL_COLLAPSED_ROW_CLASS
+} from '@/components/shell/rail/rail-motion'
 import { QUIET_ICON_BUTTON_CLASS } from '@/components/ui/panel-styles'
 import { cn } from '@/lib/utils'
 
-/** Look of a section header's trailing icon button (same box as a group row's `…`). */
+/**
+ * Look of a section header's trailing icon button: the 20px box and 12px
+ * glyph of a row's own `+` and `…`, so a heading's button and the row
+ * actions under it share one right edge (x = 228 on the expanded Rail).
+ */
 export const RAIL_SECTION_BUTTON_CLASS = cn(
   QUIET_ICON_BUTTON_CLASS,
-  'size-5 cursor-pointer [&_svg]:size-3.5'
+  'size-5 cursor-pointer [&_svg]:size-3'
 )
 
 interface RailSectionHeaderProps {
@@ -18,25 +26,67 @@ interface RailSectionHeaderProps {
 
 /**
  * Small muted section label of the shell Rail project list ("Groups",
- * "Projects"). The label starts on the shared Rail icon column and an icon
- * button sits at the end. The row is not focusable; only its button is.
+ * "Projects", "Quick chats"): 40px with 12px on top, the label 20px from the
+ * Rail edge (Paper S2.0: in line with the row icons' left edge), an icon
+ * button at the end on the row actions' right edge.
+ * The row is not focusable; only its button is.
+ *
+ * Collapsed Rail: the same 40px row holds a 20×1 `border` divider (see
+ * {@link RailSectionDivider}).
  */
 export function RailSectionHeader({
   label,
   children,
   className
 }: RailSectionHeaderProps): React.JSX.Element {
+  if (useRailCollapsed()) {
+    return (
+      <RailSectionDivider
+        data-testid={`rail-section-${label.toLowerCase()}`}
+        className={className}
+      />
+    )
+  }
   return (
     <div
       data-testid={`rail-section-${label.toLowerCase()}`}
       className={cn(
-        'flex h-8 w-full select-none items-center justify-between pr-1.5',
-        RAIL_ROW_INSET_CLASS,
+        // 12px end padding: the button ends where a row's actions and times
+        // end (the row fill's 12px padding), right-aligned to that edge.
+        // 12px start padding: the label starts on x 20, the left edge of the
+        // 16px icons on the icon column (x = 28) in the rows under it.
+        'flex h-10 w-full select-none items-center justify-between gap-2 pt-3 pr-3 pl-3 whitespace-nowrap',
+        RAIL_BLOCK_FADE_CLASS,
         className
       )}
     >
       <h3 className="label-panel min-w-0 truncate">{label}</h3>
       {children}
+    </div>
+  )
+}
+
+/**
+ * A section header on the collapsed Rail: the 40px header row (12px on top)
+ * with a 20×1 divider in `border`, centred on the icon column. It fades in
+ * when the Rail settles collapsed; the header it replaces fades out first.
+ */
+export function RailSectionDivider({
+  className,
+  ...props
+}: Omit<React.ComponentPropsWithoutRef<'div'>, 'children'>): React.JSX.Element {
+  return (
+    <div
+      aria-hidden="true"
+      className={cn(
+        'flex h-10 shrink-0 items-center pt-3',
+        RAIL_COLLAPSED_ROW_CLASS,
+        RAIL_BLOCK_FADE_CLASS,
+        className
+      )}
+      {...props}
+    >
+      <div data-rail-section-divider className="h-px w-5 bg-border" />
     </div>
   )
 }

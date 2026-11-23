@@ -1,10 +1,10 @@
-use serde_json::json;
+use serde_json::{json, Value};
 
 use super::model::{
-    Automation, IssueCode, LastRun, Run, RunId, RunStatus, RunTrigger, SettledStatus, Step,
-    StepStatus,
+    Automation, IssueCode, LastRun, Layout, NodePosition, Parked, Run, RunId, RunStatus,
+    RunTrigger, SettledStatus, Step, StepStatus,
 };
-use super::store::{AutomationStore, ClaimOutcome, SettleOutcome, StoreError};
+use super::store::{AutomationStore, ClaimOutcome, ParkEnd, SettleOutcome, StoreError};
 use super::test_support::{apply, node_id, sample_automation};
 
 const NOW: i64 = 1_000_030;
@@ -39,6 +39,7 @@ fn run(a: &Automation, id: &str, trigger: RunTrigger) -> Run {
         summary: None,
         conversation_id: None,
         worktree_id: None,
+        parked: None,
     }
 }
 
@@ -60,7 +61,7 @@ fn migrates_once_and_reopens_with_data() {
         .unwrap()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
 }
 
 #[test]
@@ -527,4 +528,278 @@ fn schema_4_keeps_the_step_rows_of_a_schema_3_database() {
             ("post".to_string(), Some(0), StepStatus::Succeeded),
         ]
     );
+}
+
+fn waiting(run: &str, node: &str, iteration: Option<u32>, output: Option<Value>) -> Step {
+    Step {
+        iteration,
+        output,
+        wait_until: Some(5_000),
+        ..step(run, node, StepStatus::Waiting, None)
+    }
+}
+
+fn run_id(id: &str) -> RunId {
+    RunId::from(id.to_string())
+}
+
+#[test]
+fn a_run_reads_where_it_is_parked_from_its_waiting_step() {
+    let store = AutomationStore::open_in_memory().unwrap();
+    let a = approved(&store, &every_minute());
+    store.insert_run(&run(&a, "r1", RunTrigger::Manual)).unwrap();
+    store.insert_run(&run(&a, "r2", RunTrigger::Manual)).unwrap();
+    store
+        .upsert_step(&waiting("r1", "gate", Some(2), None))
+        .unwrap();
+    let parked = Parked {
+        node_id: node_id("gate"),
+        iteration: Some(2),
+        until: 5_000,
+    };
+
+    let r1 = store.get_run(&run_id("r1")).unwrap().unwrap();
+    assert_eq!(r1.parked, Some(parked.clone()));
+    assert_eq!(store.get_run(&run_id("r2")).unwrap().unwrap().parked, None);
+    assert_eq!(store.list_parked().unwrap(), vec![(r1, parked)]);
+
+    store
+        .claim_park(&run_id("r1"), &node_id("gate"), Some(2), ParkEnd::Approved, 4_000)
+        .unwrap();
+    assert_eq!(store.get_run(&run_id("r1")).unwrap().unwrap().parked, None);
+    assert_eq!(store.list_parked().unwrap(), vec![]);
+}
+
+#[test]
+fn a_decision_claims_a_waiting_approval_once_and_only_before_its_deadline() {
+    let store = AutomationStore::open_in_memory().unwrap();
+    let a = approved(&store, &every_minute());
+    store.insert_run(&run(&a, "r1", RunTrigger::Manual)).unwrap();
+    store
+        .upsert_step(&waiting("r1", "gate", None, Some(json!({ "message": "Ship?" }))))
+        .unwrap();
+    let claim = |end, now| {
+        store
+            .claim_park(&run_id("r1"), &node_id("gate"), None, end, now)
+            .unwrap()
+    };
+
+    assert!(!claim(ParkEnd::Approved, 5_000), "the deadline passed");
+    assert!(claim(ParkEnd::Rejected, 4_999));
+    assert!(!claim(ParkEnd::Approved, 4_999), "already decided");
+    assert!(!claim(ParkEnd::ApprovalTimedOut, 5_000), "already decided");
+
+    let gate = &store.get_steps(&run_id("r1")).unwrap()[0];
+    assert_eq!(
+        (gate.status, gate.error.as_deref(), gate.output.clone(), gate.finished_at),
+        (
+            StepStatus::Failed,
+            Some("rejected"),
+            Some(json!({ "message": "Ship?", "decision": "rejected", "decided_at": 4_999 })),
+            Some(4_999)
+        )
+    );
+}
+
+#[test]
+fn the_deadline_claim_times_out_an_approval_but_resumes_a_wait() {
+    let store = AutomationStore::open_in_memory().unwrap();
+    let a = approved(&store, &every_minute());
+    store.insert_run(&run(&a, "r1", RunTrigger::Manual)).unwrap();
+    store.insert_run(&run(&a, "r2", RunTrigger::Manual)).unwrap();
+    store
+        .upsert_step(&waiting("r1", "gate", None, Some(json!({ "message": "Ship?" }))))
+        .unwrap();
+    store
+        .upsert_step(&waiting("r2", "pause", Some(0), None))
+        .unwrap();
+
+    assert!(!store
+        .claim_park(&run_id("r1"), &node_id("gate"), None, ParkEnd::ApprovalTimedOut, 4_999)
+        .unwrap());
+    assert!(store
+        .claim_park(&run_id("r1"), &node_id("gate"), None, ParkEnd::ApprovalTimedOut, 5_000)
+        .unwrap());
+    assert!(store
+        .claim_park(&run_id("r2"), &node_id("pause"), Some(0), ParkEnd::WaitDue, 5_001)
+        .unwrap());
+
+    let ended = |id: &str| {
+        let s = store.get_steps(&run_id(id)).unwrap().remove(0);
+        (s.status, s.error, s.output)
+    };
+    assert_eq!(
+        ended("r1"),
+        (
+            StepStatus::Failed,
+            Some("approval_timed_out".to_string()),
+            Some(json!({ "message": "Ship?", "decision": "timed_out", "decided_at": 5_000 }))
+        )
+    );
+    assert_eq!(
+        ended("r2"),
+        (
+            StepStatus::Succeeded,
+            None,
+            Some(json!({ "resumed_at": 5_001 }))
+        )
+    );
+}
+
+#[test]
+fn runs_list_the_one_in_flight_first_then_newest() {
+    let store = AutomationStore::open_in_memory().unwrap();
+    let a = approved(&store, &every_minute());
+    for (id, status, started_at) in [
+        ("parked", RunStatus::Running, 1_000),
+        ("old", RunStatus::Succeeded, 500),
+        ("skip1", RunStatus::Skipped, 2_000),
+        ("skip2", RunStatus::Skipped, 3_000),
+    ] {
+        store
+            .insert_run(&Run {
+                status,
+                started_at,
+                ..run(&a, id, RunTrigger::Scheduled)
+            })
+            .unwrap();
+    }
+
+    let ids: Vec<String> = store
+        .list_runs(&a.id, 3)
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id.to_string())
+        .collect();
+    assert_eq!(ids, vec!["parked", "skip2", "skip1"]);
+}
+
+fn layout(entries: &[(&str, f64, f64)]) -> Layout {
+    Layout(
+        entries
+            .iter()
+            .map(|(key, x, y)| (key.to_string(), NodePosition { x: *x, y: *y }))
+            .collect(),
+    )
+}
+
+#[test]
+fn schema_5_keeps_the_rows_of_a_schema_4_database_with_an_empty_layout() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("automations.sqlite");
+    {
+        let db = rusqlite::Connection::open(&path).unwrap();
+        for sql in &super::store::MIGRATIONS[..4] {
+            db.execute_batch(sql).unwrap();
+        }
+        db.pragma_update(None, "user_version", 4).unwrap();
+        db.execute_batch(
+            r#"INSERT INTO automation (id, project_id, name, revision, approved_revision, enabled,
+                   trigger_json, graph_json, isolation, created_at, updated_at)
+               VALUES ('auto-old', 'p1', 'Old', 3, 3, 1, '{"kind":"manual"}',
+                   '{"nodes":[],"edges":[]}', 'shared_in_root', 1, 2);"#,
+        )
+        .unwrap();
+    }
+
+    let store = AutomationStore::open(&path).unwrap();
+    let old = store.get(&"auto-old".to_string().into()).unwrap().unwrap();
+    assert_eq!(
+        (
+            old.name.as_str(),
+            old.revision,
+            old.approved_revision,
+            old.layout
+        ),
+        ("Old", 3, Some(3), Layout::default())
+    );
+}
+
+#[test]
+fn set_layout_writes_only_the_layout_column() {
+    let store = AutomationStore::open_in_memory().unwrap();
+    let a = approved(&store, &every_minute());
+    let before = store.get(&a.id).unwrap().unwrap();
+
+    let saved = store
+        .set_layout(
+            &a.id,
+            layout(&[("trigger", 10.0, 20.5), ("fetch", -4.0, 0.0)]),
+        )
+        .unwrap();
+
+    let after = store.get(&a.id).unwrap().unwrap();
+    assert_eq!(after, saved);
+    assert_eq!(
+        after.layout,
+        layout(&[("trigger", 10.0, 20.5), ("fetch", -4.0, 0.0)])
+    );
+    assert_eq!(
+        Automation {
+            layout: Layout::default(),
+            ..after
+        },
+        before,
+        "every other field, updated_at and next_run_at included, is unchanged"
+    );
+}
+
+#[test]
+fn set_layout_drops_keys_that_are_not_the_trigger_or_a_stored_node() {
+    let store = AutomationStore::open_in_memory().unwrap();
+    let a = approved(&store, &every_minute());
+    let saved = store
+        .set_layout(
+            &a.id,
+            layout(&[
+                ("trigger", 1.0, 2.0),
+                ("extract", 3.0, 4.0),
+                ("ghost", 5.0, 6.0),
+                ("", 7.0, 8.0),
+            ]),
+        )
+        .unwrap();
+    assert_eq!(
+        saved.layout,
+        layout(&[("trigger", 1.0, 2.0), ("extract", 3.0, 4.0)])
+    );
+    assert_eq!(store.get(&a.id).unwrap().unwrap().layout, saved.layout);
+}
+
+#[test]
+fn set_layout_of_a_missing_automation_is_not_found() {
+    let store = AutomationStore::open_in_memory().unwrap();
+    let missing = "nope".to_string().into();
+    assert!(matches!(
+        store.set_layout(&missing, Layout::default()),
+        Err(StoreError::NotFound(id)) if id == "nope"
+    ));
+}
+
+#[test]
+fn save_keeps_the_stored_layout_and_prunes_the_nodes_it_removed() {
+    let store = AutomationStore::open_in_memory().unwrap();
+    let a = approved(&store, &every_minute());
+    store
+        .set_layout(
+            &a.id,
+            layout(&[
+                ("trigger", 1.0, 2.0),
+                ("post", 3.0, 4.0),
+                ("alert", 5.0, 6.0),
+            ]),
+        )
+        .unwrap();
+
+    let without_post = apply(&a, json!([{ "op": "remove_node", "id": "post" }]));
+    let mut stale = without_post.clone();
+    stale.layout = Layout::default();
+    let saved = store.save(&stale, a.revision, NOW).unwrap();
+
+    let expected = layout(&[("trigger", 1.0, 2.0), ("alert", 5.0, 6.0)]);
+    assert_eq!(
+        saved.layout, expected,
+        "the caller's copy is not the layout's source"
+    );
+    assert_eq!(store.get(&a.id).unwrap().unwrap().layout, expected);
 }

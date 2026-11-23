@@ -32,8 +32,8 @@ import {
 import { WEB_TERMINAL_ERROR_CODES } from './web-terminal-protocol.types'
 
 describe('web-protocol.types — event/request type registries (AC2)', () => {
-  it('exports exactly 23 event types including durable user prompts, host records, switch markers, the live agent_working state + delivery frames', () => {
-    expect(WS_EVENT_TYPES).toHaveLength(23)
+  it('exports exactly 24 event types including durable user prompts, host records, switch markers, the live agent_working and background_commands states + delivery frames', () => {
+    expect(WS_EVENT_TYPES).toHaveLength(24)
     // The 16 from events.rs (prefix-dropped) + auth_required.
     const expected16FromEvents = [
       'agent_spawned',
@@ -76,6 +76,8 @@ describe('web-protocol.types — event/request type registries (AC2)', () => {
     // Live-only work outside a prompt turn (never persisted).
     expect(WS_EVENT_TYPES).toContain('agent_working')
     expect(WS_EVENT_TIERS.agent_working).toBe('reliable')
+    expect(WS_EVENT_TYPES).toContain('background_commands')
+    expect(WS_EVENT_TIERS.background_commands).toBe('reliable')
     // Host-authored durable title record (occupies a session-log seq).
     expect(WS_EVENT_TYPES).toContain('local_title_generated')
     // Delivery frames (no seq): gap after a LOSSY drop, host heartbeat.
@@ -91,8 +93,8 @@ describe('web-protocol.types — event/request type registries (AC2)', () => {
     expect(WS_REQUEST_TYPES).toContain('get_session_payload')
   })
 
-  it('exports exactly 72 request types including warm-pool promotion, host-owned session delete, browser stop and subagent stop', () => {
-    expect(WS_REQUEST_TYPES).toHaveLength(72)
+  it('exports exactly 90 request types including chat MCP install approval and per-chat Codex account and resume', () => {
+    expect(WS_REQUEST_TYPES).toHaveLength(90)
     const expected = [
       'send_prompt',
       'cancel_prompt',
@@ -102,6 +104,8 @@ describe('web-protocol.types — event/request type registries (AC2)', () => {
       'set_model',
       'respond_permission',
       'answer_question',
+      // Chat approval of an MCP install.
+      'answer_mcp_install',
       // Stop agent browsing for a session (desktop parity with browser_stop).
       'browser_stop',
       'create_session',
@@ -117,12 +121,14 @@ describe('web-protocol.types — event/request type registries (AC2)', () => {
       'list_persisted_sessions',
       // CAP-11: host-owned session delete (desktop parity with acp_history_delete).
       'delete_session',
+      'rename_session',
       'open_persisted_session',
       'get_session_payload',
       'recover_session_snapshot',
       'get_session_payload_tail',
       'get_session_cursor',
       'register_discovered_session',
+      'import_agent_session',
       'list_sessions',
       'spawn_agent',
       'kill_agent',
@@ -166,18 +172,34 @@ describe('web-protocol.types — event/request type registries (AC2)', () => {
       'unwatch',
       // Explicit host-default project change.
       'set_default_project',
+      // Orchestrated sub-agents: the settings view read and its write.
+      'subagent_settings_get',
+      'subagent_settings_set',
       // Claude Accounts: view, choose, add, rename, remove and link sign-in.
       'list_claude_accounts',
       'list_claude_usage',
       'set_default_claude_account',
       'set_project_claude_account',
+      'set_chat_claude_account',
       'set_claude_auto_switch',
+      'set_claude_resume',
       'add_claude_account',
       'rename_claude_account',
       'remove_claude_account',
       'start_claude_link_login',
       'finish_claude_link_login',
       'cancel_claude_login',
+      'list_codex_accounts',
+      'list_codex_usage',
+      'set_default_codex_account',
+      'set_project_codex_account',
+      'set_chat_codex_account',
+      'set_codex_auto_switch',
+      'set_codex_resume',
+      'add_codex_account',
+      'rename_codex_account',
+      'remove_codex_account',
+      'start_codex_account_login',
       // The canvas gateway's renderer leg.
       'canvas_mount',
       'canvas_unmount',
@@ -201,9 +223,9 @@ describe('web-protocol.types — event/request type registries (AC2)', () => {
 })
 
 describe('web-protocol.types — error codes (AC2)', () => {
-  it('exports exactly 29 stable error codes', () => {
+  it('exports exactly 30 stable error codes', () => {
     const codes = new Set(Object.values(WS_ERROR_CODES))
-    expect(codes.size).toBe(29)
+    expect(codes.size).toBe(30)
     const expected = [
       'not_found',
       'unauthorized',
@@ -238,6 +260,8 @@ describe('web-protocol.types — error codes (AC2)', () => {
       'invalid_command_id',
       // A Claude Account that is not signed in.
       'claude_account_signed_out',
+      // A Codex Account that is not signed in.
+      'codex_account_signed_out',
       // A pasted Claude sign-in code the CLI calls incomplete.
       'claude_login_code_incomplete',
       // A pasted Claude sign-in code while the CLI still checks the last one.

@@ -48,6 +48,10 @@
  * external markdown link (link-safety confirm), an inline image (lightbox)
  * and a subagent tool call (details dialog) — then ends it at once.
  *
+ * `[REPLY:<chars>]` (chat-minimize-gap suite): answers with one reply of
+ * `<chars>` characters of wrapping prose, then ends the turn at once. The
+ * reply closes with `Replied to: <prompt text>` so a spec can tell turns apart.
+ *
  * `[PERMISSION]` (mobile shell suites): right after accepting the prompt the
  * agent asks the host for a tool permission (`session/request_permission`)
  * and leaves it unanswered, so the chat shows a pending approval — "needs
@@ -263,6 +267,33 @@ function replyRichTurn(id: number | string | undefined, sessionId: string): void
       subagent_type: 'reviewer',
       description: 'Review the overlay change',
       prompt: 'Review the overlay change for dead back presses.'
+    }
+  })
+  respond(id, { stopReason: 'end_turn' })
+}
+
+/** Reply length (characters) when the prompt text carries a `[REPLY:n]` marker, else null. */
+function replyChars(prompt: JsonValue | undefined): number | null {
+  const match = /\[REPLY:(\d+)\]/.exec(promptText(prompt))
+  return match ? Number(match[1]) : null
+}
+
+/** The `[REPLY:n]` turn: one long text reply, then `end_turn`. */
+function replyLongTurn(
+  id: number | string | undefined,
+  sessionId: string,
+  chars: number,
+  prompt: string
+): void {
+  const words = 'the reader scrolls back through a long reply and keeps their place '
+  notify('session/update', {
+    sessionId,
+    update: {
+      sessionUpdate: 'agent_message_chunk',
+      content: {
+        type: 'text',
+        text: `${words.repeat(Math.ceil(chars / words.length)).slice(0, chars)}\n\nReplied to: ${prompt}`
+      }
     }
   })
   respond(id, { stopReason: 'end_turn' })
@@ -947,6 +978,11 @@ function handle(msg: JsonRpcMessage): void {
       }
       if (/\[RICH\]/.test(promptText(p.prompt))) {
         replyRichTurn(id, sessionId)
+        return
+      }
+      const chars = replyChars(p.prompt)
+      if (chars !== null) {
+        replyLongTurn(id, sessionId, chars, promptText(p.prompt))
         return
       }
       const subagentSec = subagentSeconds(p.prompt)

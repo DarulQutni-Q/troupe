@@ -85,8 +85,18 @@ function socketRoles(events) {
  * - liveMs: first chunk emitted after `R` on screen (on a reopened socket when
  *   the old one died): the chat is live again.
  * - overlayMs: "Reconnecting…"/"Host offline" visible inside [R, end].
+ * - overlayClearMs: when the overlay last went away (0: not shown after R;
+ *   null: still shown at `end`).
+ * - subscribes / lastSubscribeMs: session subscribe or snapshot replies after
+ *   R, and when the last one arrived: the whole resubscribe pass.
+ * - authToConnectedMs: from the last successful `authenticate` reply to the
+ *   channel becoming `connected`: the part of the reconnect that waits on
+ *   session resubscribes.
+ * - focusResyncMs / focusRank: for a window that switched to another chat at
+ *   `switchAt`, from the switch to that chat's subscribe reply (negative: it
+ *   was resubscribed before the switch), and which reply after R it was.
  */
-export function recovery(events, { faultAt, returnAt, end }) {
+export function recovery(events, { faultAt, returnAt, end, switchAt, focusSessionId }) {
   const transitions = controlTransitions(events)
   let connectedAt = null
   if (controlStateAt(transitions, end) === 'connected') {
@@ -143,6 +153,38 @@ export function recovery(events, { faultAt, returnAt, end }) {
     if (e.path !== '/ws') byRole.other += 1
     else byRole[roles.get(e.sock) ?? 'acp'] += 1
   }
+  const lastOverlay = events
+    .filter((e) => e.src === 'page' && e.type === 'overlay' && e.t <= end)
+    .at(-1)
+  const overlayClearMs =
+    lastOverlay && lastOverlay.state !== 'none'
+      ? null
+      : Math.max(0, (lastOverlay?.t ?? 0) - returnAt)
+  const subscribeReplies = events.filter(
+    (e) =>
+      e.src === 'page' &&
+      e.type === 'ws-reply' &&
+      (e.reqType === 'subscribe' || e.reqType === 'recover_session_snapshot') &&
+      e.t > returnAt &&
+      e.t <= end
+  )
+  const focusIndex = focusSessionId
+    ? subscribeReplies.findIndex((e) => e.ok && isAcpSocket(e) && e.sessionId === focusSessionId)
+    : -1
+  const lastAuth =
+    connectedAt === null
+      ? undefined
+      : events
+          .filter(
+            (e) =>
+              isAcpSocket(e) &&
+              e.type === 'ws-reply' &&
+              e.reqType === 'authenticate' &&
+              e.ok &&
+              e.t >= faultAt &&
+              e.t <= connectedAt
+          )
+          .at(-1)
   const proxyUpgrades = events.filter(
     (e) => e.src === 'proxy' && e.type === 'ws-upgrade' && e.t >= faultAt && e.t <= end
   ).length
@@ -155,6 +197,13 @@ export function recovery(events, { faultAt, returnAt, end }) {
     streamGapMs: grow && lastChunkBeforeFault ? grow.t - lastChunkBeforeFault.t : null,
     overlayMs: overlayMs(events, returnAt, end),
     overlayTotalMs: overlayMs(events, faultAt, end),
+    overlayClearMs,
+    authToConnectedMs: lastAuth ? connectedAt - lastAuth.t : null,
+    subscribes: subscribeReplies.length,
+    lastSubscribeMs: subscribeReplies.length > 0 ? subscribeReplies.at(-1).t - returnAt : null,
+    switchMs: switchAt ? switchAt - returnAt : null,
+    focusResyncMs: switchAt && focusIndex >= 0 ? subscribeReplies[focusIndex].t - switchAt : null,
+    focusRank: focusIndex >= 0 ? focusIndex + 1 : null,
     wsOpened: opened.length,
     wsByRole: byRole,
     proxyUpgrades,

@@ -16,13 +16,14 @@ import {
 } from '@/components/ui/menu-styles'
 import { FIELD_FOCUS_CLASS } from '@/components/ui/panel-styles'
 import { Popover, PopoverTrigger } from '@/components/ui/popover'
+import { Spinner } from '@/components/ui/spinner'
 import { useMobileWebShell } from '@/hooks/use-mobile-web-shell'
 import type { SessionConfigOption } from '@/lib/acp-api'
 import { cn } from '@/lib/utils'
 import type { AcpSession } from '@/stores/acp-store'
 import { ComposerPill } from './ComposerPill'
 import { flattenConfigOptionValues } from './chat-input-bar-config'
-import { ModeIcon, ModeMenuList } from './mode-menu'
+import { ModeIcon, ModeMenuList, modeChipLabel, modeKind } from './mode-menu'
 import { KNOWN_CATEGORY_HEADINGS } from './slash-menu-model'
 import { useOptimisticSelect } from './use-optimistic-select'
 import { keepFocusOnMousePress, useTapSelect } from './use-tap-select'
@@ -224,7 +225,6 @@ export function ConfigChip({
                 type="button"
                 {...tapSelect(() => handleSelect(v.value))}
                 onPointerDown={keepFocusOnMousePress}
-                data-press-feedback="off"
                 aria-pressed={v.value === displayValue}
                 className={menuOptionRowClass(isMobile)}
               >
@@ -316,10 +316,27 @@ export function ModeChip({
     select(modeId)
   }
 
-  const modeLabel = current?.name ?? label
+  const modeLabel = modeChipLabel(current?.id, current?.name ?? label)
+  const danger = modeKind(current?.id).risk === 'danger'
+  // Composer V2 (Paper "2.1 Mode / Menu open", "2.3 Mode / Bypass on"): the
+  // mode chip sits right of `+` with no chevron. A risky mode turns it into a
+  // warning pill. While a switch is pending, a spinner takes the icon's place.
   const trigger = (
-    <ComposerPill disabled={disabled} chevron pending={pending}>
-      <ModeIcon modeId={current?.id} />
+    <ComposerPill
+      disabled={disabled}
+      pending={pending}
+      data-mode-risk={danger ? 'danger' : undefined}
+      className={cn(
+        'gap-1.5',
+        danger &&
+          'h-7 min-h-7 rounded-lg bg-warning/[0.12] px-2.5 text-warning hover:text-warning disabled:text-warning/60'
+      )}
+    >
+      {pending ? (
+        <Spinner size={12} decorative className="text-muted-foreground" />
+      ) : (
+        <ModeIcon modeId={current?.id} size={14} />
+      )}
       {modeLabel}
     </ComposerPill>
   )
@@ -396,7 +413,9 @@ export function ModeChip({
         side="top"
         sideOffset={8}
         collisionPadding={8}
-        className="w-72 rounded-xl border-border p-1"
+        // The model picker's surface, so the two menus match (Paper "Mode menu").
+        surface="panel"
+        className="w-75 p-1"
       >
         {optionsList}
       </AnimatedMenuContent>

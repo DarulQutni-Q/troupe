@@ -11,7 +11,6 @@ import { SKILL_PAD_DEFAULT } from '@/lib/composer/doc-to-prompt'
 import { selectionContextToken } from '@/lib/composer/selection-context'
 import { parseConversationEnvelope } from '@/lib/conversation-envelope'
 import { commandToken, conversationToken, fileToken, skillToken } from '@/lib/skill-tokens'
-import { useProjectStore } from '@/stores/project-store'
 import { ChatInputBar } from './ChatInputBar'
 import {
   getComposerValue,
@@ -174,8 +173,7 @@ const {
 
 vi.mock('@/lib/tauri-runtime', () => ({ isTauriContext: mockIsTauri }))
 
-// The context strip's branch picker gates its write controls on the server's
-// write admission; covered in `ChatContextStrip.test.tsx`.
+// Composer controls gate their write actions on the server's write admission.
 vi.mock('@/hooks/use-server-admits-remote-writes', () => ({
   useServerAdmitsRemoteWrites: () => true
 }))
@@ -195,10 +193,8 @@ vi.mock('sonner', () => ({
 // place in the composer card matters.
 const { limitWarningRef } = vi.hoisted(() => ({ limitWarningRef: { current: false } }))
 vi.mock('@/components/chat/claude-account/ClaudeLimitWarning', () => ({
-  ClaudeLimitWarning: ({ atTop }: { atTop: boolean }) =>
-    limitWarningRef.current ? (
-      <div data-testid="claude-limit-warning-stub" data-at-top={String(atTop)} />
-    ) : null
+  ClaudeLimitWarning: () =>
+    limitWarningRef.current ? <div data-testid="claude-limit-warning-stub" /> : null
 }))
 
 vi.mock('@/hooks/use-agent-skills', async () => {
@@ -256,6 +252,7 @@ vi.mock('@/stores/acp-store', () => {
     configToLiveAgent: { 'acp-registry:cursor\0/work': 'agent-1' },
     sessionIndex: mockSessionIndex.current,
     messages: mockMessages.current,
+    promptQueues: {},
     toolCalls: {}
   })
   const listeners = new Set<() => void>()
@@ -389,6 +386,11 @@ vi.mock('@/lib/acp-api', () => ({
 beforeEach(() => {
   persistenceStore.clear()
   fakePersistenceApi.readFails = false
+  fakePersistenceApi.read.mockClear()
+  fakePersistenceApi.write.mockClear()
+  fakePersistenceApi.writeDebounced.mockClear()
+  fakePersistenceApi.delete.mockClear()
+  fakePersistenceApi.flushPendingWrites.mockClear()
   // Start each test from a clean skill slate (web/no-skills default). Skill
   // tests override mockSkills.current.
   mockSkills.current = []
@@ -462,8 +464,9 @@ describe('ChatInputBar config controls', () => {
     vi.clearAllMocks()
   })
 
-  it('renders worktree context below the composer without keyboard helper text', () => {
-    renderInputBar({
+  it('start screen: no keyboard helper text and no row inside the composer (the panel owns it)', () => {
+    const { container } = renderInputBar({
+      startScreen: true,
       session: {
         ...session(),
         cwd: '/work/.termul/worktrees/abcd1234',
@@ -472,57 +475,60 @@ describe('ChatInputBar config controls', () => {
       }
     })
 
-    const composer = document.querySelector('[data-chat-composer="true"]')
-    const contextStrip = document.querySelector('[data-chat-composer-context-strip="true"]')
-
-    expect(composer).toBeInTheDocument()
-    expect(contextStrip).toBeInTheDocument()
-    expect(composer).not.toContainElement(contextStrip)
-    expect(screen.getByText('Worktree')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Switch git branch' })).toHaveTextContent(
-      'chat/abcd1234'
-    )
+    expect(document.querySelector('[data-chat-composer="true"]')).toBeInTheDocument()
+    // The context row exits in place on the first send, so it lives in
+    // AgentChatPanel (ChatStartFooter), outside the moving composer.
+    expect(container.querySelector('[data-chat-start-context-row]')).toBeNull()
     expect(screen.queryByText(/Shift\+Enter/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/to send|to queue|newline/i)).not.toBeInTheDocument()
   })
 
-  describe('local context strip', () => {
-    const initialProjects = useProjectStore.getState().projects
-    afterEach(() => {
-      useProjectStore.setState({ projects: initialProjects })
+  it('start screen: the launcher input area (40px text area, Paper padding) and a 32px send', () => {
+    const { container } = renderInputBar({ startScreen: true })
+    const row = container.querySelector('[data-composer-row]') as HTMLElement
+    // Paper "2.2 New chat": pt 12, pr 8, pb 4, pl 14, gap 4.
+    expect(row).toHaveClass('pt-3', 'pr-2', 'pb-1', 'pl-3.5', 'gap-1')
+    const scroll = row.querySelector('[data-composer-scroll]') as HTMLElement
+    expect(scroll.style.getPropertyValue('--composer-min-h')).toBe('40px')
+    expect(screen.getByRole('button', { name: 'Send message' })).toHaveClass('h-8', 'w-8')
+    // On desktop the start block places the composer: no gutter padding.
+    const root = container.firstElementChild as HTMLElement
+    expect(root).not.toHaveClass('pt-3')
+    expect(root).not.toHaveClass('pb-6')
+  })
+
+  it('working chat: the one-line text area and the dock padding', () => {
+    const { container } = renderInputBar({})
+    const row = container.querySelector('[data-composer-row]') as HTMLElement
+    // Composer V2 raised card: 16 top, 10 bottom, 18 left, 10 right.
+    expect(row).toHaveClass('pl-[18px]', 'pr-2.5', 'pb-2.5', 'pt-4')
+    const scroll = row.querySelector('[data-composer-scroll]') as HTMLElement
+    expect(scroll.style.getPropertyValue('--composer-min-h')).toBe('26px')
+    expect(container.firstElementChild).toHaveClass('pb-6', 'pt-3')
+  })
+
+  it('has nothing under the composer in a working chat (Paper 1.1) and a 768px column', () => {
+    const { container } = renderInputBar({
+      session: {
+        ...session(),
+        cwd: '/work/.termul/worktrees/abcd1234',
+        worktreePath: '/work/.termul/worktrees/abcd1234',
+        worktreeBranch: 'chat/abcd1234'
+      }
     })
 
-    function seedProject(fields: { gitBranch?: string; isGitRepo?: boolean }): void {
-      useProjectStore.setState({
-        projects: [{ id: 'p1', name: 'Project', color: 'blue', path: '/work', ...fields }]
-      })
-    }
+    expect(container.querySelector('[data-chat-start-context-row]')).toBeNull()
+    expect(screen.queryByText('Worktree')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Switch git branch' })).not.toBeInTheDocument()
+    const column = document.querySelector('[data-chat-composer="true"]')?.closest('.max-w-3xl')
+    expect(column).not.toBeNull()
+  })
 
-    it('shows the project branch in the branch picker for a current-checkout chat', () => {
-      seedProject({ gitBranch: 'main', isGitRepo: true })
-      renderInputBar()
-
-      expect(screen.getByText('Current checkout')).toBeInTheDocument()
-      expect(screen.getByRole('button', { name: 'Switch git branch' })).toHaveTextContent('main')
-    })
-
-    it('shows Detached HEAD when a git project has no branch', () => {
-      seedProject({ isGitRepo: true })
-      renderInputBar()
-
-      expect(screen.getByRole('button', { name: 'Switch git branch' })).toHaveTextContent(
-        'Detached HEAD'
-      )
-    })
-
-    it('keeps the plain read-only strip for a project that is not a git repo', () => {
-      seedProject({ isGitRepo: false })
-      renderInputBar()
-
-      expect(screen.getByText('Current checkout')).toBeInTheDocument()
-      expect(screen.queryByText('Detached HEAD')).not.toBeInTheDocument()
-      expect(screen.queryByRole('button', { name: 'Switch git branch' })).not.toBeInTheDocument()
-    })
+  it('narrows the start-screen composer to 680px (Paper 2.2)', () => {
+    renderInputBar({ startScreen: true })
+    const column = document.querySelector('[data-chat-composer="true"]')?.closest('.mx-auto')
+    expect(column).toHaveClass('max-w-[680px]')
+    expect(column).not.toHaveClass('max-w-3xl')
   })
 
   it('uses model config and native Agent/mode picker without duplicate Agent chips', async () => {
@@ -721,20 +727,48 @@ describe('ChatInputBar + menu', () => {
       'Add files',
       '@Mention@',
       '/Slash commands/',
-      'Termul tools',
-      'Connectors2 on'
+      'Troupe tools'
     ])
   })
 
-  it('counts no connectors as 0 on when the project has none', async () => {
+  it('counts no connectors as 0 on when the project has none', () => {
     mockMcpCount.current = 0
     renderInputBar()
-    fireEvent.pointerDown(screen.getByRole('button', { name: 'Add to chat' }), {
-      button: 0,
-      ctrlKey: false
+    expect(screen.getByRole('button', { name: 'Connectors, 0 on' })).toBeInTheDocument()
+  })
+})
+
+describe('ChatInputBar Composer V2 (desktop)', () => {
+  it('nests a raised card and a foot row in the tray', () => {
+    const { container } = renderInputBar({
+      worktree: <span data-testid="foot-worktree">rail-icons · feat/rail</span>
     })
-    await screen.findByRole('menu')
-    expect(screen.getByRole('menuitem', { name: /Connectors/ })).toHaveTextContent('Connectors0 on')
+    const tray = container.querySelector('[data-chat-composer="true"]') as HTMLElement
+    expect(tray).toHaveClass('rounded-[20px]', 'bg-card', 'px-1.5', 'pt-1.5')
+    const [raised, foot] = Array.from(tray.children).filter(
+      (child) => !child.hasAttribute('aria-hidden')
+    )
+    expect(raised).toHaveAttribute('data-composer-raised', 'true')
+    expect(raised).toHaveClass('rounded-[14px]', 'bg-popover', 'shadow-control')
+    expect(foot).toHaveAttribute('data-composer-foot-row', 'true')
+    expect(within(foot as HTMLElement).getByTestId('foot-worktree')).toBeInTheDocument()
+    expect(
+      within(foot as HTMLElement).getByRole('button', { name: /^Connectors/ })
+    ).toBeInTheDocument()
+  })
+
+  it('puts the mode chip right of +, away from the model chip and send', () => {
+    renderInputBar()
+    const add = screen.getByRole('button', { name: 'Add to chat' })
+    const left = add.parentElement as HTMLElement
+    const send = screen.getByRole('button', { name: 'Send message' })
+    expect(left.contains(send)).toBe(false)
+    const toolbar = document.querySelector('[data-composer-toolbar]') as HTMLElement
+    const right = toolbar.lastElementChild as HTMLElement
+    expect(right.contains(send)).toBe(true)
+    for (const chip of within(right).queryAllByRole('button')) {
+      expect(left.contains(chip)).toBe(false)
+    }
   })
 })
 
@@ -746,6 +780,7 @@ describe('ChatInputBar agent switch chip (Story 4, spec-in-chat-agent-switch)', 
     mockSessionAgentId.current = 'agent-1'
     mockLaunchConfigId.current = undefined
     mockAgentOptionsCache.current = {}
+    mockMessages.current = {}
   })
 
   it('renders the agent switch control in the right chip cluster', async () => {
@@ -775,6 +810,8 @@ describe('ChatInputBar agent switch chip (Story 4, spec-in-chat-agent-switch)', 
   })
 
   it('arms the switch with a model chosen on another agent tab', async () => {
+    // A started chat: an empty one moves to the other agent at once instead.
+    mockMessages.current = { 'session-1': [{ id: 'm1', role: 'user', blocks: [] }] }
     const claude = mockAgentConfigs.current[1]
     mockAgentOptionsCache.current = {
       [claude.id]: {
@@ -927,7 +964,9 @@ describe('ChatInputBar agent switch chip (Story 4, spec-in-chat-agent-switch)', 
     // Baseline: with the controls on, the session's modes list.
     renderInputBar({ commands })
     expect(within(await openSlashMenu()).getByText('Plan')).toBeInTheDocument()
+    // Each render is a fresh composer: drop the '/' draft the previous one saved.
     cleanup()
+    persistenceStore.clear()
 
     // Modes only (no config options): no Plan/Ask rows, the command stays.
     renderInputBar({ commands, disabled: false, controlsDisabled: true })
@@ -936,6 +975,7 @@ describe('ChatInputBar agent switch chip (Story 4, spec-in-chat-agent-switch)', 
     expect(within(listbox).queryByText('Plan')).not.toBeInTheDocument()
     expect(within(listbox).queryByText('Ask')).not.toBeInTheDocument()
     cleanup()
+    persistenceStore.clear()
 
     // Config options (which replace the mode rows when present): none list.
     const effort = option('effort', 'Effort', 'other', 'low', [
@@ -945,6 +985,7 @@ describe('ChatInputBar agent switch chip (Story 4, spec-in-chat-agent-switch)', 
     renderInputBar({ commands, configOptions: [effort] })
     expect(within(await openSlashMenu()).getByText('High effort')).toBeInTheDocument()
     cleanup()
+    persistenceStore.clear()
     renderInputBar({
       commands,
       configOptions: [effort],
@@ -1085,10 +1126,10 @@ describe('ChatInputBar Claude limit warning', () => {
 
   it('shows the warning inside the composer card, at its top', () => {
     const { container } = renderInputBar()
-    const composer = container.querySelector('[data-chat-composer="true"]')
+    const composer = container.querySelector('[data-composer-raised="true"]')
     const warning = screen.getByTestId('claude-limit-warning-stub')
     expect(composer).toContainElement(warning)
-    expect(warning).toHaveAttribute('data-at-top', 'true')
+    expect(composer?.firstElementChild).toBe(warning)
   })
 
   it('puts the warning below a pending permission prompt', () => {
@@ -1104,7 +1145,16 @@ describe('ChatInputBar Claude limit warning', () => {
     const prompt = screen.getByTestId('permission-prompt')
     const warning = screen.getByTestId('claude-limit-warning-stub')
     expect(prompt.compareDocumentPosition(warning) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(warning).toHaveAttribute('data-at-top', 'false')
+  })
+
+  it('shows the warning when the notice slot holds an empty notice', () => {
+    renderInputBar({ notice: <div data-testid="empty-notice" />, noticeShown: false })
+    expect(screen.getByTestId('claude-limit-warning-stub')).toBeInTheDocument()
+  })
+
+  it('hides the warning while a notice shows', () => {
+    renderInputBar({ notice: <div data-testid="live-notice" />, noticeShown: true })
+    expect(screen.queryByTestId('claude-limit-warning-stub')).not.toBeInTheDocument()
   })
 
   it('hides the warning while the chat is closed', () => {
@@ -1769,12 +1819,19 @@ describe('ChatInputBar draft start', () => {
     expect(onDraftStart).not.toHaveBeenCalled()
   })
 
-  it('shows the Session closed pill only while disabled', () => {
-    const { unmount } = renderInputBar({ disabled: true })
-    expect(screen.getByText('Session closed')).toBeInTheDocument()
-    unmount()
-    renderInputBar({ disabled: false })
-    expect(screen.queryByText('Session closed')).not.toBeInTheDocument()
+  it('shows a notice in the composer dock and hides the limit warning for it', () => {
+    limitWarningRef.current = true
+    try {
+      const { container } = renderInputBar({
+        notice: <div data-testid="dock-notice">This chat stopped.</div>
+      })
+      const composer = container.querySelector('[data-composer-raised="true"]')
+      expect(composer?.firstElementChild).toBe(screen.getByTestId('dock-notice'))
+      expect(screen.queryByTestId('claude-limit-warning-stub')).not.toBeInTheDocument()
+      expect(screen.queryByText('Session closed')).not.toBeInTheDocument()
+    } finally {
+      limitWarningRef.current = false
+    }
   })
 })
 
@@ -1790,6 +1847,20 @@ describe('ChatInputBar draft persistence', () => {
     await waitFor(() => {
       expect(getComposerValue()).toBe('half-typed message')
     })
+  })
+
+  it('sends on Enter on desktop and labels the return key "send"', async () => {
+    const onSend = vi.fn()
+    renderInputBar({ onSend })
+    expect(document.querySelector('[data-composer-editor="true"]')).toHaveAttribute(
+      'enterkeyhint',
+      'send'
+    )
+    setComposerValue('desktop send')
+
+    pressComposerKey('Enter')
+
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith('desktop send'))
   })
 
   it('clears the draft on send', async () => {
@@ -1808,6 +1879,18 @@ describe('ChatInputBar draft persistence', () => {
       // The composer emptied (clear-on-send) → the persisted draft was deleted.
       expect(persistenceStore.has('chat-draft/p1/session-1')).toBe(false)
     })
+  })
+
+  it('keeps the draft when the send reports that nothing was sent', async () => {
+    persistenceStore.set('chat-draft/p1/session-1', 'not yet')
+    const onSend = vi.fn(() => false as const)
+    renderInputBar({ onSend })
+    await waitFor(() => expect(getComposerValue()).toBe('not yet'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith('not yet'))
+    expect(getComposerValue()).toBe('not yet')
   })
 
   it('does not crash when storage is empty', () => {
@@ -2211,7 +2294,7 @@ describe('ChatInputBar mobile dock', () => {
   it('collapses the queue by default on mobile and keeps it expanded on desktop', () => {
     const props = { queue, onRemoveQueued: vi.fn(), onSendQueuedNow: vi.fn() }
     const mobile = render(bar(props))
-    expect(screen.getByRole('button', { name: '2 Queued' })).toHaveAttribute(
+    expect(screen.getByRole('button', { name: '2 queued' })).toHaveAttribute(
       'aria-expanded',
       'false'
     )
@@ -2219,10 +2302,23 @@ describe('ChatInputBar mobile dock', () => {
 
     mobileRef.current = false
     render(bar(props))
-    expect(screen.getByRole('button', { name: '2 Queued' })).toHaveAttribute(
+    expect(screen.getByRole('button', { name: '2 queued' })).toHaveAttribute(
       'aria-expanded',
       'true'
     )
+  })
+
+  it('docks the queue inside the composer card and edits a prompt back into the draft', async () => {
+    mobileRef.current = false
+    const onRemoveQueued = vi.fn()
+    render(
+      bar({ queue, onRemoveQueued, onSendQueuedNow: vi.fn(), seedText: 'my draft', seedNonce: 1 })
+    )
+    expect(composerCard()).toContainElement(screen.getByTestId('prompt-queue'))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Edit' })[0])
+    expect(onRemoveQueued).toHaveBeenCalledWith('q1')
+    await waitFor(() => expect(composerCard()).toHaveTextContent('my draft'))
+    expect(composerCard()).toHaveTextContent('first queued')
   })
 
   it('renders the embedded permission options at touch size', () => {
@@ -2497,7 +2593,7 @@ describe('ChatInputBar conversation mentions', () => {
       ctrlKey: false
     })
     const menu = await screen.findByRole('menu')
-    for (const name of [/Mention/, /Slash commands/, 'Termul tools']) {
+    for (const name of [/Mention/, /Slash commands/, 'Troupe tools']) {
       expect(within(menu).getByRole('menuitem', { name })).toHaveAttribute('data-disabled')
     }
     fireEvent.keyDown(menu, { key: 'Escape' })
@@ -2638,7 +2734,7 @@ describe('ChatInputBar conversation mentions', () => {
           type: 'text',
           text:
             '<termul-conversation id="chat-2" title="Fix web reconnect">\n' +
-            'Transcript of the Termul chat "Fix web reconnect" with an agent, attached by the user as context.\n\n' +
+            'Transcript of the Troupe chat "Fix web reconnect" with an agent, attached by the user as context.\n\n' +
             'User: why does it drop?\n' +
             'Agent: Backoff resets too early.\n' +
             '</termul-conversation>'
@@ -2666,7 +2762,7 @@ describe('ChatInputBar conversation mentions', () => {
           type: 'text',
           text:
             `<termul-conversation id="long" title="${capped}">\n` +
-            `Transcript of the Termul chat "${capped}" with an agent, attached by the user as context.\n\n` +
+            `Transcript of the Troupe chat "${capped}" with an agent, attached by the user as context.\n\n` +
             'User: why does it drop?\n' +
             'Agent: Backoff resets too early.\n' +
             '</termul-conversation>'

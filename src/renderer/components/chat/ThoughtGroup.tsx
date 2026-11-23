@@ -233,7 +233,6 @@ function ThoughtGroupComponent({ messages, isLiveTail }: ThoughtGroupProps): Rea
   return (
     <Collapsible open={open} onOpenChange={handleOpenChange} className="pt-2">
       <CollapsibleTrigger
-        data-press-feedback="off"
         className={cn('flex w-full cursor-pointer items-center gap-1 text-left', CHAT_ROW_MIN_H)}
       >
         <Marker
@@ -271,7 +270,7 @@ function ThoughtGroupComponent({ messages, isLiveTail }: ThoughtGroupProps): Rea
               <div
                 ref={refCallback}
                 className={cn(
-                  'scroller-thin overflow-y-auto break-words text-xs text-muted-foreground',
+                  'scroller-thin overflow-y-auto overscroll-contain break-words text-xs text-muted-foreground',
                   !expanded && 'max-h-[200px]'
                 )}
               >

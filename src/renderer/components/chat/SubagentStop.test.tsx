@@ -12,7 +12,7 @@ import {
 } from '@/lib/test-utils/subagent'
 import type { ChatMessage } from '@/stores/acp-store/types'
 import { useOverlayStackStore } from '@/stores/overlay-stack-store'
-import { ChatStatusPill } from './ChatStatusPill'
+import { ChatStatusChips } from './ChatStatusChips'
 import { SubagentSurfaceProvider } from './SubagentSurface'
 
 const mobileRef = vi.hoisted(() => ({ current: false }))
@@ -65,13 +65,13 @@ function Chat({ toolCalls }: { toolCalls: ToolCall[] }): React.JSX.Element {
         filePathContext={undefined}
         isVisible
       >
-        <ChatStatusPill toolCalls={toolCalls} sessionId="s1" cwd="" messages={[user]} turnActive />
+        <ChatStatusChips toolCalls={toolCalls} sessionId="s1" cwd="" messages={[user]} turnActive />
       </SubagentSurfaceProvider>
     </TooltipProvider>
   )
 }
 
-const pill = () => screen.getByRole('button', { name: /^Session status:/ })
+const pill = () => screen.getByRole('button', { name: /^Subagents:/ })
 
 function openPanel(title: string) {
   fireEvent.click(pill())
@@ -126,14 +126,14 @@ describe('Stop one subagent', () => {
 
   it('surfaces a refused stop as a toast and frees the button', async () => {
     vi.mocked(acpStopSubagent).mockRejectedValue(
-      new Error('The agent does not let Termul stop this subagent')
+      new Error('The agent does not let Troupe stop this subagent')
     )
     render(<Chat toolCalls={[child('1')]} />)
     const panel = openPanel('Agent 1')
     fireEvent.click(within(panel).getByRole('button', { name: 'Stop' }))
     await waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith("Couldn't stop the subagent", {
-        description: 'The agent does not let Termul stop this subagent'
+        description: 'The agent does not let Troupe stop this subagent'
       })
     )
     expect(within(panel).getByRole('button', { name: 'Stop' })).toBeEnabled()

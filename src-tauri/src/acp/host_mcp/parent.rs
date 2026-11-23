@@ -14,7 +14,7 @@
 //! the per-agent driver-thread model in `AcpManager`) — works on both the
 //! desktop binary and the standalone `termul-server` (no `AppHandle`).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::sync::Arc;
 
@@ -33,6 +33,10 @@ use crate::web::EventSink;
 mod ask;
 mod automation;
 mod canvas;
+mod mcp_install;
+mod read_chat;
+mod subagents;
+mod worker_chats;
 pub use ask::IdleSignal;
 use ask::PendingAsk;
 
@@ -54,6 +58,10 @@ struct SessionAuth {
     /// Bound by a history reopen whose outcome is not known yet. Such a token
     /// can still be evicted, so `bound_credentials` does not hand it out.
     reopen_pending: bool,
+    /// The chat an orchestrated child's question and install cards show on.
+    /// The child runs on a private session no client subscribes to. `None`:
+    /// the session itself.
+    card_session_id: Option<String>,
 }
 
 /// The shared host plan server. Owns the listener thread + the per-session
@@ -94,6 +102,17 @@ pub struct HostPlanServer {
     /// `ask_user` calls waiting for the user, keyed by their `q-` question id
     /// (the id the renderer answers with). Removed on answer, cancel or drop.
     pending_asks: Mutex<HashMap<String, PendingAsk>>,
+    /// `mcp_install` calls waiting for the approval card.
+    pending_installs: Mutex<HashMap<String, mcp_install::OpenMcpInstall>>,
+    /// Install ids that already finished, so a late answer is
+    /// `AlreadyResolved` rather than an unknown id. Bounded.
+    finished_installs: Mutex<VecDeque<String>>,
+    /// Minimum age of the card before an answer is accepted. Same floor as
+    /// host tickets.
+    mcp_install_answer_floor: Mutex<std::time::Duration>,
+    /// Catalog install plus the host MCP list. Tests set this; production
+    /// uses the process-wide installer when it is empty.
+    mcp_installer: Mutex<Option<Arc<crate::acp::host_mcp::mcp_install::HostMcpInstall>>>,
     /// Per runtime agent: resets the idle deadline of one of its sessions. A
     /// pending `ask_user` calls it so a configured idle timeout does not cancel
     /// the turn while the user is still answering.
@@ -108,6 +127,8 @@ pub struct HostPlanServer {
     exports: Arc<canvas::ExportClaims>,
     /// Answers `Automation` frames when set; otherwise the installed service.
     automation: std::sync::OnceLock<Arc<crate::automation::service::AutomationService>>,
+    /// Answers `StartChat` and `SendToChat` frames.
+    worker_chats: std::sync::OnceLock<Arc<crate::acp::worker_chats::WorkerChats>>,
 }
 
 impl HostPlanServer {
@@ -130,6 +151,10 @@ impl HostPlanServer {
             sessions: Mutex::new(HashMap::new()),
             active_turns: Mutex::new(HashMap::new()),
             pending_asks: Mutex::new(HashMap::new()),
+            pending_installs: Mutex::new(HashMap::new()),
+            finished_installs: Mutex::new(VecDeque::new()),
+            mcp_install_answer_floor: Mutex::new(crate::acp::host_ticket::ANSWER_FLOOR),
+            mcp_installer: Mutex::new(None),
             idle_signals: Mutex::new(HashMap::new()),
             ask_heartbeat_override: Mutex::new(None),
             title_set_for_session: Mutex::new(HashSet::new()),
@@ -140,6 +165,7 @@ impl HostPlanServer {
             canvas,
             exports: Arc::default(),
             automation: std::sync::OnceLock::new(),
+            worker_chats: std::sync::OnceLock::new(),
         });
         let server_for_thread = Arc::clone(&server);
         let (port_tx, port_rx) = std::sync::mpsc::channel::<u16>();
@@ -227,6 +253,7 @@ impl HostPlanServer {
                     agent_id: agent_id.to_string(),
                     real_session_id: None,
                     reopen_pending: false,
+                    card_session_id: None,
                 },
             );
         }
@@ -261,6 +288,15 @@ impl HostPlanServer {
         }
     }
 
+    /// Show the question and install cards of `token`'s session on
+    /// `chat_session_id`, the chat an orchestrated child is routed under.
+    /// The cards keep the child's agent id, so their answers reach the child.
+    pub fn route_cards_to_chat(&self, token: &str, chat_session_id: &str) {
+        if let Some(auth) = self.sessions.lock().get_mut(token) {
+            auth.card_session_id = Some(chat_session_id.to_string());
+        }
+    }
+
     /// `bind_session` for a history reopen (#1420). The token stays pending
     /// until `settle_reopen_token` reports the reopen's outcome.
     pub fn bind_reopen_session(&self, token: &str, real_session_id: &str) {
@@ -272,7 +308,7 @@ impl HostPlanServer {
 
     /// The `(port, token, provisional_session_id)` that `agent_id` already
     /// holds for `real_session_id`, if any. A reopen on the same agent passes
-    /// them again so the agent sees an unchanged `termul` server and keeps its
+    /// them again so the agent sees an unchanged `troupe` server and keeps its
     /// live session instead of rebuilding it. A pending reopen token does not
     /// count: a failed reopen evicts it.
     #[must_use]
@@ -582,6 +618,10 @@ impl HostPlanServer {
             }
         };
 
+        let card_session_id = auth
+            .card_session_id
+            .clone()
+            .unwrap_or_else(|| real_session_id.clone());
         match req.kind {
             FrameKind::Browser => {
                 let deadline = crate::browser_automation::budgets::Deadline::after(
@@ -651,12 +691,45 @@ impl HostPlanServer {
                 self.automation_call(&real_session_id, req.automation_tool, req.automation_input)
                     .await
             }
+            FrameKind::ReadChat => self.read_chat(&real_session_id, req.read_chat).await,
+            FrameKind::StartChat => self.start_chat(&real_session_id, req.start_chat).await,
+            FrameKind::SendToChat => self.send_to_chat(&real_session_id, req.send_to_chat).await,
+            FrameKind::ListStartedChats => self.list_started_chats(&real_session_id).await,
+            FrameKind::Subagent => {
+                self.subagent_call(
+                    &auth.agent_id,
+                    &real_session_id,
+                    req.subagent_tool,
+                    req.subagent_input,
+                    hung_up,
+                )
+                .await
+            }
             FrameKind::AskUser => {
                 let Some(input) = req.ask else {
                     return FrameReply::err("ask_user frame needs a question");
                 };
-                self.ask_user(&auth.agent_id, &real_session_id, input, hung_up)
-                    .await
+                self.ask_user(
+                    &auth.agent_id,
+                    &real_session_id,
+                    &card_session_id,
+                    input,
+                    hung_up,
+                )
+                .await
+            }
+            FrameKind::McpInstall => {
+                let Some(request) = req.mcp_install else {
+                    return FrameReply::err("mcp_install frame needs a source");
+                };
+                self.mcp_install(
+                    &auth.agent_id,
+                    &real_session_id,
+                    &card_session_id,
+                    request,
+                    hung_up,
+                )
+                .await
             }
             FrameKind::Plan => {
                 if req.title.is_some() {

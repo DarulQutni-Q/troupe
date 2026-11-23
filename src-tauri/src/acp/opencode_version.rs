@@ -2,7 +2,7 @@
 //!
 //! OpenCode 2 still speaks ACP protocol version 1 through `opencode acp`.
 //! A machine that already has that binary on `PATH` or under `~/.opencode/bin`
-//! can spawn it without downloading the pinned npm tarball. Version 1.x is
+//! can spawn it without downloading the catalog archive. Version 1.x is
 //! left for the catalog install path.
 
 use std::io::Read;
@@ -53,19 +53,17 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 fn is_runnable(path: &Path) -> bool {
-    if !path.is_file() {
-        return false;
-    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::metadata(path)
-            .ok()
-            .is_some_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
+        path.is_file()
+            && std::fs::metadata(path)
+                .ok()
+                .is_some_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
     }
     #[cfg(not(unix))]
     {
-        true
+        path.is_file()
     }
 }
 

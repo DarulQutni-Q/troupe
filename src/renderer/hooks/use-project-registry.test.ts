@@ -17,8 +17,7 @@ const h = vi.hoisted(() => {
     importLegacyProjects: vi.fn(),
     hydrateShellLayout: vi.fn(async () => {}),
     grantFsScope: vi.fn(),
-    reconcile: vi.fn(),
-    syncMcp: vi.fn(async () => {})
+    reconcile: vi.fn()
   }
 })
 
@@ -59,9 +58,6 @@ vi.mock('@/lib/project-registry-api', () => ({
   projectRegistryApi: {}
 }))
 vi.mock('@/lib/router-navigate', () => ({ clearChatRoute: vi.fn() }))
-vi.mock('@/stores/acp-store', () => ({
-  useAcpStore: { getState: () => ({ syncMcpRegistryToProjectFile: h.syncMcp }) }
-}))
 vi.mock('@/stores/shell-layout-store', () => ({
   useShellLayoutStore: { getState: () => ({ hydrate: h.hydrateShellLayout }) }
 }))
@@ -70,7 +66,6 @@ import { persistenceApi, secureStorageApi } from '@/lib/api'
 import { CLOSE_WRITE_TIMEOUT_MS, runCloseWriters } from '@/lib/close-flush'
 import { _resetProjectPrefsForTests } from '@/lib/project-prefs'
 import { useProjectStore } from '@/stores/project-store'
-import { useRemoteStatusStore } from '@/stores/remote-status-store'
 import { PREFS_SAVE_RETRY_MS, useProjectRegistry } from './use-project-registry'
 
 function summary(id: string, extra: Partial<ProjectSummary> = {}): ProjectSummary {
@@ -123,7 +118,6 @@ beforeEach(() => {
   h.grantFsScope.mockResolvedValue({ success: true, data: undefined })
   _resetProjectPrefsForTests()
   useProjectStore.setState({ projects: [], groups: [], activeProjectId: '', isLoaded: false })
-  useRemoteStatusStore.getState().setStatus(null)
 })
 
 describe('useProjectRegistry', () => {
@@ -208,116 +202,6 @@ describe('useProjectRegistry', () => {
         expect(saved?.projects.a).toEqual({ defaultShell: '/bin/zsh' })
       })
       expect(JSON.stringify(h.store.get('project-prefs'))).not.toContain('/work/a')
-    })
-  })
-
-  describe('prefs read failure', () => {
-    it('saves a group created after the first prefs read failed', async () => {
-      vi.mocked(persistenceApi.read).mockImplementationOnce(async () => ({
-        success: false,
-        code: 'TIMEOUT',
-        error: 'store socket did not answer'
-      }))
-
-      await mountAndDeliver(list([summary('a')]))
-      act(() => useProjectStore.getState().addGroup('Survives restart'))
-
-      await waitFor(() => {
-        const saved = h.store.get('project-prefs') as ProjectPrefsRecord | undefined
-        expect(saved?.groups.map((g) => g.name)).toEqual(['Survives restart'])
-      })
-    })
-
-    it('keeps the saved groups and saves again once the prefs read recovers', async () => {
-      h.store.set('project-prefs', {
-        projects: {},
-        groups: [{ id: 'g-old', name: 'Old group', projectIds: [] }],
-        order: [],
-        updatedAt: 't'
-      } satisfies ProjectPrefsRecord)
-      // Every boot attempt fails: the store socket is still not answering.
-      const boot = 1 + 3
-      for (let i = 0; i < boot; i++) {
-        vi.mocked(persistenceApi.read).mockImplementationOnce(async () => ({
-          success: false,
-          code: 'TIMEOUT',
-          error: 'store socket did not answer'
-        }))
-      }
-
-      // The boot retries take a few seconds, so wait for the watch past the default.
-      mount()
-      await waitFor(() => expect(h.subscribe).toHaveBeenCalled(), { timeout: 8000 })
-      act(() => watchHandlers().onState(list([summary('a')])))
-      await waitFor(() => expect(useProjectStore.getState().isLoaded).toBe(true))
-      act(() => useProjectStore.getState().addGroup('Made while unreadable'))
-
-      await waitFor(
-        () => {
-          const saved = h.store.get('project-prefs') as ProjectPrefsRecord | undefined
-          expect(saved?.groups.map((g) => g.name)).toEqual(['Made while unreadable', 'Old group'])
-        },
-        { timeout: 9000 }
-      )
-      expect(useProjectStore.getState().groups.map((g) => g.name)).toEqual([
-        'Made while unreadable',
-        'Old group'
-      ])
-    }, 15000)
-
-    it('keeps a listed project saved prefs after the read recovers', async () => {
-      h.store.set('project-prefs', {
-        projects: { a: { defaultShell: '/bin/zsh', gitBranch: 'feature' } },
-        groups: [],
-        order: [],
-        updatedAt: 't'
-      } satisfies ProjectPrefsRecord)
-      for (let i = 0; i < 1 + 3; i++) {
-        vi.mocked(persistenceApi.read).mockImplementationOnce(async () => ({
-          success: false,
-          code: 'TIMEOUT',
-          error: 'store socket did not answer'
-        }))
-      }
-
-      mount()
-      await waitFor(() => expect(h.subscribe).toHaveBeenCalled(), { timeout: 8000 })
-      act(() => watchHandlers().onState(list([summary('a')])))
-      await waitFor(() => expect(useProjectStore.getState().isLoaded).toBe(true))
-      act(() => useProjectStore.getState().addGroup('Triggers a save'))
-
-      // The group only reaches the record once the read has recovered and saving is on.
-      await waitFor(
-        () => {
-          const saved = h.store.get('project-prefs') as ProjectPrefsRecord | undefined
-          expect(saved?.groups.map((g) => g.name)).toEqual(['Triggers a save'])
-        },
-        { timeout: 9000 }
-      )
-      const saved = h.store.get('project-prefs') as ProjectPrefsRecord
-      expect(saved.projects.a).toMatchObject({ defaultShell: '/bin/zsh', gitBranch: 'feature' })
-      expect(useProjectStore.getState().projects[0]).toMatchObject({
-        defaultShell: '/bin/zsh',
-        gitBranch: 'feature'
-      })
-    }, 15000)
-
-    it('stops retrying the prefs read once the hook is unmounted', async () => {
-      vi.mocked(persistenceApi.read).mockImplementationOnce(async () => ({
-        success: false,
-        code: 'TIMEOUT',
-        error: 'store socket did not answer'
-      }))
-      const prefsReads = () =>
-        vi.mocked(persistenceApi.read).mock.calls.filter(([key]) => key === 'project-prefs').length
-
-      const { unmount } = mount()
-      await waitFor(() => expect(prefsReads()).toBe(1))
-      unmount()
-
-      // Longer than the first retry delay: a live hook would read the prefs again by now.
-      await new Promise((resolve) => setTimeout(resolve, 800))
-      expect(prefsReads()).toBe(1)
     })
   })
 
@@ -630,31 +514,6 @@ describe('useProjectRegistry', () => {
         expect(useProjectStore.getState().projects.map((p) => p.id)).toEqual(['third'])
       )
       expect(h.grantFsScope).not.toHaveBeenCalledWith(['/work/second'])
-    })
-
-    it('mirrors the MCP registry when the host default moves while shared-live runs', async () => {
-      h.tauri.value = true
-      useRemoteStatusStore.getState().setStatus({ running: true } as never)
-      await mountAndDeliver(list([summary('a'), summary('b')], 'a'))
-      expect(h.syncMcp).not.toHaveBeenCalled()
-
-      act(() => watchHandlers().onDelta(list([summary('a'), summary('b')], 'a')))
-      expect(h.syncMcp).not.toHaveBeenCalled()
-
-      act(() => watchHandlers().onDelta(list([summary('a'), summary('b')], 'b')))
-      await waitFor(() => expect(h.syncMcp).toHaveBeenCalledTimes(1))
-      // The mirror names the device's active project, not the host default.
-      expect(h.syncMcp).toHaveBeenCalledWith('a')
-    })
-
-    it('does not mirror the MCP registry when shared-live is off', async () => {
-      h.tauri.value = true
-      await mountAndDeliver(list([summary('a'), summary('b')], 'a'))
-
-      act(() => watchHandlers().onDelta(list([summary('a'), summary('b')], 'b')))
-
-      await waitFor(() => expect(useProjectStore.getState().projects[1].isDefault).toBeDefined())
-      expect(h.syncMcp).not.toHaveBeenCalled()
     })
   })
 

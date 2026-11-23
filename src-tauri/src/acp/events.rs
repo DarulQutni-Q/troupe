@@ -32,7 +32,7 @@ pub(crate) use crate::web::fan_out;
 /// Mirror of the pre-1.3 schema `SessionModel` wire shape (`{ modelId, name,
 /// description? }`). Models are no longer a dedicated protocol type since ACP
 /// 0.14 — they are a `SessionConfigOption` with `category = "model"` — so
-/// Termul reconstructs this legacy view from `config_options` to keep the
+/// Troupe reconstructs this legacy view from `config_options` to keep the
 /// renderer's Model Picker contract byte-compatible.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -153,6 +153,12 @@ pub const EVENT_QUESTION_REQUEST: &str = "acp:question_request";
 /// goes on (issue #784: the agent hung up its `ask_user` call). The relay
 /// releases its ticket and the renderer drops its panel.
 pub const EVENT_QUESTION_CANCELLED: &str = "acp:question_cancelled";
+/// `acp:mcp_install_request` — the approval card for `mcp_install`. No secret values.
+pub const EVENT_MCP_INSTALL_REQUEST: &str = "acp:mcp_install_request";
+/// `acp:mcp_install_resolved` — the card's outcome. No secret values.
+pub const EVENT_MCP_INSTALL_RESOLVED: &str = "acp:mcp_install_resolved";
+/// `acp:mcp_registry_changed` — the host list changed. The renderer reloads it.
+pub const EVENT_MCP_REGISTRY_CHANGED: &str = "acp:mcp_registry_changed";
 /// Event name: the agent requested structured user input (elicitation).
 pub const EVENT_ELICITATION_REQUEST: &str = "acp:elicitation_request";
 /// Event name: the agent asked the user to sign in at a URL outside any chat
@@ -194,9 +200,17 @@ pub const EVENT_LOCAL_TITLE_GENERATED: &str = "acp:local_title_generated";
 pub const EVENT_WORKTREE_BRANCH_RENAMED: &str = "acp:worktree_branch_renamed";
 /// Event name: the agent reported context window utilization (and optional cost).
 pub const EVENT_USAGE_UPDATE: &str = "acp:usage_update";
+/// Event name: the host acted on a Claude chat at its account's limit
+/// (`claude_limit`). Durable, so a reopened chat still shows a scheduled
+/// resume.
+pub const EVENT_CLAUDE_LIMIT_ACTION: &str = "acp:claude_limit_action";
+pub const EVENT_CODEX_LIMIT_ACTION: &str = "acp:codex_limit_action";
 /// The agent started or stopped working in a session outside a prompt turn
 /// (live only, never persisted: see `session::unprompted`).
 pub const EVENT_AGENT_WORKING: &str = "acp:agent_working";
+/// The commands an agent left running in a session changed (live only, never
+/// persisted: see `session::background_commands`).
+pub const EVENT_BACKGROUND_COMMANDS: &str = "acp:background_commands";
 /// Event name: the agent tried to open a browser URL on a headless host and
 /// the POSIX browser shim captured it (spec-acp-terminal-auth). Agent-level
 /// (`sid = None`); the payload carries `{agentId, url}` so the renderer can
@@ -257,7 +271,7 @@ pub struct AuthMethodInfo {
     pub api_key: Option<ApiKeyShape>,
 }
 
-/// How an agent reads a key typed into Termul from
+/// How an agent reads a key typed into Troupe from
 /// `authenticate._meta["api-key"]`. ACP leaves the shape to each agent, so
 /// the host tells them apart by the provider the method advertises.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -855,6 +869,22 @@ impl From<String> for AcpErrorDetail {
 }
 
 impl AcpErrorDetail {
+    /// A Codex turn that hit a plan limit (`rate_limited` or `quota_exhausted`).
+    /// The message stays generic: the reset time comes from the usage probe.
+    #[must_use]
+    pub(crate) fn codex_plan_limit(kind: &str) -> Self {
+        let message = "Codex reached its usage limit".to_string();
+        let rpc_message_len = u32::try_from(message.len()).ok();
+        Self {
+            message,
+            code: Some(-32603),
+            data: Some(serde_json::json!({ "errorKind": kind })),
+            rpc_message_len,
+            timed_out: false,
+            connection_closed: false,
+        }
+    }
+
     /// Replace the message with a generic one and drop the structured
     /// `code` / `data` (used when failure details must not reach the renderer).
     #[must_use]
@@ -1094,6 +1124,32 @@ pub fn emit_agent_working(
     fan_out(sinks, Some(session_id), EVENT_AGENT_WORKING, &event);
 }
 
+/// Payload of [`EVENT_BACKGROUND_COMMANDS`]: the session's whole list, which
+/// replaces a held list of a lower revision.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackgroundCommandsEvent {
+    pub agent_id: AgentId,
+    pub session_id: SessionId,
+    #[serde(flatten)]
+    pub list: crate::acp::session::BackgroundCommandList,
+}
+
+/// Tell every sink the commands `agent_id` left running in `session_id` now.
+pub fn emit_background_commands(
+    sinks: &[std::sync::Arc<dyn crate::web::EventSink>],
+    agent_id: &AgentId,
+    session_id: &str,
+    list: crate::acp::session::BackgroundCommandList,
+) {
+    let event = BackgroundCommandsEvent {
+        agent_id: agent_id.clone(),
+        session_id: SessionId::new(session_id.to_string()),
+        list,
+    };
+    fan_out(sinks, Some(session_id), EVENT_BACKGROUND_COMMANDS, &event);
+}
+
 /// OpenCode compaction marker carried on `session_info_update` `_meta`.
 ///
 /// OpenCode 2 sends this when the client does not advertise
@@ -1296,9 +1352,30 @@ pub struct UsageUpdateEvent {
     pub size: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cost: Option<UsageCostEvent>,
-    /// Claude plan rate-limit state, when the Claude ACP adapter sends it.
+    /// Claude plan rate-limit state, when the Claude ACP adapter sends it and
+    /// it does not block the chat.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rate_limit: Option<crate::acp::claude_accounts::usage::ClaudeRateLimit>,
+    /// The rate-limit state that blocks the chat (see [`split_claude_limit`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_reached: Option<crate::acp::claude_accounts::usage::ClaudeRateLimit>,
+}
+
+/// Split the adapter's rate-limit state into `(rate_limit, limit_reached)`.
+/// A limit that blocks the chat travels only as `limitReached`: clients that
+/// predate the host's account switch ran their own switch on a rejected
+/// `rateLimit`, and would restart a chat the host already moved.
+#[must_use]
+pub fn split_claude_limit(
+    limit: Option<crate::acp::claude_accounts::usage::ClaudeRateLimit>,
+) -> (
+    Option<crate::acp::claude_accounts::usage::ClaudeRateLimit>,
+    Option<crate::acp::claude_accounts::usage::ClaudeRateLimit>,
+) {
+    match limit {
+        Some(limit) if limit.blocks_chat() => (None, Some(limit)),
+        limit => (limit, None),
+    }
 }
 
 // Story 1.1 (AC7): the legacy `events::emit(app, event, payload)` free function

@@ -56,8 +56,7 @@ vi.mock('@/lib/acp-mcp-persistence', async (orig) => {
   return {
     ...actual,
     loadMcpServers: vi.fn(async () => []),
-    saveMcpServers: vi.fn(async () => {}),
-    syncMcpRegistryToProjectBestEffort: vi.fn(async () => {})
+    saveMcpServers: vi.fn(async () => {})
   }
 })
 
@@ -535,7 +534,7 @@ describe('acp-store', () => {
       sessionId: 's-resume',
       cwd: '/w',
       // #1420: a reopen onto a fresh agent attaches the (here empty) MCP list
-      // so the host still gets the `termul` plan server.
+      // so the host still gets the `troupe` plan server.
       mcpServers: [],
       commandId: expect.any(String)
     })
@@ -1096,10 +1095,96 @@ describe('acp-store', () => {
     expect(useAcpStore.getState().sessions['s-closed'].configOptions).toEqual([])
   })
 
+  it('a reopen drops the command rows of the closed session until the agent lists new ones', async () => {
+    const running = (toolCallId: string) => ({
+      toolCallId,
+      title: 'npm run watch',
+      command: 'npm run watch',
+      startedAtMs: 1_000,
+      state: 'running' as const
+    })
+    const seedClosed = () =>
+      useAcpStore.setState((s) => ({
+        agents: {
+          ...s.agents,
+          'agent-1': {
+            id: 'agent-1',
+            capabilities: { loadSession: false, sessionCapabilities: { resume: {} } }
+          }
+        },
+        agentStatus: { ...s.agentStatus, 'agent-1': 'connected' },
+        sessions: {
+          's-closed': {
+            id: 's-closed',
+            agentId: 'agent-1',
+            cwd: '/w',
+            status: 'closed',
+            title: 'Was open',
+            activeTurn: false,
+            openTurnId: null,
+            modes: null,
+            configOptions: [],
+            lastError: null,
+            createdAt: 1,
+            backgroundCommands: { agentId: 'agent-1', revision: 4, commands: [running('old')] }
+          }
+        },
+        messages: { 's-closed': [] }
+      }))
+    const { loadSessionPayload } = await import('@/lib/acp-history-persistence')
+    const reopen = async (during?: () => void) => {
+      ;(loadSessionPayload as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        metadata: {
+          id: 's-closed',
+          agentId: 'agent-1',
+          title: 'Was open',
+          cwd: '/w',
+          createdAt: 1,
+          lastActivityAt: 2,
+          messageCount: 0,
+          status: 'closed'
+        },
+        messages: []
+      })
+      const resumed = deferred<unknown>()
+      ;(invoke as ReturnType<typeof vi.fn>).mockReturnValueOnce(resumed.promise)
+      const opening = useAcpStore.getState().openHistorySession('s-closed')
+      await vi.waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith('acp_resume_session', expect.anything())
+      )
+      during?.()
+      resumed.resolve({ modes: null, configOptions: [] })
+      await opening
+      return useAcpStore.getState().sessions['s-closed']
+    }
+
+    const report = (revision: number, commands: ReturnType<typeof running>[]) =>
+      useAcpStore
+        .getState()
+        ._onBackgroundCommands({ agentId: 'agent-1', sessionId: 's-closed', revision, commands })
+
+    seedClosed()
+    // The close cleared the rows; a list the agent sent before it lands
+    // during the reopen.
+    report(5, [])
+    const reopened = await reopen(() => report(4, [running('old')]))
+    expect(reopened.status).toBe('active')
+    expect(reopened.backgroundCommands).toBeUndefined()
+
+    vi.mocked(invoke).mockClear()
+    seedClosed()
+    const listed = await reopen(() => report(6, [running('new')]))
+    expect(listed.backgroundCommands).toEqual({
+      agentId: 'agent-1',
+      revision: 6,
+      commands: [running('new')]
+    })
+  })
+
   it('a reopen onto a fresh agent attaches the configured MCP servers (idle-stop auto-resume, #1420)', async () => {
     // Idle-stop auto-resume (use-idle-stop-auto-resume.ts) calls
     // `openHistorySession(id)` with NO options. Without the store default the
-    // host received `None` and the agent lost the `termul` server + every
+    // host received `None` and the agent lost the `troupe` server + every
     // configured MCP server. The default must send a non-undefined list.
     useAcpStore.setState((s) => ({
       agents: {
@@ -1469,6 +1554,91 @@ describe('acp-store', () => {
     expect(useAcpStore.getState().sessions['s-cold-start'].status).toBe('active')
   })
 
+  describe('reopening a Claude chat from history', () => {
+    const CLAUDE = 'acp-registry:claude-acp'
+    const projectKey = agentReuseKey(CLAUDE, '/w', 'p1')
+
+    async function reopen(id: string, chatAccounts: Record<string, string>): Promise<unknown[][]> {
+      useAcpStore.setState((s) => ({
+        agentConfigs: [
+          { id: CLAUDE, name: 'Claude Agent', command: 'node', args: [], env: {} },
+          ...s.agentConfigs
+        ],
+        configToLiveAgent: { [projectKey]: 'agent-project' },
+        agents: { 'agent-project': { id: 'agent-project', capabilities: { loadSession: true } } },
+        agentStatus: { 'agent-project': 'connected' }
+      }))
+      const { loadSessionPayload } = await import('@/lib/acp-history-persistence')
+      ;(loadSessionPayload as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        metadata: {
+          id,
+          agentId: 'agent-project',
+          agentConfigId: CLAUDE,
+          title: 'Closed chat',
+          cwd: '/w',
+          projectId: 'p1',
+          createdAt: 1,
+          lastActivityAt: 2,
+          messageCount: 1,
+          status: 'closed'
+        },
+        messages: [
+          {
+            id: 'm1',
+            role: 'user',
+            blocks: [{ type: 'text', text: 'prior' }],
+            streaming: false,
+            timestamp: 0
+          }
+        ]
+      })
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === 'claude_accounts_list') {
+          return {
+            accounts: [
+              { id: 'default', name: 'Default', builtin: true, signedIn: true },
+              { id: 'side', name: 'Side', builtin: false, signedIn: true }
+            ],
+            defaultAccountId: 'default',
+            projectAccounts: {},
+            chatAccounts,
+            autoSwitch: true
+          }
+        }
+        if (cmd === 'acp_spawn_agent') {
+          return { agentId: 'agent-chat', capabilities: { loadSession: true }, authMethods: [] }
+        }
+        if (cmd === 'acp_load_session') return undefined
+        throw new Error(`unexpected invoke command: ${cmd}`)
+      })
+      await useAcpStore.getState().openHistorySession(id)
+      return vi.mocked(invoke).mock.calls
+    }
+
+    it('reopens a chat that follows its project on the connected project agent, with no spawn', async () => {
+      const calls = await reopen('s-follows', {})
+
+      expect(calls.map(([cmd]) => cmd)).toEqual(['claude_accounts_list', 'acp_load_session'])
+      expect(useAcpStore.getState().sessions['s-follows'].agentId).toBe('agent-project')
+      expect(useAcpStore.getState().sessions['s-follows'].status).toBe('active')
+      expect(useAcpStore.getState().configToLiveAgent).toEqual({ [projectKey]: 'agent-project' })
+    })
+
+    it('reopens a chat on its own account on an agent spawned for it and keyed to it', async () => {
+      const calls = await reopen('s-own', { 's-own': 'side' })
+
+      expect(calls.find(([cmd]) => cmd === 'acp_spawn_agent')?.[1]).toMatchObject({
+        projectId: 'p1',
+        sessionId: 's-own'
+      })
+      expect(useAcpStore.getState().sessions['s-own'].agentId).toBe('agent-chat')
+      expect(useAcpStore.getState().configToLiveAgent).toEqual({
+        [projectKey]: 'agent-project',
+        [agentReuseKey(CLAUDE, '/w', 'p1', 's-own')]: 'agent-chat'
+      })
+    })
+  })
+
   describe('markResumeFailed', () => {
     function setSession(patch: {
       status: 'active' | 'closed' | 'error'
@@ -1523,6 +1693,80 @@ describe('acp-store', () => {
       const before = useAcpStore.getState().sessions
       useAcpStore.getState().markResumeFailed('missing', 'x')
       expect(useAcpStore.getState().sessions).toBe(before)
+    })
+  })
+
+  // Issue #1808: a watching device can install a chat started on another device
+  // before the host titled it, so its live `session.title` holds the
+  // `Untitled Chat` placeholder while the tab, phone header and drawer read it.
+  describe('opened chat title on a watching device (#1808)', () => {
+    const indexRow = (id: string, title: string) => ({
+      id,
+      agentId: 'agent-x',
+      title,
+      cwd: '/work',
+      projectId: 'p1',
+      createdAt: 1,
+      lastActivityAt: 2,
+      messageCount: 1,
+      status: 'active' as const
+    })
+
+    it('a later index snapshot replaces the live placeholder title with the real one', async () => {
+      seedSession('s-watch', 'agent-x', false)
+      useAcpStore.setState((s) => ({
+        sessions: { ...s.sessions, 's-watch': { ...s.sessions['s-watch'], title: 'Untitled Chat' } }
+      }))
+      await useAcpStore
+        .getState()
+        .applySessionIndexSnapshot([indexRow('s-watch', 'z [DURATION:15]')])
+      expect(useAcpStore.getState().sessions['s-watch'].title).toBe('z [DURATION:15]')
+    })
+
+    it('keeps a real live title, a null title and a placeholder index row as they are', async () => {
+      seedSession('s-renamed', 'agent-x', false)
+      useAcpStore.setState((s) => ({
+        sessions: {
+          ...s.sessions,
+          's-renamed': { ...s.sessions['s-renamed'], title: 'My rename' },
+          's-null': { ...s.sessions['s-renamed'], id: 's-null', title: null },
+          's-pending': { ...s.sessions['s-renamed'], id: 's-pending', title: 'Untitled Chat' }
+        }
+      }))
+      const before = useAcpStore.getState().sessions
+      await useAcpStore
+        .getState()
+        .applySessionIndexSnapshot([
+          indexRow('s-renamed', 'Derived title'),
+          indexRow('s-null', 'Derived title'),
+          indexRow('s-pending', 'Untitled Chat')
+        ])
+      const after = useAcpStore.getState().sessions
+      expect(after['s-renamed'].title).toBe('My rename')
+      expect(after['s-null'].title).toBeNull()
+      expect(after['s-pending'].title).toBe('Untitled Chat')
+      // Nothing changed, so the sessions map keeps its identity.
+      expect(after).toBe(before)
+    })
+
+    it('openHistorySession takes the real index title over a placeholder payload title', async () => {
+      useAcpStore.setState({ sessionIndex: [indexRow('s-open', 'z [DURATION:15]')] })
+      const { loadSessionPayload } = await import('@/lib/acp-history-persistence')
+      ;(loadSessionPayload as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        metadata: {
+          id: 's-open',
+          agentId: 'agent-x',
+          title: 'Untitled Chat',
+          cwd: '/work',
+          createdAt: 1,
+          lastActivityAt: 2,
+          messageCount: 0,
+          status: 'closed'
+        },
+        messages: []
+      })
+      await useAcpStore.getState().openHistorySession('s-open')
+      expect(useAcpStore.getState().sessions['s-open'].title).toBe('z [DURATION:15]')
     })
   })
 })

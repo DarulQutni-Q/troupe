@@ -536,6 +536,7 @@ describe('ConnectedTerminal', () => {
     // Reset clipboard mocks
     vi.mocked(clipboardApi).readText.mockResolvedValue({ success: true, data: '' })
     vi.mocked(clipboardApi).writeText.mockResolvedValue({ success: true, data: undefined })
+    vi.mocked(clipboardApi).hasImage.mockResolvedValue({ success: true, data: false })
 
     // Reset terminal selection mocks
     mockTerminalInstance.hasSelection.mockReturnValue(false)
@@ -2015,10 +2016,10 @@ describe('ConnectedTerminal', () => {
 
       const handler = mockTerminalInstance.attachCustomKeyEventHandler.mock.calls[0][0]
 
+      // Ctrl+B: the Rail toggle (sidebarToggle).
       const event = new KeyboardEvent('keydown', {
-        key: 'B',
+        key: 'b',
         ctrlKey: true,
-        shiftKey: true,
         bubbles: true
       })
 

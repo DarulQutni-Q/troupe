@@ -4,9 +4,9 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronUp,
+  Edit,
   MessageQuestion,
   Minus,
-  Pencil,
   Sparkles,
   X
 } from '@/components/icons'
@@ -147,7 +147,7 @@ export function QuestionPager(): React.JSX.Element | null {
         aria-label="Previous question"
         disabled={index === 0 || submitting}
         onClick={() => onNavigate(index - 1)}
-        className="text-muted-foreground pointer-coarse:size-9"
+        className="text-muted-foreground pointer-coarse:size-11"
       >
         <ChevronLeft size={14} />
       </Button>
@@ -161,7 +161,7 @@ export function QuestionPager(): React.JSX.Element | null {
         aria-label="Next question"
         disabled={index >= total - 1 || submitting}
         onClick={() => onNavigate(index + 1)}
-        className="text-muted-foreground pointer-coarse:size-9"
+        className="text-muted-foreground pointer-coarse:size-11"
       >
         <ChevronRight size={14} />
       </Button>
@@ -193,7 +193,7 @@ export function QuestionWindowActions({
         size="icon-xs"
         aria-label="Minimize questions"
         onClick={onMinimize}
-        className="text-muted-foreground pointer-coarse:size-9"
+        className="text-muted-foreground pointer-coarse:size-11"
       >
         <Minus size={14} />
       </Button>
@@ -205,7 +205,7 @@ export function QuestionWindowActions({
         aria-label="Cancel"
         data-question-cancel=""
         onClick={onClose}
-        className="text-muted-foreground pointer-coarse:size-9"
+        className="text-muted-foreground pointer-coarse:size-11"
       >
         <X size={14} />
       </Button>
@@ -314,9 +314,6 @@ export const QuestionOption = forwardRef<HTMLButtonElement, QuestionOptionProps>
         ref={ref}
         type="button"
         aria-pressed={selected}
-        // A full-width row scales too far under the document press rule; the
-        // fill and indicator already show the pick.
-        data-press-feedback="off"
         data-question-row=""
         className={cn(
           'flex min-h-9 w-full items-start gap-3 rounded-lg py-2 pl-2.5 pr-3 text-left transition-colors duration-150 ease-out pointer-coarse:min-h-11',
@@ -393,7 +390,7 @@ export const QuestionOtherField = forwardRef<HTMLInputElement, QuestionOtherFiel
         )}
       >
         <RowKey>{shortcut}</RowKey>
-        <Pencil
+        <Edit
           size={13}
           aria-hidden="true"
           className={cn('shrink-0', typed ? 'text-muted-foreground' : 'text-muted-foreground/70')}
@@ -463,7 +460,7 @@ export const QuestionPrimaryButton = forwardRef<HTMLButtonElement, QuestionPrima
         type="button"
         size="xs"
         className={cn(
-          'h-8 gap-2 rounded-lg pl-3.5 pr-1.5 text-sm pointer-coarse:min-h-11',
+          'h-8 gap-2 rounded-lg pl-3.5 pr-1.5 text-sm pointer-coarse:min-h-11 pointer-coarse:pr-3.5',
           className
         )}
         {...props}
@@ -471,7 +468,8 @@ export const QuestionPrimaryButton = forwardRef<HTMLButtonElement, QuestionPrima
         {children}
         <span
           aria-hidden="true"
-          className="flex size-5 items-center justify-center rounded-[5px] bg-primary-foreground/15 text-2xs"
+          // A keyboard hint: touch has no Enter key to press here.
+          className="flex size-5 items-center justify-center rounded-[5px] bg-primary-foreground/15 text-2xs pointer-coarse:hidden"
         >
           ↵
         </span>
@@ -499,7 +497,7 @@ export function QuestionMinimizedBar({
     <div className="flex h-12 items-center gap-2.5 pl-4 pr-2 pointer-coarse:h-14">
       <QuestionPanelTitle />
       <QuestionProgress />
-      <h2 id={headingId} className="min-w-0 flex-1 truncate text-[13px] text-secondary-foreground">
+      <h2 id={headingId} className="min-w-0 flex-1 truncate text-xs text-secondary-foreground">
         {heading}
       </h2>
       {total > 1 ? <StepCount className="shrink-0 text-muted-foreground/70" /> : null}
@@ -509,7 +507,7 @@ export function QuestionMinimizedBar({
         variant="secondary"
         size="xs"
         onClick={onResume}
-        className="h-8 gap-1.5 rounded-lg pl-3 pr-2.5 text-[13px] pointer-coarse:min-h-11"
+        className="h-8 gap-1.5 rounded-lg pl-3 pr-2.5 text-xs pointer-coarse:min-h-11"
       >
         Resume
         <ChevronUp size={14} aria-hidden="true" className="text-muted-foreground" />

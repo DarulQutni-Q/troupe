@@ -10,7 +10,7 @@
 //!
 //! Mirrors the `rg` sidecar convention (`resolve_rg_path` in
 //! `crate::commands`): per-target binary name + an env override
-//! (`TERMUL_CLOUDFLARED_PATH`) + the same candidate dirs (`src-tauri/bin`,
+//! (`TROUPE_CLOUDFLARED_PATH`) + the same candidate dirs (`src-tauri/bin`,
 //! `bin`, the running exe's dir, `../Resources`, `../lib`) + a `OnceLock`
 //! cache. In dev/cloudflare-installed setups the bare `cloudflared` on PATH is
 //! the last-resort fallback (`source = "path"`); production bundles resolve via
@@ -82,15 +82,16 @@ fn cloudflared_sidecar_name() -> &'static str {
 }
 
 /// Resolve the cloudflared binary path. Mirrors `resolve_rg_path`:
-/// env override `TERMUL_CLOUDFLARED_PATH` (absolute, or relative to cwd /
-/// `src-tauri`), then the bundled sidecar under the same candidate dirs as
-/// `rg`. Returns `(path, source)`; `source = "path"` is the bare-name
-/// last-resort fallback (resolved via PATH at spawn time).
+/// env override `TROUPE_CLOUDFLARED_PATH`, or the deprecated
+/// `TERMUL_CLOUDFLARED_PATH` (absolute, or relative to cwd / `src-tauri`),
+/// then the bundled sidecar under the same candidate dirs as `rg`. Returns
+/// `(path, source)`; `source = "path"` is the bare-name last-resort fallback
+/// (resolved via PATH at spawn time).
 ///
-/// Keep this function pure / side-effect-free so it can be unit-tested without
-/// spawning processes.
+/// Spawns nothing, so it can be unit-tested without processes. Reading the
+/// deprecated name queues one deprecation notice in `brand_env`.
 pub fn resolve_cloudflared_path() -> (String, String) {
-    if let Ok(env_val) = std::env::var("TERMUL_CLOUDFLARED_PATH") {
+    if let Some(env_val) = crate::brand_env::value("CLOUDFLARED_PATH") {
         let trimmed = env_val.trim();
         if !trimmed.is_empty() {
             let env_path = PathBuf::from(trimmed);
@@ -130,7 +131,29 @@ pub fn resolve_cloudflared_path() -> (String, String) {
     if let Some(found) = candidates.into_iter().find(|p| p.exists() && p.is_file()) {
         return (found.to_string_lossy().to_string(), "sidecar".to_string());
     }
+    // A GUI launch (Dock/Finder) does not inherit the shell PATH, so a Homebrew
+    // install is not visible through the bare name. Check the usual dirs first.
+    if let Some(found) = find_system_cloudflared(SYSTEM_INSTALL_DIRS) {
+        return (found.to_string_lossy().to_string(), "system".to_string());
+    }
     ("cloudflared".to_string(), "path".to_string())
+}
+
+/// Usual install dirs that a GUI-launched app does not have on its `PATH`:
+/// Homebrew (Apple Silicon, Intel) and Linux/manual installs.
+const SYSTEM_INSTALL_DIRS: &[&str] = &["/opt/homebrew/bin", "/usr/local/bin"];
+
+/// File name of a system-wide install. This is not the per-target sidecar name
+/// (for example `cloudflared-aarch64-apple-darwin`): Homebrew and package
+/// managers install plain `cloudflared`.
+const SYSTEM_BINARY_NAME: &str = "cloudflared";
+
+/// First `<dir>/cloudflared` that is an existing file. Split out so tests can
+/// use temp dirs.
+fn find_system_cloudflared(dirs: &[&str]) -> Option<PathBuf> {
+    dirs.iter()
+        .map(|dir| PathBuf::from(dir).join(SYSTEM_BINARY_NAME))
+        .find(|p| p.is_file())
 }
 
 /// Cached resolved path (first call wins; mirrors `detect_rg_path`).

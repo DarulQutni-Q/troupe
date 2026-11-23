@@ -19,6 +19,7 @@ import {
 import { BROWSER_ANCHORS } from '@/components/settings/browser-policy-copy'
 import { rowId } from '@/components/settings/row-id'
 import type { SettingsCategory } from '@/components/settings/SettingsLayout'
+import { isTranslucentRailSupported } from '@/hooks/use-translucent-rail'
 import type { SettingsSearchEntry } from '@/lib/settings-search'
 import { isTauriContext } from '@/lib/tauri-runtime'
 
@@ -36,7 +37,7 @@ const ALL_APP_PREF_CATEGORIES: SettingsCategory[] = [
     id: 'notifications',
     group: 'General',
     label: 'Notifications',
-    description: 'Choose when Termul sends you a system notification.',
+    description: 'Choose when Troupe sends you a system notification.',
     icon: <Bell size={16} />
   },
   {
@@ -72,7 +73,7 @@ const ALL_APP_PREF_CATEGORIES: SettingsCategory[] = [
     id: 'ai-agents',
     group: 'Agents',
     label: 'Agent chats',
-    description: 'Time limits for agent chats, and the agents Termul can start.',
+    description: 'Time limits for agent chats, and the agents Troupe can start.',
     icon: <Bot size={16} />
   },
   {
@@ -87,7 +88,8 @@ const ALL_APP_PREF_CATEGORIES: SettingsCategory[] = [
     id: 'provider',
     group: 'Agents',
     label: 'Accounts',
-    description: 'Claude accounts that Claude Agent chats use, and how much of each limit is used.',
+    description:
+      'The Claude and Codex accounts that agent chats use, and how much of each limit is used.',
     icon: <KeyRound size={16} />
   },
   {
@@ -110,14 +112,14 @@ const ALL_APP_PREF_CATEGORIES: SettingsCategory[] = [
     id: 'shortcuts',
     group: 'App',
     label: 'Keyboard shortcuts',
-    description: 'Change the keys for Termul commands. Select a shortcut, then press the new keys.',
+    description: 'Change the keys for Troupe commands. Select a shortcut, then press the new keys.',
     icon: <Keyboard size={16} />
   },
   {
     id: 'updates',
     group: 'App',
     label: 'Updates',
-    description: 'Termul version, release channel and automatic checks.',
+    description: 'Troupe version, release channel and automatic checks.',
     icon: <Download size={16} />
   },
   // Web-only page (gh-1105): reconfigure the termul-server this client is
@@ -127,7 +129,7 @@ const ALL_APP_PREF_CATEGORIES: SettingsCategory[] = [
     id: 'server',
     group: 'App',
     label: 'Server',
-    description: 'Where this Termul server can be reached, and how it updates.',
+    description: 'Where this Troupe server can be reached, and how it updates.',
     icon: <Server size={16} />
   },
   {
@@ -164,6 +166,13 @@ const ALL_APP_PREF_SEARCH_INDEX: SettingsSearchEntry[] = [
     description: 'Make everything larger or smaller (50–300%).',
     keywords: ['ui zoom', 'zoom', 'interface scale', 'window zoom', 'magnify'],
     anchorId: rowId('ui-zoom')
+  },
+  {
+    categoryId: 'interface',
+    label: 'Translucent sidebar',
+    description: 'Show the desktop through the project sidebar (macOS).',
+    keywords: ['translucent', 'transparent', 'vibrancy', 'glass', 'blur', 'sidebar', 'appearance'],
+    anchorId: rowId('translucent-rail')
   },
   {
     categoryId: 'interface',
@@ -285,6 +294,35 @@ const ALL_APP_PREF_SEARCH_INDEX: SettingsSearchEntry[] = [
   },
   {
     categoryId: 'ai-agents',
+    label: 'Let agents start other agents',
+    description: 'An agent chat can hand parts of a task to your other installed agents.',
+    keywords: [
+      'subagent',
+      'sub-agent',
+      'delegate',
+      'orchestrator',
+      'codex',
+      'gemini',
+      'child agent'
+    ],
+    anchorId: rowId('subagent-enabled')
+  },
+  {
+    categoryId: 'ai-agents',
+    label: 'Max running sub-agents',
+    description: 'Per chat. Extra starts are refused until one finishes.',
+    keywords: ['subagent', 'sub-agent', 'limit', 'parallel', 'capacity'],
+    anchorId: rowId('subagent-max-running')
+  },
+  {
+    categoryId: 'ai-agents',
+    label: 'Max depth',
+    description: 'How many levels of sub-agents can start their own sub-agents.',
+    keywords: ['subagent', 'sub-agent', 'depth', 'nesting', 'levels'],
+    anchorId: rowId('subagent-max-depth')
+  },
+  {
+    categoryId: 'ai-agents',
     label: 'If an answer goes quiet',
     description: 'Cancel an answer that stops sending updates.',
     keywords: ['timeout', 'idle', 'silent', 'turn'],
@@ -355,6 +393,26 @@ const ALL_APP_PREF_SEARCH_INDEX: SettingsSearchEntry[] = [
   },
   {
     categoryId: 'browser',
+    label: 'Ask before opening new sites',
+    description: 'Off: agents open public sites and devices on your local network without asking.',
+    keywords: [
+      'browser',
+      'site',
+      'website',
+      'open',
+      'navigate',
+      'prompt',
+      'ask',
+      'allow',
+      'local network',
+      'lan',
+      'device',
+      'automation'
+    ],
+    anchorId: BROWSER_ANCHORS.appSitePrompt
+  },
+  {
+    categoryId: 'browser',
     label: 'Ask before an agent submits a password',
     description: 'Have agents ask you before they sign in to a site.',
     keywords: ['browser', 'password', 'sign in', 'login', 'prompt', 'ask', 'automation'],
@@ -404,7 +462,7 @@ const ALL_APP_PREF_SEARCH_INDEX: SettingsSearchEntry[] = [
   {
     categoryId: 'server',
     label: 'Server',
-    description: 'Address, port and update channel for this Termul server.',
+    description: 'Address, port and update channel for this Troupe server.',
     keywords: ['server', 'address', 'port', 'host', 'bind', 'remote', 'restart'],
     anchorId: rowId('server-config')
   },
@@ -425,13 +483,17 @@ const ALL_APP_PREF_SEARCH_INDEX: SettingsSearchEntry[] = [
 
 /** Search entries for the current runtime. */
 export function appPrefSearchIndex(): SettingsSearchEntry[] {
+  // The translucent sidebar row renders on macOS desktop only.
+  const entries = isTranslucentRailSupported()
+    ? ALL_APP_PREF_SEARCH_INDEX
+    : ALL_APP_PREF_SEARCH_INDEX.filter((entry) => entry.anchorId !== rowId('translucent-rail'))
   if (isTauriContext()) {
     // The Server page doesn't exist on desktop — its entries can't be in
     // the search index either.
-    return ALL_APP_PREF_SEARCH_INDEX.filter((entry) => entry.categoryId !== 'server')
+    return entries.filter((entry) => entry.categoryId !== 'server')
   }
   return [
-    ...ALL_APP_PREF_SEARCH_INDEX.filter((entry) => entry.categoryId !== 'updates'),
+    ...entries.filter((entry) => entry.categoryId !== 'updates'),
     {
       categoryId: 'diagnostics',
       label: 'Server version',

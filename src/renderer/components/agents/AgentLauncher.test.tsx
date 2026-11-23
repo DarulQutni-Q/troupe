@@ -21,6 +21,7 @@ import {
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type { StoredAgentConfig } from '@/lib/acp-agents-persistence'
 import { OUTSIDE_PROJECT_ROOT_REASON } from '@/lib/active-worktree'
+import { __resetLastSelectedAgentCache } from '@/lib/agents/last-selected-agent'
 import {
   buildSupportedAcpAgents,
   pickDefaultSupportedAgent,
@@ -34,11 +35,12 @@ import { mockAcpSession } from '@/lib/test-utils/acp'
 import { READ_ONLY_SERVER_REASON } from '@/lib/write-gate'
 import { agentReuseKey } from '@/stores/acp-reuse-keys'
 import type { AcpSession } from '@/stores/acp-store'
+import { hydrateOptionsCacheFromCatalog } from '@/stores/acp-store/model-catalog'
 import { useLoginTerminalSignInStore } from '@/stores/login-terminal-sign-in-store'
 import { useSettingsModalStore } from '@/stores/settings-modal-store'
 import { useShellLayoutStore } from '@/stores/shell-layout-store'
 import { useWorkspaceStore } from '@/stores/workspace-store'
-import { __resetLauncherSelectionCache, AgentLauncher } from './AgentLauncher'
+import { AgentLauncher } from './AgentLauncher'
 
 // jsdom omits `document.elementFromPoint`. Radix/floating-ui call it during
 // popover open/positioning; without a stub the agent/model pickers never open
@@ -219,6 +221,11 @@ const {
     }
   }
 }))
+
+const { mockOpenNewChat } = vi.hoisted(() => ({
+  mockOpenNewChat: vi.fn(async () => ({ kind: 'skipped' as const }))
+}))
+vi.mock('@/components/chat/new-chat/open-new-chat', () => ({ openNewChat: mockOpenNewChat }))
 
 vi.mock('@/lib/factory-key-api', () => ({
   factoryKeyApi: { save: mockSaveFactoryKey }
@@ -832,7 +839,7 @@ function renderLauncher(): void {
 beforeEach(() => {
   vi.clearAllMocks()
   vi.restoreAllMocks()
-  __resetLauncherSelectionCache()
+  __resetLastSelectedAgentCache()
   // Login terminals outlive the launcher; a test's unexited one must not
   // block the next test's sign-in.
   useLoginTerminalSignInStore.setState({ byAgent: {} })
@@ -1790,14 +1797,11 @@ describe('AgentLauncher ACP new thread', () => {
       expect(mockRetargetWarmPool).toHaveBeenCalledWith(defaultAgent.configId, '/work', 'p1')
     )
 
-    // Open + > Connectors and toggle the "Files" server off.
-    fireEvent.pointerDown(screen.getByRole('button', { name: 'Add to chat' }), {
+    // Open the foot row's Connectors menu and toggle the "Files" server off.
+    fireEvent.pointerDown(screen.getByRole('button', { name: /^Connectors/ }), {
       button: 0,
       ctrlKey: false
     })
-    const connectors = await screen.findByRole('menuitem', { name: /Connectors/ })
-    act(() => connectors.focus())
-    fireEvent.keyDown(connectors, { key: 'ArrowRight' })
     fireEvent.click(await screen.findByRole('menuitemcheckbox', { name: 'Files' }))
 
     // The toggle persists to the registry, then cancels + re-prepares so the
@@ -2061,7 +2065,7 @@ describe('AgentLauncher ACP new thread', () => {
       fireEvent.click(within(sheet).getByRole('button', { name: /Connectors/ }))
       fireEvent.click(
         await within(screen.getByRole('dialog', { name: 'Connectors' })).findByRole('switch', {
-          name: /Disable Files/i
+          name: 'Files'
         })
       )
 
@@ -2669,6 +2673,50 @@ describe('AgentLauncher ACP new thread', () => {
     expect(screen.getByTestId('agent-model-selector-trigger')).toHaveAccessibleName(/Cached Two/)
   })
 
+  it('lists the saved models after a page load while the agent starts', async () => {
+    seedDefaultAgentConfigured()
+    const { configId } = defaultReadyAgent()
+    acpStateRef.current.preparingChatKeys = { [`${configId}\0/work\0`]: true }
+    mockPersistRead.mockImplementation(async (key: string) =>
+      key === `agents/model-catalog/${configId}`
+        ? {
+            success: true,
+            data: {
+              models: null,
+              modelOption: {
+                id: 'model',
+                name: 'Model',
+                currentValue: 'saved-m1',
+                options: [
+                  { value: 'saved-m1', name: 'Saved Model', description: null },
+                  { value: 'saved-m2', name: 'Saved Two', description: null }
+                ]
+              },
+              updatedAt: 1
+            }
+          }
+        : { success: true, data: undefined }
+    )
+    const [savedConfig] = acpStateRef.current.agentConfigs
+    hydrateOptionsCacheFromCatalog((fn) => {
+      Object.assign(acpStateRef.current, fn(acpStateRef.current as never))
+    }, savedConfig)
+    await waitFor(() => expect(acpStateRef.current.agentOptionsCache[configId]).toBeDefined())
+    renderLauncher()
+
+    const modelChip = await screen.findByRole('button', { name: /Saved Model/ })
+    expect(screen.queryByRole('button', { name: /Loading model/ })).not.toBeInTheDocument()
+    fireEvent.click(modelChip)
+    clickMenuOption('Saved Two')
+    expect(screen.getByTestId('agent-model-selector-trigger')).toHaveAccessibleName(/Saved Two/)
+    await waitFor(() =>
+      expect(mockPersistComposerOptions).toHaveBeenCalledWith(configId, {
+        modelId: 'saved-m2',
+        configValues: { model: 'saved-m2' }
+      })
+    )
+  })
+
   it('still shows Loading model when cache has modes only (no model options)', async () => {
     const defaultAgent = defaultReadyAgent()
     const key = `${defaultAgent.configId}\0/work\0`
@@ -3117,30 +3165,6 @@ describe('AgentLauncher conversation pill launch', () => {
     )
     expect(editor).toHaveAttribute('contenteditable', 'true')
   })
-
-  it('ignores a starter pick while the launch holds the composer', async () => {
-    let finishRead!: (contexts: ConversationContexts) => void
-    conversationContextsOverride.current = () =>
-      new Promise((resolve) => {
-        finishRead = resolve
-      })
-    renderLauncher()
-    const editor = await screen.findByLabelText('Agent prompt')
-    const draft = `see ${conversationToken('Old chat', 'chat-9')} `
-    setComposerValue(draft)
-
-    fireEvent.click(screen.getByLabelText('Start agent chat'))
-    await waitFor(() => expect(editor).toHaveAttribute('contenteditable', 'false'))
-    fireEvent.click(screen.getByRole('button', { name: 'Find a bug' }))
-    expect(getComposerValue()).toBe(draft)
-
-    await act(async () => finishRead({ blocks: [], gaps: new Map([['chat-9', 'unavailable']]) }))
-    await waitFor(() =>
-      expect(mockCreateLaunchPlaceholder).toHaveBeenCalledWith(
-        expect.objectContaining({ initialUserBlocks: [{ type: 'text', text: draft }] })
-      )
-    )
-  })
 })
 
 describe('AgentLauncher composer drag-drop', () => {
@@ -3316,25 +3340,46 @@ describe('AgentLauncher mobile empty-state overflow', () => {
       level: 1,
       name: /what should we do in/i
     })
-    // Hero div wraps the logo + heading.
+    // Hero div wraps the logo + heading; on desktop it sits in the top part
+    // of the start block (the empty chat's layout rule, chat-start.tsx).
     const hero = heading.parentElement!
-    // Launcher root is the hero's parent (the absolute inset-0 container).
-    const launcherRoot = hero.parentElement!
-    // Composer column is the sibling div after the hero, inside the launcher
-    // root. It carries `max-w-4xl` + the new `min-w-0`.
+    const top = hero.parentElement!
+    // Launcher root is the top part's parent (the absolute inset-0 container).
+    const launcherRoot = top.parentElement!
+    // Composer column is the sibling div after the top part, inside the
+    // launcher root. It carries Paper's 680px width + `min-w-0`.
     const composerColumn = Array.from(launcherRoot.children).find(
-      (el) => el !== hero && el.tagName === 'DIV'
+      (el) => el !== top && el.tagName === 'DIV' && !el.hasAttribute('data-chat-start-spacer')
     )!
 
-    // Launcher root: `overflow-x-hidden` backstop + responsive padding.
+    // Launcher root: `overflow-x-hidden` backstop + Paper's px 20. The block
+    // is centred: the top part and the zero-basis spacer share the free space.
     expect(launcherRoot.className).toContain('overflow-x-hidden')
-    expect(launcherRoot.className).toContain('p-4')
-    expect(launcherRoot.className).toContain('sm:p-8')
+    expect(launcherRoot).toHaveClass('px-5')
+    expect(top).toHaveClass('flex-[1_1_auto]', 'justify-end')
+    expect(top).not.toHaveClass('pt-3')
+    expect(launcherRoot.lastElementChild).toHaveAttribute('data-chat-start-spacer', 'true')
+    expect(launcherRoot.lastElementChild).toHaveClass('flex-[1_1_44px]')
     // Hero div spans the content box; heading wraps instead of forcing width.
     expect(hero.className).toContain('w-full')
     expect(heading.className).toContain('break-words')
-    // Composer column allows flex children to shrink.
-    expect(composerColumn.className).toContain('min-w-0')
+    // Composer column allows flex children to shrink, at Paper's 680px.
+    expect(composerColumn).toHaveClass('min-w-0', 'w-full', 'max-w-[680px]')
+  })
+})
+
+describe('AgentLauncher start composer (shared with the empty chat)', () => {
+  it('uses the empty chat input area: a 40px text area, Paper padding and a 32px send', () => {
+    renderLauncher()
+    const row = document.querySelector(
+      '[data-agent-launcher-composer="true"] [data-composer-row]'
+    ) as HTMLElement
+    // Paper "2.2 New chat": pt 12, pr 8, pb 4, pl 14, gap 4 (CHAT_START_INPUT_ROW_CLASS).
+    expect(row).toHaveClass('pt-3', 'pr-2', 'pb-1', 'pl-3.5', 'gap-1')
+    const scroll = row.querySelector('[data-composer-scroll]') as HTMLElement
+    expect(scroll.style.getPropertyValue('--composer-min-h')).toBe('40px')
+    // The chat composer's send button (ComposerSendButton), 32px.
+    expect(screen.getByLabelText('Start agent chat')).toHaveClass('h-8', 'w-8')
   })
 })
 
@@ -3392,7 +3437,7 @@ describe('AgentLauncher dock clearance (mobile toasts)', () => {
     const group = document.querySelector('[data-agent-launcher-composer-group]')
     expect(group).not.toBeNull()
     // The column, not the group: the group takes a morph transform while exiting.
-    expect(group?.parentElement?.className).toContain('max-w-4xl')
+    expect(group?.parentElement?.className).toContain('max-w-[680px]')
     expect(dockVar()).toBe('144px')
   })
 
@@ -3491,23 +3536,31 @@ describe('AgentLauncher worktree isolation', () => {
         'focus-visible:ring-2',
         'focus-visible:ring-focus-ring',
         'focus-visible:ring-offset-2',
-        // Slim 28px row with the standard pseudo hit-extension (40px effective).
-        'after:-inset-1.5'
+        // Paper's 24px ghost button; the pseudo hit-extension grows 8px up
+        // and down only (40px effective) so row neighbours do not overlap.
+        'h-6',
+        'text-xs',
+        'text-secondary-foreground',
+        'after:-inset-y-2',
+        'after:inset-x-0'
       )
     }
   })
 
-  it('renders worktree controls in a separate context strip below the composer', () => {
+  it('renders worktree controls in the foot row, under the raised card (Composer V2)', () => {
     renderLauncher()
-    const composer = document.querySelector('[data-agent-launcher-composer="true"]')
+    const tray = document.querySelector('[data-agent-launcher-composer="true"]')
+    const raised = tray?.querySelector('[data-composer-raised="true"]')
+    const foot = tray?.querySelector('[data-composer-foot-row="true"]')
     const contextStrip = document.querySelector('[data-agent-launcher-context-strip="true"]')
 
-    expect(composer).toBeInTheDocument()
-    expect(contextStrip).toBeInTheDocument()
-    expect(composer).not.toContainElement(contextStrip)
-    expect(composer?.compareDocumentPosition(contextStrip as Node)).toBe(
-      Node.DOCUMENT_POSITION_FOLLOWING
-    )
+    expect(raised).toBeInTheDocument()
+    expect(foot).toContainElement(contextStrip as HTMLElement)
+    expect(raised).not.toContainElement(contextStrip as HTMLElement)
+    expect(contextStrip).toHaveClass('pl-0', 'pt-0')
+    expect(
+      within(foot as HTMLElement).getByRole('button', { name: /^Connectors/ })
+    ).toBeInTheDocument()
   })
 
   it('shows the isolation selector when gitBranch is null (CAP-1)', () => {
@@ -3524,10 +3577,10 @@ describe('AgentLauncher worktree isolation', () => {
     renderLauncher()
     expect(screen.queryByRole('combobox', { name: 'Base branch' })).not.toBeInTheDocument()
     expect(screen.queryByRole('combobox', { name: 'Workspace' })).not.toBeInTheDocument()
-    const strip = document.querySelector('[data-agent-launcher-context-strip="true"]')
-    expect(strip).toBeInTheDocument()
-    expect(within(strip as HTMLElement).getByText('Local')).toBeInTheDocument()
-    expect(within(strip as HTMLElement).queryByText('Branch:')).not.toBeInTheDocument()
+    // A folder that is not a git repo has no row under the composer (the
+    // empty chat agrees: ChatStartContextRow).
+    expect(document.querySelector('[data-agent-launcher-context-strip]')).toBeNull()
+    expect(screen.queryByText('Local')).not.toBeInTheDocument()
   })
 
   // CAP — Web worktree parity: the isolation selector is no longer gated on
@@ -3857,6 +3910,13 @@ describe('AgentLauncher worktree isolation', () => {
     // …and exactly one create ran — no `-2` retry, no chat finalize.
     expect(mockWorktreeCreate).toHaveBeenCalledTimes(1)
     expect(mockFinalizeChatLaunch).not.toHaveBeenCalled()
+    // The pane gets a new empty chat, not the launcher again.
+    expect(mockOpenNewChat).toHaveBeenCalledWith({
+      paneId: 'pane1',
+      projectId: 'p1',
+      reason: 'worktree-failed'
+    })
+    expect(mockShowAgentLauncher).not.toHaveBeenCalled()
   })
 
   // CAP-2: on detached HEAD, worktree mode blocks launch until a base branch
@@ -4069,18 +4129,14 @@ describe('AgentLauncher worktree isolation', () => {
 })
 
 describe('AgentLauncher placeholder', () => {
-  it('shows the shared starters under the composer and a pick fills the prompt', async () => {
+  it('shows no starter chips under the composer (Paper start screen)', async () => {
     renderLauncher()
 
     await screen.findByLabelText('Agent prompt')
-    const starters = screen.getByRole('group', { name: 'Starters' })
-    fireEvent.click(within(starters).getByRole('button', { name: 'Explain this project' }))
-
-    await waitFor(() => {
-      expect(getComposerValue()).toBe(
-        'Give me a high-level overview of this codebase and how it is structured.'
-      )
-    })
+    expect(screen.queryByRole('group', { name: 'Starters' })).toBeNull()
+    for (const name of ['Explain this project', 'Find a bug', 'Write tests', 'Summarize changes']) {
+      expect(screen.queryByRole('button', { name })).toBeNull()
+    }
   })
 
   it('renders the launcher default placeholder in the empty editor on a ready agent', async () => {

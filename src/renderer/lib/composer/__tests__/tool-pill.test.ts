@@ -21,9 +21,9 @@ const roundTrip = (value: string): string =>
   docToDisplayText(schema.nodeFromJSON(draftFromTokens(value)))
 
 // The host titles chats from these literals; normalize_tests.rs pins the same strings.
-const BROWSER_WIRE = '(Use the browser tool from the termul MCP server)'
+const BROWSER_WIRE = '(Use the browser tool from the troupe MCP server)'
 
-describe('Termul tool pill', () => {
+describe('Troupe tool pill', () => {
   it('parses a tool token into a pill node carrying the tool id', () => {
     expect(draftFromTokens(`${toolToken('browser')} open localhost`)).toEqual({
       type: 'doc',
@@ -47,9 +47,12 @@ describe('Termul tool pill', () => {
   it('sends agent-neutral wire text in place of each pill', () => {
     expect(
       composerWireText(`${toolToken('browser')} open localhost and ${toolToken('canvas')}`, [])
-    ).toBe(`${BROWSER_WIRE} open localhost and (Use the canvas tools from the termul MCP server)`)
+    ).toBe(`${BROWSER_WIRE} open localhost and (Use the canvas tools from the troupe MCP server)`)
     expect(composerWireText(`schedule it ${toolToken('automations')}`, [])).toBe(
-      'schedule it (Use the automation tools from the termul MCP server)'
+      'schedule it (Use the automation tools from the troupe MCP server)'
+    )
+    expect(composerWireText(`${toolToken('orchestrate')} review this diff`, [])).toBe(
+      '(Use the subagent tools from the troupe MCP server) review this diff'
     )
   })
 
@@ -109,6 +112,22 @@ describe('Termul tool pill', () => {
     expect(wireBlocksToDisplay([{ type: 'text', text: `${BROWSER_WIRE} open localhost` }])).toEqual(
       [{ type: 'text', text: `${toolToken('browser')} open localhost` }]
     )
+    expect(
+      wireBlocksToDisplay([
+        { type: 'text', text: '(Use the subagent tools from the troupe MCP server) review this' }
+      ])
+    ).toEqual([{ type: 'text', text: `${toolToken('orchestrate')} review this` }])
+  })
+
+  it('turns a 0.4.x prompt naming the termul server back into pills when a chat reopens', () => {
+    expect(
+      wireBlocksToDisplay([
+        {
+          type: 'text',
+          text: '(Use the browser tool from the termul MCP server) open localhost and (Use the canvas tools from the termul MCP server)'
+        }
+      ])
+    ).toEqual([{ type: 'text', text: '\uE00Cbrowser\uE00D open localhost and \uE00Ccanvas\uE00D' }])
   })
 
   it('keeps an unknown tool id as plain text without leaking a sentinel', () => {
@@ -125,7 +144,7 @@ describe('Termul tool pill', () => {
       { kind: 'text', text: ' b c' }
     ])
     expect(composerWireText(`x\uE00D ${toolToken('canvas')}`, [])).toBe(
-      'x (Use the canvas tools from the termul MCP server)'
+      'x (Use the canvas tools from the troupe MCP server)'
     )
   })
 

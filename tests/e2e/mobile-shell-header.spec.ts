@@ -11,6 +11,7 @@ import {
   type WebSocketRoute
 } from 'playwright/test'
 import { E2E_BASE_URL, E2E_TOKEN, storeKey, wsRequest } from './helpers'
+import { emptyChatComposer, sendFromEmptyChat } from './ui'
 
 /**
  * Mobile shell header E2E on termul-server, on a phone-sized touch viewport.
@@ -68,9 +69,9 @@ test.setTimeout(120_000)
 /** The drawer's ☰ and pill both point `aria-controls` here. */
 const DRAWER_ID = 'mobile-shell-drawer'
 
-/** The drawer is the full-screen left sheet named "Termul". */
+/** The drawer is the full-screen left sheet named "Troupe". */
 function drawerOf(page: Page): Locator {
-  return page.getByRole('dialog', { name: 'Termul', exact: true })
+  return page.getByRole('dialog', { name: 'Troupe', exact: true })
 }
 
 /**
@@ -247,36 +248,16 @@ async function startChatFromEmptyPane(page: Page, prompt: string): Promise<void>
 }
 
 /**
- * Start another chat through the header ✎ "New chat" launcher.
- *
- * Each piece of the launcher mounts as its data arrives (the agent list, the
- * git probe that reveals the isolation picker), so the helper waits for each of
- * them (and, in `submitPrompt`, for the composer) instead of racing them.
- *
- * The launcher remembers the last isolation mode. `local` picks Current checkout
- * explicitly, for a project whose previous chat used a worktree; choosing an
- * option closes the select with an exit animation and then returns focus to
- * its trigger, which must finish before the composer is focused or the late
- * focus return would take the keyboard back from it.
+ * Start another chat through the header ✎ "New chat": it opens a new empty
+ * chat (no launcher) in the project folder, and the first message starts it.
+ * The phone shell has no Workspace row under the empty chat composer, so the
+ * chat starts in the Workspace-switcher pick (the project folder by default).
  */
-async function startChatFromLauncher(
-  page: Page,
-  prompt: string,
-  { local = false } = {}
-): Promise<void> {
+async function startChatFromNewChat(page: Page, prompt: string): Promise<void> {
   await headerButton(page, 'New chat').tap()
-  const launcher = page.getByRole('dialog', { name: 'Agent launcher' })
-  await expect(
-    launcher.getByRole('button', { name: 'Agent and model. Currently Fake Longrun' })
-  ).toBeVisible()
-  if (local) {
-    const isolation = launcher.getByRole('combobox', { name: 'Workspace' })
-    await isolation.tap()
-    await page.getByRole('option', { name: 'Current checkout', exact: true }).tap()
-    await expect(page.getByRole('listbox')).toBeHidden()
-    await expect(isolation).toBeFocused()
-  }
-  await submitPrompt(page, launcher, prompt)
+  await expect(emptyChatComposer(page)).toBeVisible()
+  await sendFromEmptyChat(page, prompt, { tap: true })
+  await expect(title(page)).toContainText(prompt.slice(0, 24))
 }
 
 interface ProjectSwitchWire {
@@ -434,7 +415,7 @@ test('header is three 44px icon slots plus the title block, with no sideways scr
   await openMobileWorkspace(page, 'shdr-plain')
 
   const bar = header(page)
-  await expect(title(page)).toHaveText('Termul')
+  await expect(title(page)).toHaveText('Troupe')
   await expect(title(page)).toHaveId('mobile-shell-title')
   // A non-git project shows its name only, and the button names the project.
   await expect(subtitle(page)).toHaveText('shdr-plain')
@@ -651,7 +632,7 @@ test('a worktree chat shows its chat/ branch and Worktree; another chat shows Lo
 
   // A second chat in the project folder reads Local on main.
   const localPrompt = 'delta local chat'
-  await startChatFromLauncher(page, localPrompt, { local: true })
+  await startChatFromNewChat(page, localPrompt)
   await expect(title(page)).toHaveText(localPrompt)
   await expect(subtitle(page)).toHaveText('shdr-tree · main · Local')
 
@@ -681,7 +662,7 @@ test('an editor tab is titled by its file, keeps the project subtitle and has no
   // Open the file from the Files sheet (header ⋯ → Files → the file row).
   await headerButton(page, 'More').tap()
   await page
-    .getByRole('dialog', { name: 'Termul' })
+    .getByRole('dialog', { name: 'Troupe' })
     .getByRole('button', { name: 'Files', exact: true })
     .tap()
   const files = page.getByRole('dialog', { name: 'shdr-edit' })
@@ -774,11 +755,15 @@ test('header ⋯ sheet lists the chat actions in order and returns focus to ⋯ 
   await expect(sheet).toBeHidden()
   await expect(page).toHaveURL(chatUrl)
 
-  // ✎ starts another chat through the launcher.
+  // ✎ opens a new empty chat (no launcher dialog). A second tap focuses the
+  // same empty chat: it opens no second chat.
   await headerButton(page, 'New chat').tap()
-  const launcher = page.getByRole('dialog', { name: 'Agent launcher' })
-  await expect(launcher).toBeVisible()
-  await launcher.getByRole('button', { name: 'Close agent launcher' }).tap()
+  await expect(emptyChatComposer(page)).toBeVisible()
+  await expect(page.getByRole('dialog', { name: 'Agent launcher' })).toHaveCount(0)
+  const emptyTitle = await title(page).textContent()
+  await headerButton(page, 'New chat').tap()
+  await expect(emptyChatComposer(page)).toBeVisible()
+  await expect(title(page)).toHaveText(emptyTitle ?? '')
 })
 
 test('header ⋯ items open their destination, close the sheet, and Close chat ends the chat', async ({
@@ -830,7 +815,7 @@ test('header ⋯ items open their destination, close the sheet, and Close chat e
   await expect(closeChat).toHaveClass(/text-destructive/)
   await closeChat.tap()
   await expect(sheet).toBeHidden()
-  await expect(title(page)).toHaveText('Termul')
+  await expect(title(page)).toHaveText('Troupe')
   await expect(more).not.toBeFocused()
 })
 
@@ -849,7 +834,7 @@ test('terminal context swaps ✎ to New terminal and ⋯ to the terminal actions
   // New terminal from the header ⋯ sheet (no tab open: the sheet still offers it).
   await headerButton(page, 'More').tap()
   await page
-    .getByRole('dialog', { name: 'Termul' })
+    .getByRole('dialog', { name: 'Troupe' })
     .getByRole('button', { name: 'New terminal', exact: true })
     .tap()
   await expect(title(page)).toHaveText(/^Terminal \d+$/)
@@ -932,7 +917,7 @@ test('terminal rename trims on Enter, drops on Escape, ignores blank, and the ot
   await openMobileWorkspace(page, 'shdr-name')
   await headerButton(page, 'More').tap()
   await page
-    .getByRole('dialog', { name: 'Termul' })
+    .getByRole('dialog', { name: 'Troupe' })
     .getByRole('button', { name: 'New terminal', exact: true })
     .tap()
   await expect(title(page)).toHaveText(/^Terminal \d+$/)
@@ -1020,7 +1005,7 @@ test('terminal rename trims on Enter, drops on Escape, ignores blank, and the ot
   await expect(sheet).toBeHidden()
   await expect(confirm).toBeVisible()
   await page.getByRole('button', { name: 'Close', exact: true }).tap()
-  await expect(title(page)).toHaveText('Termul')
+  await expect(title(page)).toHaveText('Troupe')
 })
 
 // ---------------------------------------------------------------------------
@@ -1054,7 +1039,7 @@ test('attention pill counts the other chats that need you, opens the drawer, and
   // B is subtracted, so the pill reads 1 (singular).
   const bravo =
     'bravo second chat with a very long title that must truncate before it pushes any header control off the screen [PERMISSION]'
-  await startChatFromLauncher(page, bravo)
+  await startChatFromNewChat(page, bravo)
   await expect(approval).toBeVisible()
   const pill = pillIn('1 other chat needs you')
   await expect(pill).toBeVisible()
@@ -1073,7 +1058,7 @@ test('attention pill counts the other chats that need you, opens the drawer, and
   )
 
   // Chat C asks for nothing: both A and B are "other" chats that need you.
-  await startChatFromLauncher(page, 'charlie third chat')
+  await startChatFromNewChat(page, 'charlie third chat')
   const plural = pillIn('2 other chats need you')
   await expect(plural).toBeVisible()
   await expect(plural).toHaveText('2')

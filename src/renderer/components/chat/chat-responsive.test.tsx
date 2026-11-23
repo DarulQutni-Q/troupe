@@ -13,10 +13,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type { SessionConfigOption } from '@/lib/acp-api'
 import type { AcpSession } from '@/stores/acp-store'
-import { ChatErrorNotice } from './ChatErrorNotice'
 import { ChatInputBar } from './ChatInputBar'
 import { ChatMessageList } from './ChatMessageList'
-import { CHAT_GUTTER_X, NARROW_PANE_PX } from './chat-layout'
+import { CHAT_GUTTER_X, NARROW_PANE_PX, STATUS_RAIL_GUTTER_X } from './chat-layout'
 import type { TimelineItem } from './chat-timeline'
 import { PlanPanel } from './PlanPanel'
 
@@ -221,17 +220,42 @@ describe('Story 5.1 responsive chat layout', () => {
     expect(container.innerHTML).toContain('@[400px]:px-5')
   })
 
-  it('aligns notice / plan gutters with CHAT_GUTTER_X', () => {
-    const error = render(<ChatErrorNotice message="boom" onDismiss={vi.fn()} />)
-    expect(error.container.innerHTML).toContain('max-w-3xl')
-    expect(error.container.innerHTML).toContain('@[400px]:px-5')
-    error.unmount()
-
+  it('aligns the plan gutter with CHAT_GUTTER_X', () => {
+    // The error notice lives inside the composer card, so the card's own
+    // gutter places it.
     const plan = render(
       <PlanPanel entries={[{ content: 'step', status: 'pending', priority: 'low' }]} />
     )
     expect(plan.container.innerHTML).toContain('max-w-3xl')
     expect(plan.container.innerHTML).toContain('@[400px]:px-5')
+    plan.unmount()
+  })
+
+  it('keeps the thread and the plan clear of the status rail only in panes under 892px', () => {
+    // 748px column + 72px each side. A container query on the chat root, so a wide pane
+    // never gets it; it needs the root's data-status-rail="shown" (set while the rail shows).
+    expect(STATUS_RAIL_GUTTER_X).toContain('@max-[892px]:')
+    expect(STATUS_RAIL_GUTTER_X).toContain('in-data-[status-rail=shown]:')
+    expect(STATUS_RAIL_GUTTER_X).toContain('pr-[72px]')
+    // No transition: the gutter changes at once.
+    expect(STATUS_RAIL_GUTTER_X).not.toContain('transition')
+
+    const list = render(
+      <TooltipProvider>
+        <ChatMessageList
+          items={[timelineItem]}
+          sessionId="session-1"
+          showRunningIndicator={false}
+        />
+      </TooltipProvider>
+    )
+    expect(list.container.innerHTML).toContain(STATUS_RAIL_GUTTER_X)
+    list.unmount()
+
+    const plan = render(
+      <PlanPanel entries={[{ content: 'step', status: 'pending', priority: 'low' }]} />
+    )
+    expect(plan.container.innerHTML).toContain(STATUS_RAIL_GUTTER_X)
     plan.unmount()
   })
 
@@ -310,7 +334,12 @@ describe('Story 5.1 responsive chat layout', () => {
     expect(row2).toBeNull()
     expect(toolbar?.querySelector('[data-composer-toolbar-row="single"]')).toBeNull()
 
-    expect(within(row1 as HTMLElement).getByRole('button', { name: /^Agent$/ })).toBeInTheDocument()
+    // Composer V2: the mode chip sits right of + (left group), not in the
+    // scrolling model row.
+    expect(within(row1 as HTMLElement).queryByRole('button', { name: /^Agent$/ })).toBeNull()
+    expect(
+      within(toolbar as HTMLElement).getByRole('button', { name: /^Agent$/ })
+    ).toBeInTheDocument()
     expect(
       within(row1 as HTMLElement).getByRole('button', { name: /composer-2\.5/ })
     ).toBeInTheDocument()

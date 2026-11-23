@@ -1,14 +1,14 @@
 # Reconnect lab
 
-The lab measures how fast the web client recovers after a connection fault. It runs a real Chromium page against an isolated `termul-server`, through a TCP proxy that injects faults while a fake agent streams a turn.
+The lab measures how fast the web client recovers after a connection fault. It runs a real Chromium page against an isolated `troupe-server`, through a TCP proxy that injects faults while a fake agent streams a turn.
 
-For each fault, the lab reports the time until the chat socket is connected again, the time until streamed text grows again, how long "Reconnecting…" was visible, and how many sockets the page opened.
+For each fault, the lab reports the time until the chat socket is connected again, the time until streamed text grows again, how long "Reconnecting…" was visible and when it went away, how long the reopened socket waited on session resubscribes after it authenticated, how many session subscribes the client sent after the return and when the last one was answered, and how many sockets the page opened.
 
 ## Prerequisites
 
 - A web build: `bun run build:web`
 - The canvas bundle: `bun scripts/canvas/fetch-figcraft-bundle.mjs`
-- A release server binary: `cargo build --release --bin termul-server --features standalone-server`
+- A release server binary: `cargo build --release --bin troupe-server --features standalone-server`
 - Playwright Chromium, as for `tests/e2e`
 
 The lab binds only to `127.0.0.1` on free ports and uses a temporary state directory. It never touches a running server.
@@ -29,11 +29,13 @@ node tools/reconnect-lab/run.mjs --from tools/reconnect-lab/out   # re-analyse a
 | `--server-bin <path>` | Use this server binary. |
 | `--hide <method>` | How the tab is hidden: `override+pause` (default), `override` or `pause`. `override` flips `document.visibilityState`, and `pause` stops the page's JavaScript like a frozen tab. |
 | `--rtt <ms>` | Add this round-trip delay. The proxy holds each chunk for half of it in each direction. |
+| `--chats <n>` | For s9, open this many chats in total (default 6). |
+| `--switch-chat` | For s9, switch to the first chat right after the return, wait for its resubscribe, then switch back. Reports how long after the switch that chat resubscribed and which subscribe reply it was. |
 | `--out <dir>` | Write results here instead of `out/`. |
 | `--from <dir>` | Recompute the tables and timelines of a saved run. It rewrites the saved `.log` files. |
 | `--headed` | Show the browser window. |
 
-Each scenario writes its timeline to `out/<scenario>.run<N>.log` as it finishes. `out/results.json` and `out/server.log` are written after all runs finish.
+Each scenario writes its timeline to `out/<scenario>.run<N>.log` as it finishes, and a screenshot to `out/<scenario>.run<N>.error.png` when it fails. `out/results.json` and `out/server.log` are written after all runs finish.
 
 ## Scenarios
 
@@ -49,6 +51,7 @@ Each scenario writes its timeline to `out/<scenario>.run<N>.log` as it finishes.
 | s6 | stall-downstream | Hold server-to-browser bytes for 30 s. |
 | s7 | flap | Reset every connection every 45 s for 5 min. |
 | s8 | hidden-mid-handshake | Hide the tab while a reconnect handshake is in flight. |
+| s9 | many-chats-hidden-rst | As s2, with several chats open in tabs. Each earlier chat holds one finished 60,000-character reply, and the last chat, on screen, streams. |
 
 ## Compare two clients
 

@@ -2,12 +2,16 @@ import type { ShellInfo } from '@shared/types/ipc.types'
 import { useCallback, useEffect } from 'react'
 import type { NavigateFunction } from 'react-router-dom'
 import { toast } from 'sonner'
+import { openNewChatOnWorkspace } from '@/components/shell/use-new-chat'
 import { WORKTREE_EVENTS } from '@/hooks/use-worktree-shortcuts'
 import { getActiveWorkingCopy, reportUnresolvedWorkingCopy } from '@/lib/active-working-copy'
 import { launchAgentInPane } from '@/lib/agent-launch'
 import { BUILT_IN_AGENTS } from '@/lib/agents/agent-registry'
 import { newUserBrowserTabId } from '@/lib/browser-api'
+import { logFrontendError } from '@/lib/log-api'
+import { leaveQuickChatView } from '@/lib/no-project-chat'
 import { openProjectCanvas } from '@/lib/open-project-canvas'
+import { committedPaneProject } from '@/lib/pane-target'
 import { openTerminalFromProfile, spawnTerminalInPane } from '@/lib/terminal-spawn'
 import { getDefaultCwdForProject } from '@/lib/worktree-context'
 import { useDefaultShell } from '@/stores/app-settings-store'
@@ -15,6 +19,9 @@ import { useBrowserSessionStore } from '@/stores/browser-session-store'
 import { useWorkspaceStore } from '@/stores/workspace-store'
 import type { Project } from '@/types/project'
 import type { TerminalProfile } from '@/types/settings'
+
+/** Log source: a project tab opener closed the quick chat view. */
+const SOURCE = 'tab-openers'
 
 interface UseTabOpenersOptions {
   activeProject: Project | undefined
@@ -38,7 +45,7 @@ function resolveWorkingCopyCwd(projectId: string, action: string): string | null
   if (wc?.state === 'unresolved') {
     reportUnresolvedWorkingCopy(projectId, wc)
     toast.error('This worktree is no longer available', {
-      description: `${action} is blocked while Termul refreshes the worktree list.`
+      description: `${action} is blocked while Troupe refreshes the worktree list.`
     })
     return null
   }
@@ -66,6 +73,7 @@ export function useTabOpeners({
   const handleOpenCanvas = useCallback(() => {
     setIsCommandPaletteOpen(false)
     if (!activeProjectId) return
+    leaveQuickChatView(SOURCE)
     const projectPath = activeProject?.path
     if (!projectPath) {
       toast.error('The active project has no root folder to search for a .figcraft document.')
@@ -97,6 +105,7 @@ export function useTabOpeners({
   const handleLaunchAgent = useCallback(async () => {
     const paneId = useWorkspaceStore.getState().activePaneId
     if (!paneId || !activeProjectId) return
+    leaveQuickChatView(SOURCE)
     const cwd = getDefaultCwdForProject(activeProjectId)
     const result = await launchAgentInPane(
       paneId,
@@ -117,18 +126,32 @@ export function useTabOpeners({
     (paneId: string | undefined, shell?: ShellInfo) => {
       const targetPaneId = paneId ?? useWorkspaceStore.getState().activePaneId
       if (!targetPaneId) return
+      // During a slow project switch the visible pane still belongs to the
+      // previous project: a terminal spawned for the selected project would
+      // land in a pane that filters it out. Wait for the switch instead.
+      if (committedPaneProject(targetPaneId) !== activeProjectId) {
+        void logFrontendError({
+          level: 'info',
+          source: SOURCE,
+          message: `New terminal skipped in pane ${targetPaneId}: project ${activeProjectId} is not on screen yet`
+        })
+        toast.info('The project is still opening. Try again in a moment.')
+        return
+      }
+      leaveQuickChatView(SOURCE)
       if (shell) {
         handleCreateTerminalInPane(targetPaneId, shell.path)
       } else {
         handleCreateTerminalInPane(targetPaneId)
       }
     },
-    [handleCreateTerminalInPane]
+    [handleCreateTerminalInPane, activeProjectId]
   )
 
   const handleOpenTerminalProfile = useCallback(
     async (profile: TerminalProfile) => {
       if (!activeProjectId) return
+      leaveQuickChatView(SOURCE)
       const cwd = profile.cwd || resolveWorkingCopyCwd(activeProjectId, 'Opening a terminal')
       if (cwd === null) return
       const outcome = await openTerminalFromProfile(activeProjectId, profile, {
@@ -149,27 +172,18 @@ export function useTabOpeners({
   const handleNewBrowserTab = useCallback((paneId?: string) => {
     const resolvedPaneId = paneId ?? useWorkspaceStore.getState().activePaneId
     if (resolvedPaneId) {
+      leaveQuickChatView(SOURCE)
       const browserTabId = newUserBrowserTabId()
       useBrowserSessionStore.getState().createTab(browserTabId)
       useWorkspaceStore.getState().addBrowserTab(browserTabId, resolvedPaneId)
     }
   }, [])
 
-  const handleOpenAgentChat = useCallback(() => {
-    if (!activeProject?.path) return
-    const open = (): void => {
-      const paneId = useWorkspaceStore.getState().activePaneId
-      if (paneId) useWorkspaceStore.getState().showAgentLauncher(paneId)
-    }
-    // The launcher overlay only renders on the workspace route; navigate there
-    // first when invoked from a child route (e.g. preferences/settings).
-    if (pathname !== '/') {
-      navigate('/')
-      requestAnimationFrame(open)
-    } else {
-      open()
-    }
-  }, [activeProject?.path, pathname, navigate])
+  // New chat (menus, the phone header and drawer). No project opens a quick chat.
+  const handleOpenAgentChat = useCallback(
+    () => openNewChatOnWorkspace(pathname, navigate, 'menu'),
+    [pathname, navigate]
+  )
 
   const handleAddGitTab = useCallback(
     (paneId?: string) => {
@@ -177,6 +191,7 @@ export function useTabOpeners({
       if (resolvedPaneId && activeProject?.path) {
         const cwd = resolveWorkingCopyCwd(activeProjectId, 'Opening Git')
         if (!cwd) return
+        leaveQuickChatView(SOURCE)
         // Reuse-by-(type, cwd): activating the existing tab instead of
         // minting `git-${randomUUID()}` per click (QA: 4 clicks → 4 tabs).
         useWorkspaceStore.getState().addGitTab(cwd, resolvedPaneId)
@@ -202,6 +217,7 @@ export function useTabOpeners({
         return
       }
       // Same path as the New terminal action: project/app default shell + env.
+      leaveQuickChatView(SOURCE)
       void handleCreateTerminalInPane(paneId, undefined, cwd)
     }
     window.addEventListener(WORKTREE_EVENTS.OPEN_TERMINAL, onOpenTerminal)
@@ -225,6 +241,7 @@ export function useTabOpeners({
       // reflects the full repo, not a transient worktree binding.
       const resolvedCwd = getDefaultCwdForProject(activeProjectId)
       if (!resolvedCwd) return
+      leaveQuickChatView(SOURCE)
       // Reuse-by-(type, cwd): repeated opens activate the existing
       // git-history tab for this repo instead of stacking duplicates.
       useWorkspaceStore.getState().addGitHistoryTab(resolvedCwd, resolvedPaneId)

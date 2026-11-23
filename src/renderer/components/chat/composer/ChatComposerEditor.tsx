@@ -79,6 +79,10 @@ export interface ChatComposerEditorProps {
   maxHeight?: number
   className?: string
   editorClassName?: string
+  /** Label of the on-screen keyboard's return key. `send` (default) where
+   *  Enter sends; `enter` on a phone, where Enter adds a new line. Read once
+   *  when the editor mounts. */
+  enterKeyHint?: 'send' | 'enter'
 }
 
 const KEYMAP_KEY = new PluginKey('chatComposerKeymap')
@@ -246,7 +250,8 @@ export function ChatComposerEditor({
   minHeight = 26,
   maxHeight = 160,
   className,
-  editorClassName
+  editorClassName,
+  enterKeyHint = 'send'
 }: ChatComposerEditorProps): React.JSX.Element {
   const onValueChangeRef = useRef(onValueChange)
   const onCaretChangeRef = useRef(onCaretChange)
@@ -320,10 +325,10 @@ export function ChatComposerEditor({
           'aria-multiline': 'true',
           role: 'textbox',
           'data-composer-editor': 'true',
-          // Mobile OSK affordances (Story 5.3): `inputMode=text` + `enterKeyHint=send`
-          // so iOS Safari shows the send key affordance on the on-screen keyboard.
+          // Mobile OSK affordances (Story 5.3): `inputMode=text` + the host's
+          // return-key label (`send`, or `enter` on a phone where Enter adds a line).
           inputmode: 'text',
-          enterkeyhint: 'send',
+          enterkeyhint: enterKeyHint,
           ...(ariaLabel ? { 'aria-label': ariaLabel } : {}),
           class: cn(
             // 16px base: floor for iOS Safari — sub-16px inputs zoom on focus.
@@ -395,6 +400,10 @@ export function ChatComposerEditor({
   // `editor.view.focus()` is synchronous (ProseMirror), so — unlike Tiptap's
   // `setTimeout(0)` autofocus — it establishes focus inside the `act`-flushed
   // effect phase, before the test's first popover click. Non-critical on error.
+  // A composer mounted read-only (its agent still resolving) cannot take focus
+  // yet: it takes it when it first turns editable, unless the user is typing
+  // in another field by then.
+  const focusWhenEditableRef = useRef(autoFocus && disabled)
   useEffect(() => {
     if (!autoFocus || !editor || editor.isDestroyed) return
     try {
@@ -498,6 +507,14 @@ export function ChatComposerEditor({
   useEffect(() => {
     if (!editor) return
     editor.setEditable(!disabled)
+    if (disabled || !focusWhenEditableRef.current || editor.isDestroyed) return
+    focusWhenEditableRef.current = false
+    const active = document.activeElement
+    const typingElsewhere =
+      active instanceof HTMLInputElement ||
+      active instanceof HTMLTextAreaElement ||
+      (active instanceof HTMLElement && active.isContentEditable)
+    if (!typingElsewhere) editor.view.focus()
   }, [editor, disabled])
 
   return (

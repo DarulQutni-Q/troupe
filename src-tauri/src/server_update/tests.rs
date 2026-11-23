@@ -224,15 +224,15 @@ fn channel_parse_recognizes_known_values() {
 fn channel_manifest_urls_match_hosting_scheme() {
     assert_eq!(
         UpdateChannel::Stable.manifest_url(),
-        "https://github.com/gnoviawan/termul/releases/latest/download/latest-stable.json"
+        "https://github.com/gnoviawan/troupe/releases/latest/download/latest-stable.json"
     );
     assert_eq!(
         UpdateChannel::Insider.manifest_url(),
-        "https://github.com/gnoviawan/termul/releases/download/insider/latest-insider.json"
+        "https://github.com/gnoviawan/troupe/releases/download/insider/latest-insider.json"
     );
     assert_eq!(
         UpdateChannel::Nightly.manifest_url(),
-        "https://github.com/gnoviawan/termul/releases/download/nightly/latest-nightly.json"
+        "https://github.com/gnoviawan/troupe/releases/download/nightly/latest-nightly.json"
     );
 }
 
@@ -241,7 +241,7 @@ fn channel_manifest_urls_match_hosting_scheme() {
 #[test]
 fn validate_binary_url_accepts_github_origin() {
     validate_binary_url(
-        "https://github.com/gnoviawan/termul/releases/download/nightly/termul-server",
+        "https://github.com/gnoviawan/termul/releases/download/nightly/troupe-server",
     )
     .expect("termul github origin accepted");
 }
@@ -249,9 +249,51 @@ fn validate_binary_url_accepts_github_origin() {
 #[test]
 fn validate_binary_url_accepts_aarch64_asset() {
     validate_binary_url(
-        "https://github.com/gnoviawan/termul/releases/download/nightly/termul-server-linux-aarch64",
+        "https://github.com/gnoviawan/termul/releases/download/nightly/troupe-server-linux-aarch64",
     )
     .expect("aarch64 asset on the termul github origin accepted");
+}
+
+#[test]
+fn validate_binary_url_accepts_the_renamed_repo() {
+    validate_binary_url("https://github.com/gnoviawan/troupe/releases/download/v0.5.1/troupe-server")
+        .expect("troupe github origin accepted");
+}
+
+#[test]
+fn validate_binary_url_rejects_a_lookalike_repo() {
+    let err = validate_binary_url("https://github.com/gnoviawan/troupe-evil/troupe-server")
+        .expect_err("lookalike repo rejected");
+    assert!(
+        err.to_string().contains("outside the allowed origins"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn validate_binary_url_rejects_dot_segments_that_leave_the_repo() {
+    for url in [
+        "https://github.com/gnoviawan/troupe/../../attacker/repo/troupe-server",
+        "https://github.com/gnoviawan/troupe/%2e%2e/%2E%2E/attacker/repo/troupe-server",
+        "https://github.com/gnoviawan/termul/../../attacker/repo/troupe-server",
+        "https://github.com/gnoviawan/termul/%2e%2e/%2E%2E/attacker/repo/troupe-server",
+    ] {
+        let err = validate_binary_url(url).expect_err("dot segments rejected");
+        assert!(
+            err.to_string().contains("outside the allowed origins"),
+            "unexpected error for {url}: {err}"
+        );
+    }
+}
+
+#[test]
+fn validate_binary_url_rejects_an_unparseable_url() {
+    let err = validate_binary_url("https://github.com:notaport/gnoviawan/troupe/troupe-server")
+        .expect_err("unparseable url rejected");
+    assert!(
+        err.to_string().contains("outside the allowed origins"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]
@@ -265,20 +307,20 @@ fn server_platform_key_matches_target_arch() {
 
 #[test]
 fn validate_binary_url_rejects_foreign_origin() {
-    let err = validate_binary_url("https://example.com/termul-server")
+    let err = validate_binary_url("https://example.com/troupe-server")
         .expect_err("foreign origin rejected");
     assert!(
-        err.to_string().contains("outside the allowed origin"),
+        err.to_string().contains("outside the allowed origins"),
         "unexpected error: {err}"
     );
 }
 
 #[test]
 fn validate_binary_url_rejects_plain_http() {
-    let err = validate_binary_url("http://github.com/gnoviawan/termul/x")
+    let err = validate_binary_url("http://github.com/gnoviawan/troupe/x")
         .expect_err("plain http rejected");
     assert!(
-        err.to_string().contains("outside the allowed origin"),
+        err.to_string().contains("outside the allowed origins"),
         "unexpected error: {err}"
     );
 }
@@ -286,7 +328,7 @@ fn validate_binary_url_rejects_plain_http() {
 // --- swap decision: don't swap on verify failure ---
 
 fn write_current_binary(dir: &Path, contents: &[u8]) -> PathBuf {
-    let bin = dir.join("termul-server");
+    let bin = dir.join("troupe-server");
     fs::write(&bin, contents).expect("write current binary");
     make_executable(&bin, None).expect("chmod current binary");
     bin

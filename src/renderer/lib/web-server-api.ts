@@ -52,7 +52,6 @@ import {
   networkError,
   parseBody,
   postJson,
-  putJson,
   runIpcCommand,
   serverBase,
   worktreeCreateKey
@@ -451,21 +450,6 @@ export const webServerShell = {
 }
 
 /**
- * MCP registry persistence shared by standalone and desktop-hosted web clients.
- * The host keeps one `.termul/mcp-servers.json` per project, so every call names
- * the `projectId` (an unknown or archived project is refused `NOT_FOUND`).
- */
-export const webServerMcpServers = {
-  async get(projectId: string): Promise<IpcResult<unknown>> {
-    return getJson<unknown>(`/mcp-servers?projectId=${encodeURIComponent(projectId)}`)
-  },
-
-  async put(projectId: string, registry: unknown[]): Promise<IpcResult<void>> {
-    return putJson<void>(`/mcp-servers?projectId=${encodeURIComponent(projectId)}`, registry)
-  }
-}
-
-/**
  * Agent skills routed to `termul-server` (`/skills`). CAP-2 parity: each method
  * mirrors a desktop `#[tauri::command]` skills handler and returns unwrapped
  * data, throwing on `!res.success` so the renderer facade (`skills-api.ts`)
@@ -768,9 +752,22 @@ export const webServerMcpOAuth = {
     return postJson('/mcp-servers/oauth/start', { projectId, serverUrl })
   },
 
+  /**
+   * Finish a flow with the loopback redirect address the user pasted back
+   * (the browser that signed in could not reach the host). The host matches
+   * it to its pending flow by `state` and exchanges the code.
+   */
+  async complete(projectId: string, callbackUrl: string): Promise<IpcResult<void>> {
+    return postJson('/mcp-servers/oauth/complete', { projectId, callbackUrl })
+  },
+
   /** Check whether a stored OAuth token exists for a server URL. */
-  async status(projectId: string, serverUrl: string): Promise<IpcResult<{ hasToken: boolean }>> {
-    return postJson('/mcp-servers/oauth/status', { projectId, serverUrl })
+  async status(
+    projectId: string,
+    serverUrl: string,
+    signal?: AbortSignal
+  ): Promise<IpcResult<{ hasToken: boolean }>> {
+    return postJson('/mcp-servers/oauth/status', { projectId, serverUrl }, signal)
   },
 
   /** Delete the stored OAuth token for a server URL. */

@@ -12,7 +12,8 @@ use crate::acp::manager::{ApiKey, AuthCredential, GatewayAuthInput};
 // emitted by `AcpManager` (via `fan_out` → `WsRelaySink`) flow back to the
 // browser automatically — these handlers only own the request/reply half.
 
-/// `spawn_agent` → `AcpManager::spawn(config)`. Request payload `{ config }`.
+/// `spawn_agent` → `AcpManager::spawn(config)`. Request payload
+/// `{ config, projectId?, sessionId? }`.
 /// Reply payload = the [`SpawnOutcome`] (camelCase:
 /// `agentId`/`capabilities`/`authMethods`/`stableNamespace?`) — the
 /// authoritative spawn metadata so the renderer populates the store
@@ -25,6 +26,10 @@ pub(super) struct SpawnAgentPayload {
     /// Selects the Claude Account of a managed Claude agent.
     #[serde(default)]
     project_id: Option<String>,
+    /// The existing chat the agent opens; its own Claude Account wins over
+    /// the Project's.
+    #[serde(default)]
+    session_id: Option<crate::acp::SessionId>,
 }
 
 pub(super) async fn handle_spawn_agent(
@@ -49,7 +54,16 @@ pub(super) async fn handle_spawn_agent(
     }
     let config = parsed.config.clone();
     match acp
-        .spawn_with_command_id(parsed.config, command_id, parsed.project_id)
+        .spawn_with_command_id(
+            parsed.config,
+            command_id,
+            crate::acp::SpawnScope {
+                project_id: parsed.project_id,
+                chat: parsed
+                    .session_id
+                    .map_or(crate::acp::LaunchChat::None, crate::acp::LaunchChat::Existing),
+            },
+        )
         .await
     {
         Ok(outcome) => {
@@ -314,7 +328,7 @@ pub(super) async fn handle_install_acp_agent(
 /// `pi_terminal_login`) on the host where the agent process runs. Distinct
 /// from the WS connection `authenticate` token gate — this is the agent
 /// method, not the relay handshake. Calls `AcpManager::authenticate`. The provider owns
-/// the login UX (often opens its own browser); Termul never invents a
+/// the login UX (often opens its own browser); Troupe never invents a
 /// redirect URL or stores credentials. `gateway` and `apiKey` are the two
 /// things a sign-in can carry; at most one may be sent.
 #[derive(Deserialize)]

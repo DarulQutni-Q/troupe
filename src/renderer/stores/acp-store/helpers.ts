@@ -6,6 +6,7 @@
 
 import type { BugReportSubmitRequest } from '@shared/types/bug-report.types'
 import { UNASSIGNED_PROJECT_ID } from '@shared/types/web-projects.types'
+import { runningBackgroundCommands } from '@/components/chat/background-commands'
 import {
   flattenConfigOptionValues,
   MODEL_CATEGORY,
@@ -34,10 +35,10 @@ import {
 } from '@/lib/acp-api'
 import {
   type AgentSwitchRecord,
+  isUntitledTitle,
   maxPayloadSeq,
   type PersistedTurnError,
-  type SessionIndexEntry,
-  UNTITLED_HOST_TITLE
+  type SessionIndexEntry
 } from '@/lib/acp-history-persistence'
 import { getAcpTransport } from '@/lib/acp-transport'
 import { agentConfigIdentityKey } from '@/lib/agents/acp-config-identity'
@@ -45,9 +46,11 @@ import { type AgentAuthPolicy, agentPolicyForConfigId } from '@/lib/agents/acp-r
 import {
   classifySetupError,
   claudeAccountSignedOutMessage,
+  codexAccountSignedOutMessage,
   describeProviderFailure,
   isAgentAuthRequiredError,
-  isClaudeAccountSignedOutError
+  isClaudeAccountSignedOutError,
+  isCodexAccountSignedOutError
 } from '@/lib/agents/acp-spawn-errors'
 import { serializeSelectionContexts } from '@/lib/composer/selection-context'
 import { restoreConversationLabels, stripConversationEnvelopes } from '@/lib/conversation-envelope'
@@ -602,7 +605,13 @@ export function withSessionResumeError(
       ...session,
       replaying: null,
       ...plainLastError(
-        `${RESUME_FAILED_PREFIX}${isClaudeAccountSignedOutError(err) ? claudeAccountSignedOutMessage(err) : String(err)}`
+        `${RESUME_FAILED_PREFIX}${
+          isClaudeAccountSignedOutError(err)
+            ? claudeAccountSignedOutMessage(err)
+            : isCodexAccountSignedOutError(err)
+              ? codexAccountSignedOutMessage(err)
+              : String(err)
+        }`
       )
     }
   }
@@ -756,8 +765,8 @@ export function appendPlanSnapshot(
   // CommonMark requires the opening ``` of a fenced code block to be at the
   // start of a line. `blocksToText` joins text blocks with '', so a preceding
   // prose block that does not end in '\n' would glue the fence opener onto the
-  // prose (e.g. "working on it```termul-plan") and Streamdown would not recognize
-  // the fence — the snapshot would render as plain text instead of a PlanPanel.
+  // prose (e.g. "working on it```termul-plan") and a later rehydrate would not
+  // recognize the fence. The fence is stored for the sticky panel only.
   // `blocksToText` skips non-text blocks, so the block that ends up immediately
   // before the fence in the joined text is the LAST non-empty text block —
   // search backward for it (not just the last array element, which may be a
@@ -1106,10 +1115,28 @@ export function mergeSessionIndexEntries(
             // A projection made after the agent left the live map has no
             // config; the host's durable attribution must survive the spread.
             agentConfigId: entry.agentConfigId ?? hostEntry.agentConfigId,
+            // A local projection made before the host stamp landed must not
+            // erase the host's durable chain edge — and once the host has
+            // one it wins, so a stale local edge cannot hide a host
+            // correction. `undefined` still falls through to the local stamp.
+            continuedFrom: hostEntry.continuedFrom ?? entry.continuedFrom,
+            startedBy: hostEntry.startedBy ?? entry.startedBy,
+            // A newer local row that forgot `kind` must not hide a quick chat.
+            kind: entry.kind ?? hostEntry.kind,
             turnActive: mergeTurnActive(entry.turnActive, hostEntry.turnActive, true),
             // The host stamps `created_at` once at registration; a local
             // projection re-stamped by a reopen must not override it.
-            createdAt: keepCreatedAt(hostEntry.createdAt, entry.createdAt)
+            createdAt: keepCreatedAt(hostEntry.createdAt, entry.createdAt),
+            // A newer local row must not downgrade a real host-derived title to
+            // the `Untitled Chat` placeholder (issue #1798): a watching device
+            // re-stamps the stale placeholder at turn end with a fresh
+            // `lastActivityAt`, which would otherwise beat the host's derived
+            // title on every refetch. Keep the host title when ours is a
+            // placeholder and theirs is real; a real local rename still wins.
+            title:
+              isUntitledTitle(entry.title) && !isUntitledTitle(hostEntry.title)
+                ? hostEntry.title
+                : entry.title
           }
         }
       } else {
@@ -1117,14 +1144,19 @@ export function mergeSessionIndexEntries(
         // and the host cannot know yet: the host titles a chat only once its
         // first prompt is durable (a promoted warm session registers
         // untitled), and its index omits `turnActive`.
-        const keepTitle = hostEntry.title === UNTITLED_HOST_TITLE
+        const keepTitle = isUntitledTitle(hostEntry.title)
         const keepTurn = entry.turnActive === true && hostEntry.turnActive === undefined
+        // A locally-stamped/healed chain edge (switch just ran, or the
+        // payload-install backfill covered a pre-feature chain) survives a
+        // newer host row that predates the host's own stamp landing.
+        const keepEdge = entry.continuedFrom !== undefined && hostEntry.continuedFrom === undefined
         const idx = merged.findIndex((e) => e.id === entry.id)
-        if ((keepTitle || keepTurn) && idx >= 0) {
+        if ((keepTitle || keepTurn || keepEdge) && idx >= 0) {
           merged[idx] = {
             ...hostEntry,
             ...(keepTitle ? { title: entry.title } : {}),
-            ...(keepTurn ? { turnActive: true } : {})
+            ...(keepTurn ? { turnActive: true } : {}),
+            ...(keepEdge ? { continuedFrom: entry.continuedFrom } : {})
           }
         }
       }
@@ -1141,6 +1173,44 @@ export function mergeSessionIndexEntries(
   return merged.map((e) =>
     e.title.includes('# Conversation handoff') ? { ...e, title: normalizeIndexTitle(e.title) } : e
   )
+}
+
+/**
+ * The title a live session should show when it may still hold the
+ * `Untitled Chat` placeholder (issue #1808). A watching device can install a
+ * chat started on another device before the host has titled it (the payload
+ * then carries the placeholder); the host's later title only reaches the index
+ * row, while the tab, phone header and drawer read `session.title`. A
+ * placeholder gives way to a real index title; any other title (including a
+ * user rename) and a `null` title are kept as they are.
+ */
+export function preferIndexTitle(
+  title: string | null,
+  entries: readonly SessionIndexEntry[],
+  sessionId: SessionId
+): string | null {
+  if (!isUntitledTitle(title)) return title
+  const indexTitle = entries.find((e) => e.id === sessionId)?.title
+  return indexTitle && !isUntitledTitle(indexTitle) ? indexTitle : title
+}
+
+/**
+ * Give every live session that still shows a placeholder title the real title
+ * its index row now carries (issue #1808). Returns `sessions` itself when
+ * nothing changes, so subscribers do not re-render.
+ */
+export function adoptIndexTitles(
+  sessions: Record<SessionId, AcpSession>,
+  entries: readonly SessionIndexEntry[]
+): Record<SessionId, AcpSession> {
+  let next: Record<SessionId, AcpSession> | null = null
+  for (const [id, session] of Object.entries(sessions)) {
+    const title = preferIndexTitle(session.title, entries, id)
+    if (title === session.title) continue
+    next ??= { ...sessions }
+    next[id] = { ...session, title }
+  }
+  return next ?? sessions
 }
 
 /**
@@ -1918,17 +1988,25 @@ export function dropEphemeralSessionState(
   }
 }
 
-/** Checked last, so a caller can tell that nothing else blocks. */
+/** Checked last with the commands reason, so a caller can tell that nothing else blocks. */
 export const BACKGROUND_SUBAGENTS_BLOCK_REASON =
   'background subagents are still running — switching would stop them'
+
+export const BACKGROUND_COMMANDS_BLOCK_REASON =
+  'commands are still running in the background — switching would stop them'
+
+/** Whether only background work (subagents or commands) blocks the switch. */
+export function isBackgroundWorkBlock(reason: string | null): boolean {
+  return reason === BACKGROUND_SUBAGENTS_BLOCK_REASON || reason === BACKGROUND_COMMANDS_BLOCK_REASON
+}
 
 /**
  * Story 3 (spec-in-chat-agent-switch): the busy gate for a switch. True when
  * the old session has an active turn, an open turn, queued prompts, or a
  * pending permission/question — the "never kill a live turn" rule (CAP-4/CAP-6).
  * A pending browser-auth dialog also counts (the agent is waiting on the user),
- * and so do background subagents that outlive the turn: a new agent process
- * would kill them.
+ * and so do background subagents and commands that outlive the turn: a new
+ * agent process would kill them.
  */
 export function switchBlockedReason(
   state: Pick<
@@ -1977,6 +2055,7 @@ export function switchBlockedReason(
   ) {
     return BACKGROUND_SUBAGENTS_BLOCK_REASON
   }
+  if (runningBackgroundCommands(session) > 0) return BACKGROUND_COMMANDS_BLOCK_REASON
   return null
 }
 
@@ -2088,6 +2167,34 @@ export function appendOrderedAgents(
     agents: [...list, toConfigId]
   }
   return [entry, ...state.sessionIndex.filter((e) => e.id !== sessionId)]
+}
+
+/**
+ * CAP-8 (spec-in-chat-agent-switch): stamp the durable chain edge
+ * `target.continuedFrom = source` on the switch TARGET's index entry. The
+ * host writes the same edge (`note_continued_from`) after flushing the
+ * marker, but the renderer stamp closes the window where the host's index
+ * hasn't landed yet — and self-heals rows whose host stamp raced a stale
+ * projection. Idempotent: an already-set edge wins (the FIRST durable
+ * switch is authoritative; a corrupted or replayed later value must not
+ * repoint the chain). A missing target entry is a no-op — the fold reads
+ * only what exists, and the host index is the fallback authority. A source
+ * in another project is refused, matching the host's `note_continued_from`.
+ */
+export function stampSwitchContinuation(
+  state: Pick<AcpState, 'sessionIndex'>,
+  targetSessionId: SessionId,
+  sourceSessionId: SessionId
+): SessionIndexEntry[] {
+  if (targetSessionId === sourceSessionId) return state.sessionIndex
+  const existing = state.sessionIndex.find((e) => e.id === targetSessionId)
+  if (!existing || existing.continuedFrom !== undefined) return state.sessionIndex
+  // A switch creates its target in the source's project; an edge naming a
+  // session elsewhere (a stray marker) would fold another project's chat.
+  const source = state.sessionIndex.find((e) => e.id === sourceSessionId)
+  if (source !== undefined && source.projectId !== existing.projectId) return state.sessionIndex
+  const entry: SessionIndexEntry = { ...existing, continuedFrom: sourceSessionId }
+  return [entry, ...state.sessionIndex.filter((e) => e.id !== targetSessionId)]
 }
 
 /**

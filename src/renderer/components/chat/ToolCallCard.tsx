@@ -20,17 +20,21 @@ import {
 import { CollapseExpandMotion } from '@/components/ui/collapse-expand-motion'
 import { IconActionButton } from '@/components/ui/icon-action-button'
 import { ShimmerText } from '@/components/ui/shimmer-text'
+import { Spinner } from '@/components/ui/spinner'
 import type { ContentBlock, DiffContent, ToolCall, ToolCallContent } from '@/lib/acp-api'
 import { resolveDiffLanguage } from '@/lib/diff-highlight'
 import { type FilePathResolutionContext, openFilePathFromTerminal } from '@/lib/file-path-links'
 import { logFrontendError } from '@/lib/log-api'
 import { cn } from '@/lib/utils'
+import { useToolCallReveal } from '@/stores/tool-call-reveal-store'
 import { MediaBlocks } from './ChatMessage'
 import { CHAT_ROW_ICON, CHAT_ROW_MIN_H } from './chat-layout'
 import { CHEVRON_TRANSITION } from './chat-motion'
 import { DiffPreview } from './DiffPreview'
 import { EditDiffBlock } from './EditDiffBlock'
 import { HighlightedCode } from './highlighted-code'
+import { useSubagentSurface } from './subagent-surface-context'
+import { BackgroundCommandElapsed } from './subagent-time'
 import { type ToolIconName, toolIconName } from './tool-call-format'
 import {
   describeToolCall,
@@ -40,6 +44,7 @@ import {
   readableOutput,
   toolCallPath
 } from './tool-call-summary'
+import { useBackgroundCommand } from './use-background-command'
 
 type ToolIconComponent = React.ComponentType<{ size?: number | string; className?: string }>
 
@@ -127,7 +132,7 @@ export function renderContentItem(
           {typeof exitCode === 'number' ? ` · exit ${exitCode}` : ''}
         </div>
         {output ? (
-          <pre className="scroller-thin max-h-72 overflow-auto whitespace-pre-wrap break-words rounded border border-border/40 bg-background/60 px-2 py-1.5 font-mono text-xs leading-relaxed text-foreground/90">
+          <pre className="scroller-thin max-h-72 overflow-auto overscroll-contain whitespace-pre-wrap break-words rounded border border-border/40 bg-background/60 px-2 py-1.5 font-mono text-xs leading-relaxed text-foreground/90">
             {output}
           </pre>
         ) : null}
@@ -148,6 +153,9 @@ export function renderContentItem(
   return null
 }
 
+/** Long enough for the turn and work run around a revealed card to expand. */
+const REVEAL_SCROLL_DELAY_MS = 250
+
 /** Human-friendly elapsed time for a settled tool call. */
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${Math.max(0, Math.round(ms))}ms`
@@ -156,7 +164,7 @@ function formatDuration(ms: number): string {
 }
 
 const RESULT_BLOCK_CLASS =
-  'scroller-thin max-h-72 overflow-auto whitespace-pre-wrap break-words rounded border border-border/40 bg-background/60 px-2 py-1.5 font-mono text-xs leading-relaxed text-foreground/90'
+  'scroller-thin max-h-72 overflow-auto overscroll-contain whitespace-pre-wrap break-words rounded border border-border/40 bg-background/60 px-2 py-1.5 font-mono text-xs leading-relaxed text-foreground/90'
 
 /**
  * Readable tool result text (e.g. command output, search hits, a diff/patch).
@@ -241,6 +249,24 @@ function ToolCallCardComponent({
 
   const startedAt = typeof toolCall.timestamp === 'number' ? toolCall.timestamp : null
   const durationMs = endedAt != null && startedAt != null ? endedAt - startedAt : null
+  // The tool call finished or its turn ended, but its command still runs.
+  const background = useBackgroundCommand(toolCall.toolCallId)
+  const inBackground = background?.state === 'running' ? background : null
+
+  // The status pill's Background row shows this card: open it and scroll to it
+  // once the turn and work run around it have expanded.
+  const rowRef = useRef<HTMLDivElement>(null)
+  const { sessionId } = useSubagentSurface()
+  const revealNonce = useToolCallReveal(sessionId, (id) => id === toolCall.toolCallId)
+  useEffect(() => {
+    if (revealNonce === null) return
+    if (hasDetail) setOpen(true)
+    const timer = setTimeout(
+      () => rowRef.current?.scrollIntoView?.({ block: 'center' }),
+      REVEAL_SCROLL_DELAY_MS
+    )
+    return () => clearTimeout(timer)
+  }, [revealNonce, hasDetail])
 
   const { verb, primary, detail, diffStat } = describeToolCall(toolCall)
   const language = readLanguage(toolCall)
@@ -299,7 +325,15 @@ function ToolCallCardComponent({
   // inside the disclosure <button> is invalid HTML, so they stay at the row
   // level. Visual order (icon, label, meta/diffStat, duration, alert,
   // chevron, open-file) is preserved by the flex container below.
-  const rowSummary = (
+  const rowSummary = inBackground ? (
+    <>
+      <Spinner size={13} decorative className="shrink-0 text-muted-foreground" />
+      <span className="min-w-0 flex-1 truncate" title={inBackground.command ?? label}>
+        <span className="text-muted-foreground">Running in background </span>
+        <span className="font-medium text-foreground">{inBackground.command ?? primary}</span>
+      </span>
+    </>
+  ) : (
     <>
       <Icon
         size={13}
@@ -354,8 +388,10 @@ function ToolCallCardComponent({
         </div>
       ) : null}
       <div
-        aria-busy={running || undefined}
+        ref={rowRef}
+        aria-busy={running || inBackground !== null || undefined}
         data-status={status}
+        data-background={inBackground ? 'running' : undefined}
         className="group/tool relative w-full overflow-hidden"
       >
         <div>
@@ -365,9 +401,8 @@ function ToolCallCardComponent({
                 type="button"
                 onClick={() => setOpen((v) => !v)}
                 aria-expanded={open}
-                data-press-feedback="off"
                 className={cn(
-                  'flex min-w-0 flex-1 items-center gap-2 text-left text-xs outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus-ring',
+                  'flex min-w-0 flex-1 items-center gap-2 text-left text-xs outline-none transition-colors hover:text-foreground active:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus-ring',
                   CHAT_ROW_MIN_H
                 )}
               >
@@ -378,10 +413,14 @@ function ToolCallCardComponent({
                 {rowSummary}
               </div>
             )}
-            {durationMs != null && (
-              <span className="min-w-[4.5ch] shrink-0 text-right text-2xs tabular-nums text-muted-foreground">
-                {formatDuration(durationMs)}
-              </span>
+            {background ? (
+              <BackgroundCommandElapsed command={background} className="min-w-[4.5ch] text-2xs" />
+            ) : (
+              durationMs != null && (
+                <span className="min-w-[4.5ch] shrink-0 text-right text-2xs tabular-nums text-muted-foreground">
+                  {formatDuration(durationMs)}
+                </span>
+              )
             )}
             {failed && <AlertCircle size={12} className="shrink-0 text-destructive" />}
             {hasDetail && (

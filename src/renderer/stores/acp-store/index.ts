@@ -49,6 +49,7 @@ import {
   type AskUserQuestionEvent,
   type AvailableCommand,
   acpApi,
+  type BackgroundCommandsEvent,
   type BrowserAgentTabEvent,
   type BrowserOpenRequestEvent,
   type BrowserStopChangedEvent,
@@ -78,14 +79,20 @@ import {
 } from '@/lib/acp-api'
 import { AcpConnectionCoordinator, type AcpRecovery } from '@/lib/acp-connection'
 import { getAcpTransport, isTransientAcpTransportError } from '@/lib/acp-transport'
+import { canonicalAgentId } from '@/lib/agents/agent-aliases'
 import { splitReadOnlyGuard } from '@/lib/github-handoff/read-only-guard'
 import { logFrontendError } from '@/lib/log-api'
+import type { McpInstallRequestEvent, McpInstallResolvedEvent } from '@/lib/mcp-install-request'
+import { foldRecoveredPlan, markPlanTool } from '@/lib/plan-session'
 import { wireBlocksToDisplay } from '@/lib/skills-wire-reverse'
+import { useChatActivityStore } from '@/stores/chat-activity-store'
+import { useChatStartPickStore } from '@/stores/chat-start-pick-store'
 import { getAgentChatSessionIdsInAllTrees, useWorkspaceStore } from '@/stores/workspace-store'
 import type { QueuedPrompt } from '../prompt-queue-orchestration'
 import { attachAgentRosterWatch } from './agent-roster-watch'
 import {
   dropHiddenToolCalls,
+  dropPlanForSession,
   dropRecordKey,
   normalizeUserMessages,
   partitionTranscriptTurns,
@@ -106,6 +113,7 @@ import {
 } from './shared-state'
 import { createAgentSlice } from './slices/agent'
 import { createConfigSlice } from './slices/config'
+import { createImportSlice } from './slices/import-sessions'
 import { createLaunchSlice } from './slices/launch'
 import { createMcpSlice } from './slices/mcp'
 import { createMiscSlice } from './slices/misc'
@@ -179,7 +187,8 @@ export const useAcpStore = create<AcpState>()((...a) => ({
   ...createPromptSlice(...a),
   ...createSwitchSlice(...a),
   ...createMcpSlice(...a),
-  ...createMiscSlice(...a)
+  ...createMiscSlice(...a),
+  ...createImportSlice(...a)
 }))
 
 setLiveLaunchSessionLookup((sessionId) => {
@@ -209,6 +218,18 @@ export function startClosedTranscriptEviction(): () => void {
       }
     }
     inTabs = next
+  })
+}
+
+/**
+ * An empty chat's working-copy pick lives until its session is gone (closed
+ * and removed, or deleted). A tab move keeps it: a failed restart gives the
+ * tab back to the chat with its pick. Returns the unsubscribe.
+ */
+export function startChatStartPickPruning(): () => void {
+  return useAcpStore.subscribe((state, prev) => {
+    if (state.sessions === prev.sessions) return
+    useChatStartPickStore.getState().prune(new Set(Object.keys(state.sessions)))
   })
 }
 
@@ -283,6 +304,8 @@ async function installTransportRecovery(
   // cards instead of blanking the session's tool-call list.
   const recoveredToolCalls: ToolCall[] = []
   let recoveredCommands: { list: AvailableCommand[]; seq: number } | null = null
+  // Plan events in the snapshot. `null` means the snapshot never mentioned a plan.
+  const recoveredPlan = foldRecoveredPlan(recovery.events)
   let openRole: 'agent' | 'thought' | 'user' | null = null
   for (const event of recovery.events) {
     const payload = event.payload as Record<string, unknown>
@@ -341,7 +364,16 @@ async function installTransportRecovery(
         const text = subagentChunkText(payload.role, payload.content)
         const idx = recoveredToolCalls.findIndex((t) => t.toolCallId === payload.parentToolCallId)
         if (text !== null && idx !== -1) {
-          recoveredToolCalls[idx] = withSubagentText(recoveredToolCalls[idx], text)
+          recoveredToolCalls[idx] = withSubagentText(
+            recoveredToolCalls[idx],
+            text,
+            {
+              seq: event.seq,
+              timestamp: Date.now(),
+              messageId: typeof payload.messageId === 'string' ? payload.messageId : undefined
+            },
+            recoveredToolCalls
+          )
         }
         continue
       }
@@ -379,14 +411,14 @@ async function installTransportRecovery(
       openRole = null
       const toolCall = payload.toolCall as ToolCall | undefined
       if (!toolCall || typeof toolCall.toolCallId !== 'string') continue
-      const stamped: ToolCall = {
+      const stamped: ToolCall = markPlanTool({
         ...withSubagentIngest(toolCall),
         ...applyTerminalStream(undefined, toolCall),
         timestamp: typeof toolCall.timestamp === 'number' ? toolCall.timestamp : Date.now(),
         // The envelope seq is the server record seq: timeline placement and
         // hidden-turn attribution match the recovered bubbles.
         seq: typeof toolCall.seq === 'number' ? toolCall.seq : event.seq
-      }
+      })
       // Upsert by toolCallId (mirrors `_onToolCall`): a re-emitted call keeps
       // its original timeline placement while the latest fields win.
       const idx = recoveredToolCalls.findIndex((t) => t.toolCallId === stamped.toolCallId)
@@ -408,13 +440,13 @@ async function installTransportRecovery(
       const idx = recoveredToolCalls.findIndex((t) => t.toolCallId === update.toolCallId)
       if (idx === -1) continue
       const prior = recoveredToolCalls[idx]
-      recoveredToolCalls[idx] = {
+      recoveredToolCalls[idx] = markPlanTool({
         ...prior,
         ...withSubagentIngest(update),
         ...applyTerminalStream(prior, update),
         timestamp: prior.timestamp,
         seq: prior.seq
-      }
+      })
     } else if (event.type === 'prompt_complete') {
       // Split boundary: the following chunk run opens a fresh bubble.
       openRole = null
@@ -478,6 +510,13 @@ async function installTransportRecovery(
             seq: recoveredCommands.seq
           })
         : {}),
+      ...(recoveredPlan === null
+        ? {}
+        : {
+            plans: recoveredPlan.length
+              ? { ...current.plans, [recovery.sessionId]: recoveredPlan }
+              : dropPlanForSession(current.plans, recovery.sessionId)
+          }),
       degradedRecoverySessions: dropRecordKey(current.degradedRecoverySessions, recovery.sessionId),
       sessions: session
         ? {
@@ -545,18 +584,24 @@ export function initAcpEventListeners(): () => void {
     // The transport captures this before the snapshot round-trip so a late
     // recovery for a torn-down/replaced session is rejected at install.
     recoveryGeneration: (sessionId) => sessionReopenGenerations.get(sessionId) ?? 0,
-    pendingPermissionSessions: () => {
+    reconnectPrioritySessions: () => {
       const state = useAcpStore.getState()
       return [
-        ...new Set(
-          [
+        ...new Set([
+          ...useChatActivityStore.getState().viewing,
+          ...[
             ...Object.values(state.pendingPermissions),
             ...Object.values(state.pendingQuestions),
             ...Object.values(state.pendingElicitations)
-          ].map((prompt) => prompt.sessionId)
-        )
+          ].map((prompt) => prompt.sessionId),
+          ...Object.keys(state.promptCommandStates)
+        ])
       ]
     },
+    setResyncingSessions: (sessionIds) =>
+      useAcpStore.setState({
+        resyncingSessions: Object.fromEntries(sessionIds.map((sid) => [sid, true as const]))
+      }),
     installPendingPrompts: (sessionId, prompts) =>
       syncPendingPrompts(useAcpStore.getState, useAcpStore.setState, sessionId, prompts),
     setReconnecting: (reconnecting, recovered) => {
@@ -579,6 +624,7 @@ export function initAcpEventListeners(): () => void {
   connection.attach()
   teardown = [
     startClosedTranscriptEviction(),
+    startChatStartPickPruning(),
     // The `agents` watch: every relay transport has one, the desktop's
     // channel carrier included. It carries the roster and the browser policy
     // and automation change hints.
@@ -630,6 +676,9 @@ export function initAcpEventListeners(): () => void {
     acpApi.onEvent<AgentWorkingEvent>(ACP_EVENTS.agentWorking, (e) =>
       useAcpStore.getState()._onAgentWorking(e)
     ),
+    acpApi.onEvent<BackgroundCommandsEvent>(ACP_EVENTS.backgroundCommands, (e) =>
+      useAcpStore.getState()._onBackgroundCommands(e)
+    ),
     acpApi.onEvent<PermissionRequestEvent>(ACP_EVENTS.permissionRequest, (e, eventSeq) =>
       useAcpStore.getState()._onPermissionRequest(e, eventSeq)
     ),
@@ -638,6 +687,15 @@ export function initAcpEventListeners(): () => void {
     ),
     acpApi.onEvent<QuestionCancelledEvent>(ACP_EVENTS.questionCancelled, (e) =>
       useAcpStore.getState()._onQuestionCancelled(e)
+    ),
+    acpApi.onEvent<McpInstallRequestEvent>(ACP_EVENTS.mcpInstallRequest, (e) =>
+      useAcpStore.getState()._onMcpInstallRequest(e)
+    ),
+    acpApi.onEvent<McpInstallResolvedEvent>(ACP_EVENTS.mcpInstallResolved, (e) =>
+      useAcpStore.getState()._onMcpInstallResolved(e)
+    ),
+    acpApi.onEvent(ACP_EVENTS.mcpRegistryChanged, () =>
+      useAcpStore.getState()._onMcpRegistryChanged()
     ),
     acpApi.onEvent<ElicitationRequestEvent>(ACP_EVENTS.elicitationRequest, (e, eventSeq) =>
       useAcpStore.getState()._onElicitationRequest(e, eventSeq)
@@ -732,7 +790,7 @@ export function useAgentTemplateId(agentId: AgentId | null, agentConfigId?: stri
     useShallow((s) => {
       if (agentConfigId) {
         const config = s.agentConfigs.find((c) => c.id === agentConfigId)
-        if (config?.templateId) return config.templateId
+        if (config?.templateId) return canonicalAgentId(config.templateId)
       }
       return selectAgentIdentity(s, agentId).templateId
     })

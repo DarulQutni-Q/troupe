@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import type { Locator, Page } from 'playwright/test'
 import { expect, request, test } from 'playwright/test'
 import { E2E_BASE_URL, E2E_TOKEN, storeKey, wsRequest } from './helpers'
-import { launchChat } from './ui'
+import { emptyChatComposer, launchChat, sendFromEmptyChat } from './ui'
 
 /**
  * Mobile shell accessibility floor E2E (spec-mobile-a11y-floor): a phone-sized
@@ -182,20 +182,26 @@ async function announceBarrier(page: Page): Promise<void> {
   await page.getByRole('textbox', { name: 'Search chats' }).fill('zzz-no-such-chat')
   await expect(liveRegion(page)).toHaveText('0 chats match')
   await page.keyboard.press('Escape')
-  await expect(page.getByRole('dialog', { name: 'Termul', exact: true })).toBeHidden()
+  await expect(page.getByRole('dialog', { name: 'Troupe', exact: true })).toBeHidden()
 }
 
 /**
  * Start a chat from the mobile shell: the empty pane shows the launcher
- * composer directly, an open chat needs the header "New chat" first. Resolves
- * once the header names the new chat (the title is the prompt text).
+ * composer directly. In an open chat, the header "New chat" opens a new
+ * empty chat, and the prompt goes in its composer. Resolves once the header
+ * names the new chat (the title is the prompt text).
  */
 async function startChat(page: Page, prompt: string, options: { viaNewChat?: boolean } = {}) {
-  if (options.viaNewChat) await page.getByRole('button', { name: 'New chat' }).tap()
-  const composer = page.getByRole('textbox', { name: 'Agent prompt' })
-  await composer.click()
-  await page.keyboard.type(prompt)
-  await page.getByRole('button', { name: 'Start agent chat' }).tap()
+  if (options.viaNewChat) {
+    await page.getByRole('button', { name: 'New chat' }).tap()
+    await expect(emptyChatComposer(page)).toBeVisible()
+    await sendFromEmptyChat(page, prompt, { tap: true })
+  } else {
+    const composer = page.getByRole('textbox', { name: 'Agent prompt' })
+    await composer.click()
+    await page.keyboard.type(prompt)
+    await page.getByRole('button', { name: 'Start agent chat' }).tap()
+  }
   await expect(page.getByRole('heading', { level: 1, name: prompt, exact: true })).toBeVisible()
 }
 
@@ -282,7 +288,7 @@ test.describe('shell live region', () => {
     await region.evaluate((el) => el.setAttribute('data-e2e-node', 'first-mount'))
 
     await page.getByRole('button', { name: 'Open menu' }).tap()
-    await expect(page.getByRole('dialog', { name: 'Termul', exact: true })).toBeVisible()
+    await expect(page.getByRole('dialog', { name: 'Troupe', exact: true })).toBeVisible()
     // The modal drawer hid everything outside it from assistive technology
     // (Radix hideOthers)...
     await expect(page.getByRole('banner')).toHaveCount(0)
@@ -299,7 +305,7 @@ test.describe('shell live region', () => {
     await expect.poll(announced).toEqual(['0 chats match', '0 chats match'])
 
     await page.keyboard.press('Escape')
-    await expect(page.getByRole('dialog', { name: 'Termul', exact: true })).toBeHidden()
+    await expect(page.getByRole('dialog', { name: 'Troupe', exact: true })).toBeHidden()
     // The same node, never remounted.
     await expect(liveRegion(page)).toHaveCount(1)
     await expect(region).toHaveAttribute('data-e2e-node', 'first-mount')

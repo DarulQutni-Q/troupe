@@ -1,16 +1,19 @@
+import type { SubagentAgent } from '@shared/types/subagent'
 import { memo } from 'react'
-import { AgentIcon } from '@/components/agents/AgentIcon'
-import { Bot, Check, ChevronRight, LoaderCircle, X } from '@/components/icons'
+import { Check, ChevronRight, X } from '@/components/icons'
 import { badgeVariants } from '@/components/ui/badge'
+import { Spinner } from '@/components/ui/spinner'
 import type { ToolCall } from '@/lib/acp-api'
-import { getAgentById } from '@/lib/agents/custom-agents'
 import { cn } from '@/lib/utils'
+import { useAgentIcon, useAgentTemplateId } from '@/stores/acp-store'
+import { AgentGlyph } from './AgentGlyph'
 import {
   type SubagentCounts,
   type SubagentStatus,
   subagentDetail,
   subagentTitle,
-  subagentType
+  subagentType,
+  subagentWorkspaceChip
 } from './subagent-strip'
 import { useSubagentChildCalls, useSubagentSurface } from './subagent-surface-context'
 import { SubagentElapsed } from './subagent-time'
@@ -23,14 +26,14 @@ export const SUBAGENT_STATUS_WORD: Record<SubagentStatus, string> = {
 }
 
 const STATUS_TONE: Record<SubagentStatus, string> = {
-  running: 'text-warning',
+  running: 'text-muted-foreground',
   done: 'text-success',
   failed: 'text-destructive',
   stopped: 'text-muted-foreground'
 }
 
 const STATUS_DOT: Record<SubagentStatus, string> = {
-  running: 'bg-warning',
+  running: 'bg-muted-foreground',
   done: 'bg-success',
   failed: 'bg-destructive',
   stopped: 'bg-muted-foreground'
@@ -38,26 +41,49 @@ const STATUS_DOT: Record<SubagentStatus, string> = {
 
 const ICON_CLASS = 'shrink-0'
 
+/** Running is a neutral spinner. A subagent that waits on the user keeps the warning ink. */
 export function SubagentStatusIcon({
   status,
+  waiting = false,
   className
 }: {
   status: SubagentStatus
+  waiting?: boolean
   className?: string
 }): React.JSX.Element {
-  const tone = cn(ICON_CLASS, STATUS_TONE[status], className)
+  const tone = cn(ICON_CLASS, waiting ? 'text-warning' : STATUS_TONE[status], className)
   if (status === 'running') {
-    return (
-      <LoaderCircle
-        size={14}
-        strokeWidth={2}
-        className={cn(tone, 'animate-spin motion-reduce:animate-none')}
-        aria-hidden="true"
-      />
-    )
+    return <Spinner size={14} decorative className={tone} />
   }
   if (status === 'done') return <Check size={14} className={tone} aria-hidden="true" />
   return <X size={14} className={tone} aria-hidden="true" />
+}
+
+/** True when a running subagent waits on the user ("Needs input"). */
+export function isSubagentWaiting(toolCall: ToolCall, status: SubagentStatus): boolean {
+  return status === 'running' && toolCall.subagent?.activity === 'requires_action'
+}
+
+/**
+ * The 10px mark on an avatar corner. Running is a neutral spinner, waiting on the
+ * user is a warning dot, and the settled states are a dot in their tone.
+ */
+export function AvatarStatusMark({
+  status,
+  waiting = false
+}: {
+  status: SubagentStatus
+  waiting?: boolean
+}): React.JSX.Element {
+  const corner = 'absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full ring-2 ring-card'
+  if (status === 'running' && !waiting) {
+    return (
+      <span className={cn(corner, 'flex items-center justify-center bg-card')}>
+        <Spinner size={10} decorative className="text-muted-foreground" />
+      </span>
+    )
+  }
+  return <span className={cn(corner, waiting ? 'bg-warning' : STATUS_DOT[status])} />
 }
 
 /** Status icon and word in the status tone. A running subagent may be waiting on the user. */
@@ -70,10 +96,15 @@ export function SubagentStatusLabel({
   status: SubagentStatus
   wordClassName?: string
 }): React.JSX.Element {
-  const waiting = status === 'running' && toolCall.subagent?.activity === 'requires_action'
+  const waiting = isSubagentWaiting(toolCall, status)
   return (
-    <span className={cn('flex shrink-0 items-center gap-1 text-xs', STATUS_TONE[status])}>
-      <SubagentStatusIcon status={status} />
+    <span
+      className={cn(
+        'flex shrink-0 items-center gap-1 text-xs',
+        waiting ? 'text-warning' : STATUS_TONE[status]
+      )}
+    >
+      <SubagentStatusIcon status={status} waiting={waiting} />
       <span className={wordClassName}>
         {waiting ? 'Needs input' : SUBAGENT_STATUS_WORD[status]}
       </span>
@@ -81,12 +112,39 @@ export function SubagentStatusLabel({
   )
 }
 
-/** The chat's agent icon in a round well, with a status dot when `status` is given. */
+/**
+ * An agent's glyph from its persisted config (`configId`, else the config
+ * behind the live `agentId`): its custom icon, else the bundled `acp:`
+ * catalog icon. Falls back to the generic `Bot` when neither resolves.
+ */
+function SubagentGlyph({
+  agentId,
+  configId
+}: {
+  agentId: string | null
+  configId?: string
+}): React.JSX.Element {
+  const templateId = useAgentTemplateId(agentId, configId)
+  const icon = useAgentIcon(agentId, configId)
+  return <AgentGlyph templateId={templateId} icon={icon} size={16} />
+}
+
+/**
+ * The chat's agent icon in a round well, with a status dot when `status` is
+ * given. A subagent the chat's own agent runs natively wears the chat's icon;
+ * an orchestrated run carries its own child agent, whose icon replaces it.
+ */
 export function SubagentAvatar({
+  agent,
   status,
+  waiting = false,
   size = 'md',
   className
 }: {
+  /** The orchestrated run's child agent, when the record names one. */
+  agent?: SubagentAgent
+  /** The subagent waits on the user: the dot stays warning. */
+  waiting?: boolean
   status?: SubagentStatus
   size?: 'sm' | 'md'
   className?: string
@@ -95,25 +153,19 @@ export function SubagentAvatar({
   return (
     <span
       aria-hidden="true"
+      data-subagent-avatar=""
       className={cn(
         'relative inline-flex shrink-0 items-center justify-center rounded-full border border-border bg-muted',
         size === 'md' ? 'size-8' : 'size-7',
         className
       )}
     >
-      {agentId && getAgentById(agentId) ? (
-        <AgentIcon agentId={agentId} className="size-4" />
+      {agent ? (
+        <SubagentGlyph agentId={agent.agentId} configId={agent.configId} />
       ) : (
-        <Bot size={16} className="text-muted-foreground" />
+        <SubagentGlyph agentId={agentId ?? null} />
       )}
-      {status && (
-        <span
-          className={cn(
-            'absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full ring-2 ring-card',
-            STATUS_DOT[status]
-          )}
-        />
-      )}
+      {status && <AvatarStatusMark status={status} waiting={waiting} />}
     </span>
   )
 }
@@ -207,7 +259,12 @@ function SubagentRowComponent({
   const { open, openId, opensDialog } = useSubagentSurface()
   const childCalls = useSubagentChildCalls(toolCall.toolCallId)
   const title = subagentTitle(toolCall)
-  const type = subagentType(toolCall)
+  // An orchestrated run shows the child agent in its detail line and the
+  // workspace chip here; the role/purpose and background chips belong to the
+  // agent-reported records.
+  const agent = toolCall.subagent?.agent
+  const type = agent ? undefined : subagentType(toolCall)
+  const workspaceChip = agent ? subagentWorkspaceChip(toolCall) : undefined
   const detail = subagentDetail(toolCall, status, childCalls)
   const selected = openId === toolCall.toolCallId && surface === 'card'
 
@@ -217,9 +274,17 @@ function SubagentRowComponent({
       data-subagent-row={toolCall.toolCallId}
       aria-haspopup={opensDialog ? 'dialog' : undefined}
       aria-current={selected ? 'true' : undefined}
-      onClick={() => {
+      onClick={(event) => {
+        // Read the avatar before onOpen closes a popover around this row. A
+        // keyboard click (detail 0) opens at once, with no morph.
+        const origin =
+          event.detail === 0
+            ? null
+            : (event.currentTarget
+                .querySelector('[data-subagent-avatar]')
+                ?.getBoundingClientRect() ?? null)
         onOpen?.()
-        open(toolCall.toolCallId, siblings, { nested })
+        open(toolCall.toolCallId, siblings, { nested, origin })
       }}
       className={cn(
         '@container flex min-h-11 w-full min-w-0 items-center gap-3 rounded-lg px-2.5 py-2 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-focus-ring',
@@ -230,12 +295,13 @@ function SubagentRowComponent({
             : 'hover:bg-foreground/[0.03]'
       )}
     >
-      <SubagentAvatar status={status} />
+      <SubagentAvatar agent={agent} status={status} waiting={isSubagentWaiting(toolCall, status)} />
       <span className="flex min-w-0 flex-1 flex-col">
         <span className="flex min-w-0 items-center gap-2 overflow-hidden">
           <span className="min-w-0 truncate text-sm font-medium text-foreground">{title}</span>
           {type && <SubagentTypeChip type={type} className={NARROW_HIDDEN} />}
-          {toolCall.subagent?.background && (
+          {workspaceChip && <SubagentTypeChip type={workspaceChip} className={NARROW_HIDDEN} />}
+          {!agent && toolCall.subagent?.background && (
             <SubagentTypeChip type="background" className={NARROW_HIDDEN} />
           )}
         </span>

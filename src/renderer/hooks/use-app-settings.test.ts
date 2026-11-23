@@ -9,7 +9,8 @@ import {
   useResetAppSettings,
   useUpdateAppSetting,
   useUpdateAppSettings,
-  useUpdatePanelVisibility
+  useUpdatePanelVisibility,
+  writeAppSettingsNow
 } from './use-app-settings'
 
 const {
@@ -56,7 +57,8 @@ describe('use-app-settings', () => {
 
     useAppSettingsStore.setState({
       settings: { ...DEFAULT_APP_SETTINGS },
-      isLoaded: false
+      isLoaded: false,
+      hostRead: 'pending'
     })
     resetShellLayoutStoreForTests()
     useShellLayoutStore.setState({ status: 'ready' })
@@ -361,6 +363,80 @@ describe('use-app-settings', () => {
     })
   })
 
+  describe('host read status', () => {
+    it('reports found for a stored record and keeps its onboarding completion', async () => {
+      mockPersistenceRead.mockResolvedValueOnce({
+        success: true,
+        data: { ...DEFAULT_APP_SETTINGS, onboardingCompletedAt: '2026-11-20T08:00:00.000Z' }
+      })
+
+      renderHook(() => useAppSettingsLoader())
+
+      await waitFor(() => expect(useAppSettingsStore.getState().hostRead).toBe('found'))
+      expect(useAppSettingsStore.getState().settings.onboardingCompletedAt).toBe(
+        '2026-11-20T08:00:00.000Z'
+      )
+    })
+
+    it('reads a stored record without the field, or with a corrupt one, as not completed', async () => {
+      const { onboardingCompletedAt: _omitted, ...older } = DEFAULT_APP_SETTINGS
+      mockPersistenceRead.mockResolvedValueOnce({ success: true, data: older })
+      const first = renderHook(() => useAppSettingsLoader())
+      await waitFor(() => expect(useAppSettingsStore.getState().hostRead).toBe('found'))
+      expect(useAppSettingsStore.getState().settings.onboardingCompletedAt).toBeNull()
+      first.unmount()
+
+      mockPersistenceRead.mockResolvedValueOnce({
+        success: true,
+        data: { ...DEFAULT_APP_SETTINGS, onboardingCompletedAt: 42 }
+      })
+      useAppSettingsStore.setState({ hostRead: 'pending' })
+      renderHook(() => useAppSettingsLoader())
+      await waitFor(() => expect(useAppSettingsStore.getState().hostRead).toBe('found'))
+      expect(useAppSettingsStore.getState().settings.onboardingCompletedAt).toBeNull()
+    })
+
+    it('reports missing for KEY_NOT_FOUND', async () => {
+      mockPersistenceRead.mockResolvedValueOnce({
+        success: false,
+        code: 'KEY_NOT_FOUND',
+        error: 'none'
+      })
+
+      renderHook(() => useAppSettingsLoader())
+
+      await waitFor(() => expect(useAppSettingsStore.getState().hostRead).toBe('missing'))
+      expect(useAppSettingsStore.getState().isLoaded).toBe(true)
+    })
+
+    it('reports failed for any other read error, while isLoaded still turns true', async () => {
+      mockPersistenceRead.mockResolvedValueOnce({ success: false, code: 'WS_ERROR', error: 'down' })
+
+      renderHook(() => useAppSettingsLoader())
+
+      await waitFor(() => expect(useAppSettingsStore.getState().hostRead).toBe('failed'))
+      expect(useAppSettingsStore.getState().isLoaded).toBe(true)
+      expect(useAppSettingsStore.getState().settings).toEqual(DEFAULT_APP_SETTINGS)
+    })
+  })
+
+  it('writeAppSettingsNow applies the update and writes the whole record at once', async () => {
+    useAppSettingsStore.setState({
+      settings: { ...DEFAULT_APP_SETTINGS, appearanceMode: 'light' },
+      isLoaded: true
+    })
+
+    const result = await writeAppSettingsNow({ onboardingCompletedAt: '2026-11-20T08:00:00.000Z' })
+
+    expect(result).toEqual({ success: true, data: undefined })
+    expect(mockPersistenceWriteDebounced).not.toHaveBeenCalled()
+    expect(mockPersistenceWrite).toHaveBeenCalledWith(PersistenceKeys.appSettings, {
+      ...DEFAULT_APP_SETTINGS,
+      appearanceMode: 'light',
+      onboardingCompletedAt: '2026-11-20T08:00:00.000Z'
+    })
+  })
+
   describe('terminal screen reader mode (L-28)', () => {
     it('loads as false when the persisted blob lacks the key', async () => {
       const { terminalScreenReaderMode: _screenReader, ...legacySettings } = DEFAULT_APP_SETTINGS
@@ -435,7 +511,7 @@ describe('use-app-settings', () => {
     )
   })
 
-  it('reopens all panels through the shell-layout actions when app settings are reset', async () => {
+  it('returns the panels to their defaults through the shell-layout actions on reset', async () => {
     useShellLayoutStore.setState({
       railExpanded: false,
       sidePanelVisible: false,
@@ -448,7 +524,8 @@ describe('use-app-settings', () => {
 
     const layout = useShellLayoutStore.getState()
     expect(layout.railExpanded).toBe(true)
-    expect(layout.sidePanelVisible).toBe(true)
+    // The right panel default is closed (Paper 2.2).
+    expect(layout.sidePanelVisible).toBe(false)
     expect(layout.sshSectionVisible).toBe(true)
     expect(mockPersistenceWrite).toHaveBeenCalledWith(
       PersistenceKeys.appSettings,

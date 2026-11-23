@@ -1,15 +1,16 @@
 import type { Editor } from '@tiptap/core'
-import { useReducedMotion } from 'framer-motion'
+import { motion, useReducedMotion } from 'framer-motion'
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { toast } from 'sonner'
 import { ClaudeAccountChip } from '@/components/chat/claude-account/ClaudeAccountChip'
 import { ClaudeLimitWarning } from '@/components/chat/claude-account/ClaudeLimitWarning'
+import { CodexAccountChip } from '@/components/chat/codex-account/CodexAccountChip'
+import { CodexLimitWarning } from '@/components/chat/codex-account/CodexLimitWarning'
 import { Paperclip } from '@/components/icons'
 import { useAgentSkills } from '@/hooks/use-agent-skills'
 import { useAttachmentDropZone } from '@/hooks/use-attachment-drop-zone'
 import { useMentionRecents } from '@/hooks/use-mention-recents'
 import { useMobileWebShell } from '@/hooks/use-mobile-web-shell'
-import { useOskViewport } from '@/hooks/use-osk-viewport'
 import { useVisibleSnapshot } from '@/hooks/use-visible-snapshot'
 import type {
   AvailableCommand,
@@ -21,32 +22,43 @@ import { registerSessionTempFiles } from '@/lib/attachment-temp-cleanup'
 import type { TermulToolId } from '@/lib/composer/termul-tools'
 import { cn } from '@/lib/utils'
 import type { AcpSession, PendingPermission, QueuedPrompt } from '@/stores/acp-store'
-import {
-  useAcpMessages,
-  useAcpStore,
-  useAgentIcon,
-  useAgentTemplateId,
-  useSessionUsage
-} from '@/stores/acp-store'
+import { useAcpMessages, useSessionUsage } from '@/stores/acp-store'
 import type { OptionValues } from '@/stores/acp-store/composer-options'
+import { useCodexRestartingStore } from '@/stores/codex-account-restart'
 import { ModeChip } from './AgentHeader'
 import { AttachmentPreviewGroup } from './AttachmentPreviewGroup'
 import { AgentModelSelector } from './agent-model-selector/AgentModelSelector'
-import { useCurrentAgentConfigId } from './agent-model-selector/use-agent-switch'
-import { ChatContextStrip } from './ChatContextStrip'
 import { ComposerBeamShell } from './ComposerBeamShell'
 import { ContextUsageIndicator } from './ContextUsageIndicator'
 import { appOwnedTempPaths } from './chat-attachments'
 import {
-  extractFastModeOption,
   filterDuplicateModeConfigOptions,
   partitionConfigOptions,
-  resolveModelOption
+  resolveModelOption,
+  splitFastModeOption
 } from './chat-input-bar-config'
-import { CHAT_GUTTER_X, COMPOSER_CARD_CLASS, useComposerToolbarMode } from './chat-layout'
+import {
+  CHAT_GUTTER_X,
+  COMPOSER_PHONE_CARD_CLASS,
+  COMPOSER_PHONE_GUTTER_X,
+  COMPOSER_PHONE_INPUT_MAX_HEIGHT,
+  COMPOSER_PHONE_INPUT_MIN_HEIGHT,
+  COMPOSER_PHONE_INPUT_ROW_CLASS,
+  COMPOSER_PHONE_PLACEHOLDER,
+  COMPOSER_TRAY_CLASS,
+  useComposerToolbarMode
+} from './chat-layout'
+import {
+  CHAT_START_COLUMN_CLASS,
+  CHAT_START_INPUT_MAX_HEIGHT,
+  CHAT_START_INPUT_MIN_HEIGHT,
+  CHAT_START_INPUT_ROW_CLASS
+} from './chat-start'
+import { useComposerMorph } from './chat-start-morph'
 import { ChatComposerEditor, focusComposerFromRowPress } from './composer/ChatComposerEditor'
 import { ComposerAddMenu } from './composer/ComposerAddMenu'
 import { ComposerAddSheet } from './composer/ComposerAddSheet'
+import { ComposerConnectorsButton, ComposerFootRow, ComposerRaised } from './composer/ComposerFoot'
 import { ComposerSendButton } from './composer/ComposerSendButton'
 import { blurComposerEditor, insertComposerTrigger } from './composer/insert-composer-trigger'
 import { insertComposerTool } from './composer/insert-pill'
@@ -63,12 +75,14 @@ import { PromptQueuePanel } from './PromptQueuePanel'
 import { SlashCommandMenu, type SlashMenuHandle } from './SlashCommandMenu'
 import { SkillFilesProvider } from './skill-file-links'
 import { useChatComposer } from './use-chat-composer'
+import { useComposerAgent } from './use-composer-agent'
 import { useComposerAttachments } from './use-composer-attachments'
 import { useComposerCaretRestore, useComposerMentionSelect } from './use-composer-caret-restore'
 import { useComposerDraft } from './use-composer-draft'
 import { useComposerDraftStart } from './use-composer-draft-start'
 import { useComposerMentions } from './use-composer-mentions'
 import { useComposerSendLock } from './use-composer-send-lock'
+import { useScrollEditorOnOsk } from './use-scroll-editor-on-osk'
 
 interface ChatInputBarProps {
   /** Active session — drives selector chips. */
@@ -90,7 +104,8 @@ interface ChatInputBarProps {
   imageCapable?: boolean
   /** Whether the agent accepts embedded `resource` blocks (drag/paste text files). */
   embedCapable?: boolean
-  onSend: (text: string) => void
+  /** Returns `false` when nothing was sent: the composer keeps its draft. */
+  onSend: (text: string) => false | undefined
   /**
    * Send a prompt carrying structured content blocks (text + attachments).
    * The first arg is the wire text dispatched to the agent; the optional second
@@ -99,7 +114,7 @@ interface ChatInputBarProps {
    * receives the path-based wire framing. When omitted, the wire blocks are
    * also used for display.
    */
-  onSendBlocks: (blocks: ContentBlock[], displayBlocks?: ContentBlock[]) => void
+  onSendBlocks: (blocks: ContentBlock[], displayBlocks?: ContentBlock[]) => false | undefined
   onCancel: () => void
   /** Slash-menu data sources from the active session. */
   commands: AvailableCommand[]
@@ -124,8 +139,25 @@ interface ChatInputBarProps {
   queue?: QueuedPrompt[]
   /** Approval request currently waiting for the user. */
   permission?: PendingPermission | null
+  /**
+   * Composer dock at the top of the card (turn error, stopped chat, usage
+   * limit). It replaces the near-limit warning while it shows.
+   */
+  notice?: React.ReactNode
+  /**
+   * Whether `notice` shows something now. A notice element can stay mounted
+   * while empty (to animate out), so its presence alone must not hide the
+   * limit warning. Defaults to `notice` being set.
+   */
+  noticeShown?: boolean
+  /** Placeholder while `disabled` (default "Composer unavailable"). */
+  disabledPlaceholder?: string
   onRemoveQueued?: (queueId: string) => void
   onSendQueuedNow?: (queueId: string) => void
+  /** Move a queued prompt to `toIndex`; gives each row a drag handle. */
+  onMoveQueued?: (queueId: string, toIndex: number) => void
+  /** Drop every queued prompt; gives the queue header a Clear action. */
+  onClearQueued?: () => void
   /**
    * Whether the host chat panel's tab is the pane's active tab. While false,
    * the per-flush `useAcpMessages` re-render is frozen (same render gate as
@@ -140,6 +172,20 @@ interface ChatInputBarProps {
    * fires it. The chat panel uses it to resume a stopped chat early.
    */
   onDraftStart?: () => void
+  /**
+   * The chat has no messages yet: the composer takes the start screen's
+   * 680px width and input area (Paper "2.2 New chat"; the launcher uses the
+   * same values) and, on desktop, no padding: the start block places it
+   * (chat-start.tsx). A working chat is 768px wide. On the first send the
+   * composer moves to the dock (chat-start-morph.tsx).
+   */
+  startScreen?: boolean
+  /**
+   * Left side of the Composer V2 foot row (desktop): the worktree pick of an
+   * empty chat or the read-only worktree of a running chat. `null` (a quick
+   * chat without a project) leaves only the Connectors button.
+   */
+  worktree?: React.ReactNode
 }
 
 const NO_CONFIG_OPTIONS: SessionConfigOption[] = []
@@ -148,8 +194,8 @@ export function ChatInputBar({
   session,
   projectRoot,
   busy,
-  disabled,
-  controlsDisabled = disabled,
+  disabled: composerDisabled,
+  controlsDisabled = composerDisabled,
   imageCapable = false,
   embedCapable = false,
   onSend,
@@ -166,25 +212,36 @@ export function ChatInputBar({
   selectionContextInsert,
   queue = [],
   permission,
+  notice = null,
+  noticeShown = notice !== null,
+  disabledPlaceholder = 'Composer unavailable',
   onRemoveQueued,
   onSendQueuedNow,
+  onMoveQueued,
+  onClearQueued,
   isVisible = true,
-  onDraftStart
+  onDraftStart,
+  startScreen = false,
+  worktree = null
 }: ChatInputBarProps): React.JSX.Element {
+  const accountRestarting = useCodexRestartingStore((state) => state.ids.includes(session.id))
+  const disabled = composerDisabled || accountRestarting
   const usableConfigOptions = configOptions.filter(
     (option) => option.type === 'boolean' || (option.options?.length ?? 0) > 0
   )
   const {
     model,
     thoughtLevel,
-    modelConfig,
+    modelConfig: allModelConfig,
     rest: genericConfigOptions
   } = partitionConfigOptions(usableConfigOptions)
   const { option: modelOption, source: modelSource } = resolveModelOption(model, session.models)
   const visibleGenericConfigOptions = filterDuplicateModeConfigOptions(genericConfigOptions, modes)
-  const { fastMode, rest: nonFastGenericOptions } = extractFastModeOption(
-    visibleGenericConfigOptions
-  )
+  const {
+    fastMode,
+    modelConfig,
+    rest: nonFastGenericOptions
+  } = splitFastModeOption(allModelConfig, visibleGenericConfigOptions)
   const { skills: availableSkills } = useAgentSkills(projectRoot ?? session.cwd)
   const sessionUsage = useSessionUsage(session.id)
   // Compact shows only when the agent lists `/compact`; it sends the command as a prompt.
@@ -205,42 +262,23 @@ export function ChatInputBar({
   // derived value freezes while the host panel is hidden (the composer only
   // reads `messages` for the context-usage ring's bootstrap filter).
   const messages = useVisibleSnapshot(isVisible, useAcpMessages(session.id))
-  // Armed agent switch: the composer's chips advertise the TARGET config's
-  // options (armedOptions overlay in AgentChatPanel), so the glyph must too —
-  // resolving by the session's live `agentId` keeps the OLD agent's icon
-  // (Devin) while the model list already shows the target's (OpenCode).
-  // Read `switching` from the store (not the prop) — the same field the
-  // model selector reads — so the icon flips the moment the arm lands.
-  const armedConfigId = useAcpStore((s) => s.sessions?.[session.id]?.switching?.toConfigId)
-  // Names the mode menu's "Let <agent> act" group: the armed target while a
-  // switch is armed (the menu then lists the target's modes), else this chat's agent.
-  const currentAgentConfigId = useCurrentAgentConfigId(session.id)
-  const modeAgentName = useAcpStore(
-    (s) => s.agentConfigs?.find((c) => c.id === (armedConfigId ?? currentAgentConfigId))?.name
-  )
-  // A launch placeholder has no agent yet, so resolve by config id: the armed
-  // target, else the chat's own config (the launching one before spawn).
-  const glyphConfigId = armedConfigId ?? currentAgentConfigId ?? undefined
-  const agentTemplateId = useAgentTemplateId(session.agentId, glyphConfigId)
-  const agentIcon = useAgentIcon(session.agentId, glyphConfigId)
+  const {
+    currentAgentConfigId,
+    agentName: modeAgentName,
+    agentTemplateId,
+    agentIcon
+  } = useComposerAgent(session)
   const { connectors, host: connectorsHost } = useChatConnectors(session)
   const termulTools = useTermulTools(session.projectId)
-  const [value, setValue] = useComposerDraft({
+  const [value, setValue, draftHydrated] = useComposerDraft({
     projectId: session.projectId,
     sessionId: session.id,
     seedNonce
   })
   const { locked: sending, hold: holdComposer } = useComposerSendLock()
   const reduced = useReducedMotion() ?? false
-  // Story 5.3: OSK awareness on mobile web. On Tauri desktop, the hook returns
-  // a no-OSK default (no `visualViewport` thrash — desktop non-regression).
-  const osk = useOskViewport()
+  const morph = useComposerMorph(startScreen, reduced)
   const isMobileShell = useMobileWebShell()
-  // OSK-open transition: scroll the textarea into view exactly once per
-  // OSK-open window. The OSK state can lag the focus event (focus fires
-  // before `osk.isOskOpen` flips true), so a closed→open transition effect
-  // is more reliable than reading `osk.isOskOpen` in onFocus.
-  const prevOskOpenRef = useRef(false)
   const {
     attachments,
     addFiles,
@@ -347,14 +385,21 @@ export function ChatInputBar({
 
     await holdComposer(async () => {
       const contexts = conversationContexts()
-      const send = buildComposerSend(
-        buildPromptParts(contexts ? await contexts : undefined),
-        attachments
-      )
+      const parts = buildPromptParts(contexts ? await contexts : undefined)
+      // A restart can begin while contexts resolve. The send callbacks swallow
+      // the rejection, so leaving here is what keeps the unsent draft.
+      if (useCodexRestartingStore.getState().ids.includes(session.id)) {
+        throw new Error('This chat is switching Codex accounts')
+      }
+      const send = buildComposerSend(parts, attachments)
       if (!send) return
-      if (send.kind === 'text') onSend(send.text)
-      else if (send.display) onSendBlocks(send.wire, send.display)
-      else onSendBlocks(send.wire)
+      const sent =
+        send.kind === 'text'
+          ? onSend(send.text)
+          : send.display
+            ? onSendBlocks(send.wire, send.display)
+            : onSendBlocks(send.wire)
+      if (sent === false) return
       // Register app-owned temp files (pasted screenshots) with the session so
       // they are deleted when the session closes; clearAttachments drops state
       // without deleting because the agent reads them by path during the turn.
@@ -402,6 +447,18 @@ export function ChatInputBar({
         onCancel()
         return true
       }
+      // Phone: a soft keyboard has no Shift+Enter, so Enter adds a new line
+      // (the editor's own paragraph split) and only the send button sends.
+      if (
+        event.key === 'Enter' &&
+        !event.shiftKey &&
+        !event.isComposing &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        isMobileShell
+      ) {
+        return undefined
+      }
       if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
         event.preventDefault()
         if (showStop) return true
@@ -416,7 +473,7 @@ export function ChatInputBar({
       }
       return undefined
     },
-    [onSlashOrMentionKeyDown, busy, showStop, onCancel, submit]
+    [onSlashOrMentionKeyDown, busy, showStop, onCancel, submit, isMobileShell]
   )
 
   // Load externally-seeded text (edit a message, pick a starter prompt), then
@@ -434,25 +491,21 @@ export function ChatInputBar({
     // throws against a destroyed editor.
     scheduleRestoreCaret(next.length)
   }, [seedNonce, scheduleRestoreCaret, updateMentionsStable, setValue])
+  // Edit a queued prompt: its text goes back into the composer, after any
+  // draft (the draft is kept), and the prompt leaves the queue.
+  const editQueued = useCallback(
+    (item: QueuedPrompt, text: string) => {
+      const next = value.trim() ? `${value.replace(/\s+$/, '')}\n${text}` : text
+      setValue(next)
+      updateMentionsStable(next, next.length)
+      scheduleRestoreCaret(next.length)
+      onRemoveQueued?.(item.id)
+    },
+    [value, setValue, updateMentionsStable, scheduleRestoreCaret, onRemoveQueued]
+  )
   useSelectionContextInsertRequest(editorRef, selectionContextInsert, disabled)
 
-  // Story 5.3 (T2.3): on mobile web, scroll the editor into view once per
-  // OSK-open window so iOS Safari doesn't leave the input under the keyboard.
-  // rAF-deferred to let layout settle; fires once per OSK-open window.
-  // `nearest` scrolls only as far as needed to show the editor (iOS) and not
-  // at all when it already shows above the keyboard (Android resizes the
-  // layout onto it); `center` slid the composer up and left it there.
-  useEffect(() => {
-    const wasOpen = prevOskOpenRef.current
-    prevOskOpenRef.current = osk.isOskOpen
-    if (!wasOpen && osk.isOskOpen && isMobileShell) {
-      const ed = editorRef.current
-      const el = ed?.view.dom ?? null
-      if (el) {
-        requestAnimationFrame(() => el.scrollIntoView({ block: 'nearest' }))
-      }
-    }
-  }, [osk.isOskOpen, isMobileShell])
+  useScrollEditorOnOsk(editorRef, isMobileShell)
 
   // Story 4 (spec-in-chat-agent-switch): the in-chat agent control joins the
   // right chip cluster (CAP-1). Reads the store itself (session.switching,
@@ -532,36 +585,32 @@ export function ChatInputBar({
       reduced={reduced}
       onCancel={onCancel}
       onSubmit={submit}
+      size={isMobileShell ? 'phone' : 'default'}
     />
   )
   return (
     <div
       ref={rootRef}
       className={cn(
-        CHAT_GUTTER_X,
-        'pb-6 pt-3',
+        isMobileShell ? COMPOSER_PHONE_GUTTER_X : CHAT_GUTTER_X,
+        !(startScreen && !isMobileShell) && 'pt-3',
+        // Phone: keep the composer clear of the home indicator. While the
+        // keyboard is open it covers the inset, so the keyboard height is
+        // taken off and the plain 24px floor wins (no double space).
+        isMobileShell
+          ? 'pb-[max(1.5rem,calc(env(safe-area-inset-bottom,0px)-var(--termul-keyboard-height,0px)))]'
+          : !startScreen && 'pb-6',
         // The slash/mention menu overflows upward into the message list; lift
         // it above the list's jump-to-latest button (z-20).
         (slashOpen || mentionMenuOpen) && 'relative z-30'
       )}
     >
-      <div className="relative mx-auto w-full max-w-3xl">
-        {disabled && (
-          <div
-            role="status"
-            className="mb-2 rounded-lg border border-border/60 bg-secondary px-3 py-1.5 text-xs text-muted-foreground"
-          >
-            Session closed
-          </div>
+      <div
+        className={cn(
+          'relative mx-auto w-full',
+          startScreen ? CHAT_START_COLUMN_CLASS : 'max-w-3xl'
         )}
-        {queue.length > 0 && onRemoveQueued && onSendQueuedNow && (
-          <PromptQueuePanel
-            items={queue}
-            onRemove={onRemoveQueued}
-            onSendNow={onSendQueuedNow}
-            defaultOpen={!isMobileShell}
-          />
-        )}
+      >
         {slashOpen && (
           <SlashCommandMenu
             ref={slashMenuRef}
@@ -579,185 +628,238 @@ export function ChatInputBar({
             inputRef={composerInputRef}
           />
         )}
-        <ComposerBeamShell busy={busy} reduced={reduced}>
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: drop zone for attachments; the file picker button is the accessible path */}
-          <div
-            data-chat-composer="true"
-            // Mobile: a programmatic focus target so focus returns here, not to
-            // the editor (and the OSK), after an approval prompt resolves.
-            tabIndex={isMobileShell ? -1 : undefined}
-            className={cn(
-              'relative',
-              COMPOSER_CARD_CLASS,
-              dragActive && 'border-primary/70',
-              isMobileShell && 'outline-none'
-            )}
-            onDragEnter={dropProps.onDragEnter}
-            onDragLeave={dropProps.onDragLeave}
-            onDragOver={dropProps.onDragOver}
-            onDrop={dropProps.onDrop}
-          >
-            {dragActive && canDropPaste && (
-              <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-2xl border-2 border-dashed border-primary/60 bg-background/80 text-sm font-medium text-foreground backdrop-blur-sm">
-                <span className="flex items-center gap-2">
-                  <Paperclip size={16} /> Drop files to attach
-                </span>
-              </div>
-            )}
-            {permission && <PermissionPrompt permission={permission} isVisible={isVisible} />}
-            {!controlsDisabled && <ClaudeLimitWarning sessionId={session.id} atTop={!permission} />}
-            <AttachmentPreviewGroup
-              attachments={attachments}
-              onRemove={removeAttachment}
-              removeDisabled={disabled || sending}
-            />
-            {/* biome-ignore lint/a11y/noStaticElementInteractions: pointer-only focus aid for the padding; the editor is the accessible target */}
+        <motion.div data-composer-morph="frame" className="relative z-10 w-full" {...morph.frame}>
+          <ComposerBeamShell busy={busy} reduced={reduced} radius={20}>
+            {/* biome-ignore lint/a11y/noStaticElementInteractions: drop zone for attachments; the file picker button is the accessible path */}
             <div
-              data-composer-row
-              className="flex items-start gap-1 px-4 pb-1.5 pt-3.5"
-              onMouseDown={(event) => focusComposerFromRowPress(event, editorRef.current)}
+              data-chat-composer="true"
+              // Mobile: a programmatic focus target so focus returns here, not to
+              // the editor (and the OSK), after an approval prompt resolves.
+              tabIndex={isMobileShell ? -1 : undefined}
+              className={cn(
+                'relative',
+                // Desktop: Composer V2 tray (raised card + foot row). Phone:
+                // the compact card (Paper "2.6b"), no tray and no foot row.
+                isMobileShell ? COMPOSER_PHONE_CARD_CLASS : COMPOSER_TRAY_CLASS,
+                dragActive && 'border-primary/70',
+                isMobileShell && 'outline-none'
+              )}
+              onDragEnter={dropProps.onDragEnter}
+              onDragLeave={dropProps.onDragLeave}
+              onDragOver={dropProps.onDragOver}
+              onDrop={dropProps.onDrop}
             >
-              {/* Tiptap rich-text editor — the skill "pill" is a real inline
+              {dragActive && canDropPaste && <ComposerDropOverlay className="rounded-[20px]" />}
+              <ComposerRaised raised={!isMobileShell}>
+                {notice}
+                {queue.length > 0 && onRemoveQueued && onSendQueuedNow && (
+                  <PromptQueuePanel
+                    items={queue}
+                    onRemove={onRemoveQueued}
+                    onSendNow={onSendQueuedNow}
+                    onMove={onMoveQueued}
+                    onClear={onClearQueued}
+                    onEdit={disabled || sending || !draftHydrated ? undefined : editQueued}
+                    defaultOpen={!isMobileShell}
+                  />
+                )}
+                {permission && <PermissionPrompt permission={permission} isVisible={isVisible} />}
+                {!noticeShown && !controlsDisabled && (
+                  <>
+                    <ClaudeLimitWarning sessionId={session.id} />
+                    <CodexLimitWarning sessionId={session.id} />
+                  </>
+                )}
+                <AttachmentPreviewGroup
+                  attachments={attachments}
+                  onRemove={removeAttachment}
+                  removeDisabled={disabled || sending}
+                />
+                {/* Pointer-only focus aid for the padding; the editor is the accessible target. */}
+                <motion.div
+                  data-composer-row
+                  className={cn(
+                    'flex items-start',
+                    isMobileShell
+                      ? COMPOSER_PHONE_INPUT_ROW_CLASS
+                      : startScreen
+                        ? CHAT_START_INPUT_ROW_CLASS
+                        : 'gap-1 pb-2.5 pl-[18px] pr-2.5 pt-4'
+                  )}
+                  onMouseDown={(event) => focusComposerFromRowPress(event, editorRef.current)}
+                  {...morph.content}
+                >
+                  {/* Tiptap rich-text editor — the skill "pill" is a real inline
                   DOM node (a Tiptap `NodeView`), so the caret sits flush
                   against the pill's right edge by construction. No transparent
                   textarea + mirror overlay, no canvas padding, no overlay
                   scroll-sync. The `value` string (sentinel-token format) is
                   the shared model the wire builder + draft persistence +
                   timeline consume (byte-identical wire payload). */}
-              <SkillFilesProvider projectRoot={projectRoot ?? session.cwd}>
-                <ChatComposerEditor
-                  className="min-w-0 flex-1"
-                  value={value}
-                  onValueChange={handleValueChange}
-                  onCaretChange={mentions.update}
-                  onBeforeEditorKeyDown={handleKeyDown}
-                  onPasteAttachments={handleComposerPaste}
-                  getSkillPaths={() => skillPathsRef.current}
-                  editorRef={editorRef}
-                  inputRef={composerInputRef}
-                  disabled={disabled || sending}
-                  minHeight={26} /* 1 line: 16px × 1.625 */
-                  maxHeight={78} /* 3 lines: 3 × 26px, then scroll */
-                  placeholder={
-                    disabled
-                      ? 'Composer unavailable'
-                      : hasCommandToken
-                        ? 'Add a message (optional)…'
-                        : 'Ask anything… (/ for commands, @ for files and chats)'
-                  }
-                />
-              </SkillFilesProvider>
-              {/* Context usage ring: top right, centered on the first line.
-                  The mobile row carries the ring in its toolbar instead. */}
-              {!isMobileShell && (
-                <ContextUsageIndicator
-                  usage={sessionUsage}
-                  messages={messages}
-                  className="-mr-2 -my-[3px]"
-                  onCompact={onCompact}
-                  compactSignals={compactSignals}
-                />
-              )}
-            </div>
-            <div
-              className="flex items-center justify-between gap-3 px-2 pb-2"
-              data-composer-toolbar={toolbarMode}
-            >
-              {isMobileShell ? (
-                <div
-                  className="flex min-w-0 flex-1 items-center gap-2"
-                  data-composer-toolbar-row="mobile"
-                >
-                  <ComposerAddSheet
-                    handle={composerAddHandle}
-                    disabled={disabled || sending}
-                    termulTools={termulTools}
-                    connectorsHost={connectorsHost}
-                    {...connectors}
-                  />
-                  {modelSelector}
-                  <div className="flex-1" />
-                  <ContextUsageIndicator
-                    usage={sessionUsage}
-                    messages={messages}
-                    onCompact={onCompact}
-                    compactSignals={compactSignals}
-                  />
-                  {sendButton}
-                </div>
-              ) : (
-                <>
-                  <div className="flex min-w-0 items-center gap-3">
-                    {/* While the composer is inert its rows are disabled, not
-                    hidden; connectors stay usable. Same as the launcher. */}
-                    <ComposerAddMenu
-                      handle={composerAddHandle}
+                  <SkillFilesProvider projectRoot={projectRoot ?? session.cwd}>
+                    <ChatComposerEditor
+                      className="min-w-0 flex-1"
+                      value={value}
+                      onValueChange={handleValueChange}
+                      onCaretChange={mentions.update}
+                      onBeforeEditorKeyDown={handleKeyDown}
+                      enterKeyHint={isMobileShell ? 'enter' : 'send'}
+                      onPasteAttachments={handleComposerPaste}
+                      getSkillPaths={() => skillPathsRef.current}
+                      editorRef={editorRef}
+                      inputRef={composerInputRef}
                       disabled={disabled || sending}
+                      // Working chat: 1 line (16px × 1.625) up to 3 lines, then scroll.
+                      minHeight={
+                        isMobileShell
+                          ? COMPOSER_PHONE_INPUT_MIN_HEIGHT
+                          : startScreen
+                            ? CHAT_START_INPUT_MIN_HEIGHT
+                            : 26
+                      }
+                      maxHeight={
+                        isMobileShell
+                          ? COMPOSER_PHONE_INPUT_MAX_HEIGHT
+                          : startScreen
+                            ? CHAT_START_INPUT_MAX_HEIGHT
+                            : 78
+                      }
+                      placeholder={
+                        disabled
+                          ? disabledPlaceholder
+                          : hasCommandToken
+                            ? 'Add a message (optional)…'
+                            : isMobileShell
+                              ? COMPOSER_PHONE_PLACEHOLDER
+                              : 'Ask anything… (/ for commands, @ for files and chats)'
+                      }
+                    />
+                  </SkillFilesProvider>
+                  {/* Context usage ring: top right, centered on the first line.
+                  The mobile row carries the ring in its toolbar instead. */}
+                  {!isMobileShell && (
+                    <ContextUsageIndicator
+                      usage={sessionUsage}
+                      messages={messages}
+                      className="-mr-2 -my-[3px]"
+                      onCompact={onCompact}
+                      compactSignals={compactSignals}
+                    />
+                  )}
+                </motion.div>
+                {/* The toolbar's two groups move on their own (`position`), so the
+                  right group keeps to the card's right edge while it grows. */}
+                <div
+                  className={cn(
+                    'flex items-center justify-between',
+                    // Phone (Paper "2.6b"): 4px left, 6px right, 6px bottom.
+                    isMobileShell ? 'pb-1.5 pl-1 pr-1.5' : 'gap-3 px-2 pb-2'
+                  )}
+                  data-composer-toolbar={toolbarMode}
+                >
+                  {isMobileShell ? (
+                    <div
+                      className="flex min-w-0 flex-1 items-center gap-1"
+                      data-composer-toolbar-row="mobile"
+                    >
+                      <ComposerAddSheet
+                        handle={composerAddHandle}
+                        disabled={disabled || sending}
+                        termulTools={termulTools}
+                        connectorsHost={connectorsHost}
+                        {...connectors}
+                      />
+                      {modelSelector}
+                      <div className="flex-1" />
+                      <ContextUsageIndicator
+                        usage={sessionUsage}
+                        messages={messages}
+                        onCompact={onCompact}
+                        compactSignals={compactSignals}
+                      />
+                      {sendButton}
+                    </div>
+                  ) : (
+                    <>
+                      <motion.div className="flex min-w-0 items-center gap-1.5" {...morph.content}>
+                        {/* While the composer is inert its rows are disabled, not
+                    hidden. Composer V2: the mode chip sits right of `+`. */}
+                        <ComposerAddMenu
+                          handle={composerAddHandle}
+                          disabled={disabled || sending}
+                          termulTools={termulTools}
+                        />
+                        {agentModeChip}
+                        <ClaudeAccountChip sessionId={session.id} />
+                        <CodexAccountChip sessionId={session.id} />
+                      </motion.div>
+                      <motion.div
+                        {...morph.content}
+                        className={cn(
+                          // #859: no wrap in narrow mode — the chip rows scroll
+                          // horizontally instead of stacking to 3 lines.
+                          'flex min-w-0 items-center justify-end gap-1',
+                          toolbarMode === 'narrow' && 'flex-1'
+                        )}
+                      >
+                        {/* #859: a narrow toolbar scrolls the model chip
+                          horizontally instead of wrapping it. */}
+                        {selectorMounted ? (
+                          <div
+                            className={cn(
+                              'flex min-w-0 items-center justify-end',
+                              toolbarMode === 'narrow'
+                                ? 'max-w-full flex-1 gap-2 overflow-x-auto scrollbar-hide'
+                                : 'flex-wrap gap-2.5'
+                            )}
+                            data-composer-toolbar-row={toolbarMode === 'narrow' ? '1' : 'single'}
+                          >
+                            {modelSelector}
+                          </div>
+                        ) : null}
+                        {sendButton}
+                      </motion.div>
+                    </>
+                  )}
+                </div>
+              </ComposerRaised>
+              {isMobileShell ? null : (
+                <ComposerFootRow
+                  start={worktree}
+                  end={
+                    <ComposerConnectorsButton
                       connectors={connectors}
                       connectorsHost={connectorsHost}
-                      termulTools={termulTools}
+                      onClosed={composerAddHandle.focusEditor}
                     />
-                    <ClaudeAccountChip sessionId={session.id} />
-                  </div>
-                  <div
-                    className={cn(
-                      // #859: no wrap in narrow mode — the chip rows scroll
-                      // horizontally instead of stacking to 3 lines.
-                      'flex min-w-0 items-center justify-end gap-2.5',
-                      toolbarMode === 'narrow' && 'flex-1'
-                    )}
-                  >
-                    {(() => {
-                      // Underlying availability conditions, not JSX-element
-                      // truthiness — a chip element is always truthy even when it
-                      // renders null internally (shared by both row layouts).
-                      const agentModesAvailable =
-                        session.modes != null && session.modes.availableModes.length > 0
-                      return toolbarMode === 'narrow' ? (
-                        (() => {
-                          // The agent control gates row 1 on the session's live
-                          // agent id (cheap, non-circular): the picker renders null
-                          // itself when the agent resolves to nothing, so row 1
-                          // never renders an empty container for it.
-                          const hasRow1 = agentModesAvailable || selectorMounted
-                          if (!hasRow1) return null
-                          return (
-                            <div className="flex min-w-0 flex-1 flex-col items-end gap-2">
-                              {/* #859: rows scroll horizontally instead of wrapping
-                              to 2–3 lines on phones (the composer grew to
-                              ~220px when every picker wrapped). Chips keep
-                              their own height; no wrap → one row each. */}
-                              {hasRow1 && (
-                                <div
-                                  className="flex min-w-0 max-w-full items-center justify-end gap-2 overflow-x-auto scrollbar-hide"
-                                  data-composer-toolbar-row="1"
-                                >
-                                  {modelSelector}
-                                  {agentModeChip}
-                                </div>
-                              )}
-                            </div>
-                          )
-                        })()
-                      ) : agentModesAvailable || selectorMounted ? (
-                        <div
-                          className="flex min-w-0 flex-wrap items-center justify-end gap-2.5"
-                          data-composer-toolbar-row="single"
-                        >
-                          {modelSelector}
-                          {agentModeChip}
-                        </div>
-                      ) : null
-                    })()}
-                    {sendButton}
-                  </div>
-                </>
+                  }
+                />
               )}
             </div>
-          </div>
-        </ComposerBeamShell>
-        {!isMobileShell && <ChatContextStrip session={session} />}
+          </ComposerBeamShell>
+        </motion.div>
+        {/* Phone, new chat only (Paper "2.6g"): the worktree strip under the
+            compact composer. A running chat shows its worktree in the header. */}
+        {isMobileShell && startScreen && worktree ? (
+          <div data-composer-phone-strip="true">{worktree}</div>
+        ) : null}
       </div>
+    </div>
+  )
+}
+
+/** Shown over the composer card while files are dragged over it. */
+function ComposerDropOverlay({ className }: { className: string }): React.JSX.Element {
+  return (
+    <div
+      className={cn(
+        'pointer-events-none absolute inset-0 z-10 flex items-center justify-center border-2 border-dashed border-primary/60 bg-background/80 text-sm font-medium text-foreground backdrop-blur-sm',
+        className
+      )}
+    >
+      <span className="flex items-center gap-2">
+        <Paperclip size={16} /> Drop files to attach
+      </span>
     </div>
   )
 }

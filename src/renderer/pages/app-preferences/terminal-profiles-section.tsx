@@ -1,6 +1,6 @@
 import type { DetectedShells } from '@shared/types/ipc.types'
 import { useId, useState } from 'react'
-import { Pencil, Plus, Terminal, TerminalSquare, Trash2 } from '@/components/icons'
+import { Edit, Plus, Terminal, TerminalSquare, Trash2 } from '@/components/icons'
 import { SettingsEmptyState } from '@/components/settings/SettingsEmptyState'
 import { SettingsCard, SettingsGroup } from '@/components/settings/SettingsGroup'
 import { SettingsSection } from '@/components/settings/SettingsLayout'
@@ -142,7 +142,7 @@ export function TerminalProfilesSection({
                   onClick={() => setEditor({ mode: 'edit', profile })}
                   aria-label={`Edit ${profile.name}`}
                 >
-                  <Pencil size={14} />
+                  <Edit size={14} />
                 </Button>
                 <Button
                   type="button"
@@ -232,7 +232,7 @@ function TerminalProfileDialog({
         if (!open && !saving) onClose()
       }}
     >
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
+      <DialogContent className="max-h-[90dvh] overflow-y-auto overscroll-contain sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>{profile ? 'Edit terminal profile' : 'New terminal profile'}</DialogTitle>
           <DialogDescription>

@@ -1,14 +1,16 @@
 import { motion, useReducedMotion } from 'framer-motion'
-import { memo, useState } from 'react'
+import { memo, useEffect, useState } from 'react'
 import { ChevronRight } from '@/components/icons'
 import { CollapseExpandMotion } from '@/components/ui/collapse-expand-motion'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import type { FilePathResolutionContext } from '@/lib/file-path-links'
 import { cn } from '@/lib/utils'
+import { useToolCallReveal } from '@/stores/tool-call-reveal-store'
 import { CHAT_ROW_MIN_H } from './chat-layout'
 import { CHEVRON_TRANSITION } from './chat-motion'
 import type { TimelineItem } from './chat-timeline'
 import { RowReveal } from './RowReveal'
+import { useSubagentSurface } from './subagent-surface-context'
 import { ThoughtGroup } from './ThoughtGroup'
 import { ToolCallCard } from './ToolCallCard'
 import type { ToolActivitySummary } from './tool-call-summary'
@@ -52,9 +54,10 @@ interface WorkRunGroupProps {
 
 /**
  * One nested disclosure rolling up a run of thoughts and tool calls between
- * two narration messages; expanding lists them in order. Always starts
- * collapsed, live or failed, so narration stays adjacent; a failed run
- * flags itself in red instead of opening.
+ * two narration messages; expanding lists them in order. Starts collapsed,
+ * live or failed, so narration stays adjacent; a failed run flags itself in
+ * red instead of opening. Only a Background row asking to show one of its
+ * cards opens it.
  */
 function WorkRunGroupComponent({
   items,
@@ -66,11 +69,17 @@ function WorkRunGroupComponent({
 }: WorkRunGroupProps): React.JSX.Element {
   const reduced = useReducedMotion() ?? false
   const [open, setOpen] = useState(false)
+  const { sessionId } = useSubagentSurface()
+  const revealNonce = useToolCallReveal(sessionId, (id) =>
+    items.some((item) => item.kind === 'tool' && item.tool.toolCallId === id)
+  )
+  useEffect(() => {
+    if (revealNonce !== null) setOpen(true)
+  }, [revealNonce])
 
   return (
     <Collapsible open={open} onOpenChange={setOpen} className="min-w-0">
       <CollapsibleTrigger
-        data-press-feedback="off"
         className={cn(
           'flex w-full cursor-pointer items-center gap-1.5 text-left text-xs text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
           CHAT_ROW_MIN_H,
@@ -86,7 +95,7 @@ function WorkRunGroupComponent({
           <ChevronRight size={13} />
         </motion.span>
         {/* The shimmer is CSS on data-text, so a count change re-renders in place. */}
-        <span className={cn('t-think is-start min-w-0', !isLiveTail && 'is-settled')}>
+        <span className={cn('t-think is-start is-truncate min-w-0', !isLiveTail && 'is-settled')}>
           <span className="t-think-text tabular-nums" data-text={summary.label}>
             {summary.label}
           </span>

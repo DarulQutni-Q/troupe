@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { mockSessionIndexEntry } from '@/lib/test-utils/acp'
 import type { Worktree } from '@/types/project'
-import { branchLineOf, buildChatCards, filterChatCards } from './chat-cards'
+import { branchLineOf, buildChatCards, filterChatCards, hasChatCards } from './chat-cards'
 
 const worktree = (overrides: Partial<Worktree> = {}): Worktree => ({
   id: 'w1',
@@ -26,7 +26,46 @@ const entry = (id: string, overrides = {}) =>
 
 const agentNames = new Map([['cfg-1', 'Claude Code']])
 
+describe('hasChatCards', () => {
+  it('agrees with buildChatCards: discovered and other projects do not count, the pick narrows', () => {
+    const sessionIndex = [
+      entry('d', { discovered: true }),
+      entry('e', { projectId: 'p2' }),
+      entry('root', { cwd: '/repo' })
+    ]
+    expect(hasChatCards({ sessionIndex, project: project(), pick: undefined })).toBe(true)
+    expect(
+      hasChatCards({ sessionIndex: sessionIndex.slice(0, 2), project: project(), pick: undefined })
+    ).toBe(false)
+    expect(
+      hasChatCards({ sessionIndex, project: project(), pick: '/repo/.termul/worktrees/feature' })
+    ).toBe(false)
+  })
+})
+
 describe('buildChatCards', () => {
+  it('names the parent of a worker chat, through an agent switch and across worktree picks', () => {
+    const cards = buildChatCards({
+      sessionIndex: [
+        entry('parent', { title: 'Plan the refactor' }),
+        ...[
+          entry('worker', { startedBy: 'parent', lastActivityAt: 3 }),
+          entry('switched', { continuedFrom: 'worker', lastActivityAt: 4 }),
+          entry('orphan', { startedBy: 'gone', lastActivityAt: 2 }),
+          entry('plain', { lastActivityAt: 1 })
+        ].map((e) => ({ ...e, cwd: '/repo/.termul/worktrees/feature' }))
+      ],
+      project: project(),
+      pick: '/repo/.termul/worktrees/feature',
+      agentNames
+    })
+    expect(cards.map((card) => [card.entry.id, card.entry.startedByLabel])).toEqual([
+      ['switched', 'Started by Plan the refactor'],
+      ['orphan', undefined],
+      ['plain', undefined]
+    ])
+  })
+
   it('lists Workspace chats of the project newest first, id as tie-break, excluding discovered', () => {
     const cards = buildChatCards({
       sessionIndex: [
@@ -87,6 +126,52 @@ describe('buildChatCards', () => {
       agentNames
     })
     expect(outside).toHaveLength(2)
+  })
+
+  it('folds a switch chain to one card on the live session with its chain ids', () => {
+    const cards = buildChatCards({
+      sessionIndex: [
+        entry('src', { title: 'Debugging the deploy', lastActivityAt: 10, createdAt: 1 }),
+        entry('dst', {
+          continuedFrom: 'src',
+          title: 'Untitled Chat 2',
+          lastActivityAt: 20,
+          createdAt: 2,
+          agentConfigId: 'cfg-1'
+        })
+      ],
+      project: project(),
+      pick: undefined,
+      agentNames
+    })
+    expect(cards).toHaveLength(1)
+    expect(cards[0].entry.id).toBe('dst')
+    expect(cards[0].entry.title).toBe('Debugging the deploy')
+    expect(cards[0].entry.chainIds).toEqual(['src', 'dst'])
+    expect(cards[0].agentName).toBe('Claude Code')
+  })
+
+  it('keeps a chain member out of the picked scope as its own card', () => {
+    const cards = buildChatCards({
+      sessionIndex: [
+        entry('src', { title: 'Root chat' }),
+        entry('dst', {
+          continuedFrom: 'src',
+          cwd: '/repo/.termul/worktrees/feature/src',
+          title: 'Worktree chat'
+        })
+      ],
+      project: project(),
+      pick: '/repo/.termul/worktrees/feature',
+      agentNames
+    })
+    // Picked worktree scope shows only the worktree member — the display fold
+    // ran on the scoped set, where 'dst' has no in-scope source to fold into.
+    expect(cards.map((c) => c.entry.id)).toEqual(['dst'])
+    expect(cards[0].entry.title).toBe('Worktree chat')
+    // Delete membership still spans the project: removing the card removes
+    // the out-of-scope source too, so it cannot resurface in Workspace view.
+    expect(cards[0].entry.chainIds).toEqual(['src', 'dst'])
   })
 
   it('resolves the agent name and the index model', () => {

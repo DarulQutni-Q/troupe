@@ -60,6 +60,39 @@ function project(overrides: Partial<Project> = {}): Project {
 const spawnedEnv = (spawnAgent: ReturnType<typeof vi.fn>, call = 0): Record<string, string> =>
   spawnAgent.mock.calls[call]?.[0]?.env
 
+describe('ensureLiveAgent — a legacy OpenCode id', () => {
+  beforeEach(() => {
+    _resetDefiniteSpawnRejectionsForTesting()
+    seedProjectStore([])
+  })
+
+  it('spawns and keeps the saved OpenCode config when the chat names opencode-v2', async () => {
+    const { state, get, set } = makeStore({
+      id: 'acp-registry:opencode',
+      name: 'OpenCode',
+      command: '/managed/opencode',
+      args: ['acp']
+    })
+    state.spawnAgent.mockResolvedValue('agent-oc')
+
+    expect(await ensureLiveAgent(get, set, 'acp-registry:opencode-v2', '/work/app')).toBe(
+      'agent-oc'
+    )
+    expect(state.spawnAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        configId: 'acp-registry:opencode',
+        command: '/managed/opencode'
+      }),
+      undefined,
+      undefined
+    )
+    expect(state.killAgent).not.toHaveBeenCalled()
+    expect(state.configToLiveAgent[agentReuseKey('acp-registry:opencode', '/work/app')]).toBe(
+      'agent-oc'
+    )
+  })
+})
+
 describe('ensureLiveAgent — project environment variables (#1118)', () => {
   beforeEach(() => {
     _resetDefiniteSpawnRejectionsForTesting()
@@ -279,5 +312,41 @@ describe('ensureLiveAgent — one Agent process per chat, warm sessions included
     expect(await ensureLiveAgent(get, set, 'cfg-1', '/work/app', { holder: 'warm' })).toBe(
       'agent-warm'
     )
+  })
+})
+
+describe('ensureLiveAgent — an agent opened for one existing chat', () => {
+  beforeEach(() => {
+    _resetDefiniteSpawnRejectionsForTesting()
+    _resetInFlightPreparedForTesting()
+    seedProjectStore([project()])
+  })
+
+  it('spawns for the chat, keys the agent to it, and a new chat does not reuse it', async () => {
+    const { state, get, set } = makeStore()
+    state.spawnAgent.mockResolvedValueOnce('agent-chat').mockResolvedValueOnce('agent-new')
+
+    expect(await ensureLiveAgent(get, set, 'cfg-1', '/work/app', { sessionId: 's1' })).toBe(
+      'agent-chat'
+    )
+    expect(state.spawnAgent.mock.calls[0]?.slice(1)).toEqual(['proj-1', 's1'])
+    expect(state.configToLiveAgent).toEqual({
+      'cfg-1\0/work/app\0project\0proj-1\0chat\0s1': 'agent-chat'
+    })
+
+    state.agentStatus['agent-chat'] = 'connected'
+    expect(await ensureLiveAgent(get, set, 'cfg-1', '/work/app')).toBe('agent-new')
+    expect(state.spawnAgent.mock.calls[1]?.slice(1)).toEqual(['proj-1', undefined])
+  })
+
+  it('reuses the chat agent for a later reopen of the same chat', async () => {
+    const { state, get, set } = makeStore()
+    state.configToLiveAgent[agentReuseKey('cfg-1', '/work/app', 'proj-1', 's1')] = 'agent-chat'
+    state.agentStatus['agent-chat'] = 'connected'
+
+    expect(await ensureLiveAgent(get, set, 'cfg-1', '/work/app', { sessionId: 's1' })).toBe(
+      'agent-chat'
+    )
+    expect(state.spawnAgent).not.toHaveBeenCalled()
   })
 })

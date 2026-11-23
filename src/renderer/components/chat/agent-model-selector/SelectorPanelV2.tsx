@@ -1,5 +1,6 @@
 import { motion, useReducedMotion } from 'framer-motion'
 import {
+  Fragment,
   type KeyboardEvent,
   type ReactNode,
   useCallback,
@@ -10,11 +11,14 @@ import {
   useState
 } from 'react'
 import { toast } from 'sonner'
-import { Check, MoreHorizontal, Search, Star } from '@/components/icons'
+import { MoreHorizontal, Search } from '@/components/icons'
+import { Button } from '@/components/ui/button'
 import { BAND_FOCUS_CLASS, INNER_FIELD_FOCUS_CLASS } from '@/components/ui/panel-styles'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { logFrontendError } from '@/lib/log-api'
 import { cn } from '@/lib/utils'
+import { flattenConfigOptionValues } from '../chat-input-bar-config'
+import { AgentTabStrip, quick, type TabItem } from './AgentTabStrip'
+import { DenseModelRow } from './DenseModelRow'
 import {
   type FavoriteKey,
   type FavoritesStore,
@@ -23,21 +27,8 @@ import {
   useFavoriteModels,
   useFavoritesStore
 } from './favorite-models'
-import {
-  type ChoiceSection,
-  DENSE_ROW,
-  denseRowSize,
-  EDIT_ROW_BOX,
-  EditableRow,
-  type EditRowHandle,
-  ExitingEdit,
-  moveFocus,
-  OptionRow,
-  OptionSwitchRow,
-  ROW_FOCUS,
-  thinkingLabel,
-  useEditMotion
-} from './SelectorOptionRows'
+import { PanelAgentSetup, usePanelAgentSetup } from './PanelAgentSetup'
+import { type ChoiceSection, moveFocus, OptionRow, OptionSwitchRow } from './SelectorOptionRows'
 import type { SelectorPanelProps } from './SelectorPanel'
 import {
   AgentRow,
@@ -50,29 +41,18 @@ import {
   TabGlyph
 } from './SelectorRows'
 import { OtherAgentSignIn } from './SignInActions'
-import { StarFlip, type StarPhase } from './StarFlip'
 import {
   AGENT_TRACK_CLASS,
   type AgentTab,
-  agentInRowName,
+  agentTabSelected,
   agentTrackCapacity,
   type CatalogModel,
   entryDisableReason,
   favoriteRowName,
   type ModelCatalog,
-  rowAccessibleName,
-  rowHasDescription,
-  rowTooltip,
-  rowTooltipDescription,
   splitContextOption
 } from './selector-model'
-import {
-  PICKER_ICON,
-  PICKER_LABEL,
-  PICKER_ROW_NAME_PULL,
-  PICKER_ROW_SELECTED,
-  PICKER_ROW_SELECTED_BOX
-} from './selector-tokens'
+import { PICKER_LABEL } from './selector-tokens'
 import { editSections, restSections } from './session-option-sections'
 import { useRejectedOptionValues } from './use-option-values'
 import { type FavoriteHit, useSelectorPanelState } from './use-selector-panel-state'
@@ -103,9 +83,6 @@ function agentRowKey(tab: AgentTab | undefined): string | null {
 function favoriteEntries(list: HTMLElement | null): HTMLElement[] {
   return Array.from(list?.querySelectorAll<HTMLElement>('[data-favorite-entry]') ?? [])
 }
-/** `--ease-smooth-out`; framer needs the curve itself, not the variable. */
-const EASE_OUT = [0.22, 1, 0.36, 1] as const
-const quick = (reduced: boolean) => ({ duration: reduced ? 0 : 0.15, ease: EASE_OUT })
 
 export interface SelectorPanelV2Props extends SelectorPanelProps {
   /**
@@ -121,442 +98,6 @@ function SectionLabel({ id, children }: { id?: string; children: ReactNode }): R
   return (
     <div id={id} className={PICKER_LABEL}>
       {children}
-    </div>
-  )
-}
-
-function DenseModelRow({
-  name: rawName,
-  tooltip,
-  selected,
-  glyph,
-  agentId,
-  agentName,
-  edit,
-  favorite,
-  inFavorites = false,
-  rowKey,
-  highlighted = false,
-  disabled,
-  touch,
-  reduced,
-  onPick
-}: {
-  name: string
-  tooltip?: string
-  selected: boolean
-  /** The model's own agent, as a glyph; `agentId` names that agent's config. */
-  glyph: ReactNode
-  agentId: string | null
-  /** Another agent's model: named for screen readers; the glyph shows it. */
-  agentName?: string
-  /** Session options of the active model; adds the Edit button. */
-  edit?: ChoiceSection[]
-  /** Adds the star. `entry` marks a row in the Favorites section (for focus). */
-  favorite?: { on: boolean; entry?: string; onToggle: () => void }
-  /** A row in Favorites: its Edit is named apart from the list row's. */
-  inFavorites?: boolean
-  /** Stable across re-renders, so focus can find the row again after a pick remounts it. */
-  rowKey: string
-  /** The first search result while typing: Enter in search picks it. */
-  highlighted?: boolean
-  disabled: boolean
-  touch: boolean
-  /** Prefers reduced motion: Edit neither enters nor leaves, and the star does not move. */
-  reduced: boolean
-  onPick: () => void
-}): React.JSX.Element {
-  const name = rawName.trim()
-  const label = rowAccessibleName({ name, agentName })
-  // The tooltip's screen-reader copy: only what `label` does not already say.
-  const description = rowTooltipDescription({
-    agentName,
-    agentInName: agentInRowName(agentName),
-    details: tooltip
-  })
-  const editable = Boolean(edit && edit.length > 0)
-  // Edit showing the level marks the selected row (its list row and its
-  // Favorites copy alike); it replaces the check there. A selected row with no
-  // level on Edit keeps it.
-  const level = editable && edit !== undefined ? thinkingLabel(edit) : undefined
-  const levelOnEdit = level !== undefined
-  // A pick moves Edit: in on the picked row, out (inert) on the old one.
-  const { entering, exiting } = useEditMotion(editable ? { level } : null, reduced)
-  // With no check, the star's slot ends the row and the star sits flush
-  // before Edit, at the row's own icon gap (3px glyph inset, Edit's 6px pad).
-  const flush = favorite !== undefined && levelOnEdit
-  // The star follows Edit on a pick (`StarFlip`).
-  const starRef = useRef<HTMLSpanElement>(null)
-  const starPhase: StarPhase = editable
-    ? levelOnEdit
-      ? 'level'
-      : 'edit'
-    : exiting
-      ? 'exiting'
-      : 'none'
-  // The selected row is filled like the rail's active tab, on its outermost box
-  // so the fill takes in the star, the check and Edit: the box around Edit (or
-  // a leaving one), else the star's box, else the row itself.
-  const outer = editable ? 'edit' : exiting ? 'exiting' : favorite ? 'favorite' : 'row'
-  const fillOn = (box: typeof outer): boolean => selected && outer === box
-  const fill = (box: typeof outer): { 'data-row-selected'?: '' } =>
-    fillOn(box) ? { 'data-row-selected': '' } : {}
-  // The search highlight looks like hover, on the same outer box.
-  const highlightOn = (box: typeof outer): boolean => highlighted && !selected && outer === box
-  // Controlled, so a focus handed back by the closing flyout can skip it.
-  const [tipOpen, setTipOpen] = useState(false)
-  const renderRow = (handle?: EditRowHandle): React.JSX.Element => {
-    const quiet = (): void => {
-      if (handle) handle.suppressNextTooltip.current = false
-    }
-    const button = (
-      <button
-        ref={handle?.ref}
-        type="button"
-        data-selector-row=""
-        data-row-key={rowKey}
-        data-search-highlight={highlighted ? '' : undefined}
-        aria-label={label}
-        aria-pressed={selected}
-        disabled={disabled}
-        onClick={onPick}
-        onKeyDown={handle?.onKeyDown}
-        // Any real pointer or focus move ends the flyout's quiet return.
-        onPointerMove={quiet}
-        onPointerEnter={quiet}
-        onBlur={quiet}
-        // A tooltip that adds nothing to the row's name (name only, or name and
-        // its agent) drops the trigger's `aria-describedby` (the row's props win
-        // over the Slot's).
-        {...(rowHasDescription(description) ? {} : { 'aria-describedby': undefined })}
-        {...fill('row')}
-        // Beside an Edit (or one leaving) the hover belongs to the box around both.
-        className={cn(
-          DENSE_ROW,
-          denseRowSize(touch),
-          (editable || favorite || exiting) && 'min-w-0 flex-1 hover:bg-transparent',
-          flush && 'pr-0',
-          fillOn('row') && PICKER_ROW_SELECTED_BOX,
-          highlightOn('row') && 'bg-row-hover'
-        )}
-      >
-        <span
-          data-row-agent={agentId ?? undefined}
-          className="inline-flex w-4 shrink-0 justify-center"
-        >
-          {glyph}
-        </span>
-        {/* The row is named by `aria-label`; the visible text stays out of it. */}
-        <span
-          data-row-name=""
-          aria-hidden="true"
-          className={cn(PICKER_ROW_NAME_PULL, 'min-w-0 flex-1 truncate')}
-        >
-          {name}
-        </span>
-        {/* The star's slot, always reserved so nothing moves when it shows, and
-            the name truncates a row gap before the star, never under it. */}
-        {favorite ? (
-          <span aria-hidden="true" className={cn('shrink-0', touch ? 'w-11' : 'w-5')} />
-        ) : null}
-        {levelOnEdit ? null : (
-          <Check
-            size={PICKER_ICON.check}
-            data-row-check=""
-            aria-hidden="true"
-            className={cn('shrink-0', selected ? 'opacity-100' : 'opacity-0')}
-          />
-        )}
-      </button>
-    )
-    // Leads with the full name, which a long one truncates in the row.
-    const tip = rowTooltip({ name, agentName, details: tooltip })
-    const withTip = touch ? (
-      button
-    ) : (
-      <Tooltip
-        open={tipOpen}
-        onOpenChange={(next) => {
-          if (next && handle?.suppressNextTooltip.current) return
-          setTipOpen(next)
-        }}
-      >
-        <TooltipTrigger asChild>{button}</TooltipTrigger>
-        <TooltipContent
-          side="right"
-          className="max-w-64 whitespace-pre-line"
-          // Visual only for the name: the description skips it, so a screen
-          // reader does not hear the row's name twice.
-          aria-label={description}
-        >
-          {tip}
-        </TooltipContent>
-      </Tooltip>
-    )
-    if (!favorite) return withTip
-    // The star is the row button's sibling, laid over its reserved slot
-    // (right of the name, left of the check or flush with Edit), never nested in it.
-    return (
-      <div
-        data-favorite-entry={favorite.entry}
-        {...fill('favorite')}
-        className={cn(
-          'group/fav relative flex min-w-0 flex-1 rounded-md',
-          // An editable row's hover already belongs to the row around Edit.
-          !editable && 'transition-colors duration-150 ease-out hover:bg-row-hover',
-          fillOn('favorite') && PICKER_ROW_SELECTED_BOX,
-          highlightOn('favorite') && 'bg-row-hover'
-        )}
-      >
-        {withTip}
-        <StarButton
-          boxRef={starRef}
-          on={favorite.on}
-          flush={flush}
-          touch={touch}
-          disabled={disabled}
-          onClick={favorite.onToggle}
-        />
-      </div>
-    )
-  }
-  return (
-    <StarFlip star={starRef} phase={starPhase} reduced={reduced}>
-      {!edit || !editable ? (
-        // The old Edit fades out beside the plain row. The box stays mounted
-        // (`contents` at rest), so the row keeps its node, and focus, when it ends.
-        <div
-          {...fill('exiting')}
-          className={
-            exiting
-              ? cn(
-                  EDIT_ROW_BOX,
-                  fillOn('exiting') && PICKER_ROW_SELECTED_BOX,
-                  highlightOn('exiting') && 'bg-row-hover'
-                )
-              : 'contents'
-          }
-        >
-          {renderRow()}
-          {exiting ? <ExitingEdit face={exiting} touch={touch} /> : null}
-        </div>
-      ) : (
-        <EditableRow
-          modelName={name}
-          selected={fillOn('edit')}
-          inFavorites={inFavorites}
-          entering={entering}
-          sections={edit}
-          disabled={disabled}
-          touch={touch}
-          renderRow={renderRow}
-        />
-      )}
-    </StarFlip>
-  )
-}
-
-/**
- * Star a model. Shows on row hover or focus, and always once starred (filled).
- * Keyboard: like Edit, a Tab stop after its row; the arrow keys move between
- * rows only. On touch, with no hover, it always shows.
- */
-function StarButton({
-  boxRef,
-  on,
-  flush,
-  touch,
-  disabled,
-  onClick
-}: {
-  /** The positioned box `StarFlip` moves; the button's own fades stay its own. */
-  boxRef: React.RefObject<HTMLSpanElement>
-  on: boolean
-  /** No check on the row: flush with its right edge, so with Edit. */
-  flush: boolean
-  touch: boolean
-  disabled: boolean
-  onClick: () => void
-}): React.JSX.Element {
-  return (
-    <span
-      ref={boxRef}
-      data-star-box=""
-      className={cn(
-        // Else right of it: the row's 8px padding, the 14px check, the 8px gap.
-        'absolute inset-y-0 flex',
-        flush ? 'right-0' : 'right-7.5'
-      )}
-    >
-      <button
-        type="button"
-        data-testid="selector-favorite"
-        aria-pressed={on}
-        aria-label={on ? 'Remove from favorites' : 'Add to favorites'}
-        disabled={disabled}
-        onClick={onClick}
-        className={cn(
-          'flex items-center justify-center rounded-md',
-          'transition-[opacity,color] duration-150 ease-out motion-reduce:transition-none disabled:cursor-not-allowed',
-          touch ? 'w-11' : 'w-5',
-          on
-            ? 'text-foreground'
-            : cn(
-                'text-muted-foreground hover:text-foreground',
-                !touch &&
-                  'opacity-0 focus-visible:opacity-100 group-focus-within/fav:opacity-100 group-hover/fav:opacity-100'
-              ),
-          ROW_FOCUS
-        )}
-      >
-        <Star size={14} aria-hidden="true" className={cn(on && '[&_path]:fill-current')} />
-      </button>
-    </span>
-  )
-}
-
-interface TabItem {
-  key: string
-  label: string
-  glyph: ReactNode
-  selected: boolean
-  title: string
-  onSelect: () => void
-}
-
-const TAB_KEYS = {
-  horizontal: { next: 'ArrowRight', prev: 'ArrowLeft' },
-  vertical: { next: 'ArrowDown', prev: 'ArrowUp' }
-} as const
-
-/**
- * Agent tabs as glyphs. Horizontal: a strip over a hairline, the active tab
- * underlined. Vertical: a rail left of the list, the active tab filled. The
- * mark slides between tabs. Tabs pattern: one tab stop
- * (the selected tab); the arrow keys of the orientation, Home and End move
- * focus, Enter or Space selects. With `followFocus` the arrows select too.
- */
-function AgentTabStrip({
-  id,
-  items,
-  orientation,
-  followFocus,
-  disabled,
-  touch,
-  reduced
-}: {
-  id: string
-  items: TabItem[]
-  orientation: 'horizontal' | 'vertical'
-  followFocus: boolean
-  disabled: boolean
-  touch: boolean
-  reduced: boolean
-}): React.JSX.Element {
-  const ref = useRef<HTMLDivElement>(null)
-  const vertical = orientation === 'vertical'
-  // One tab stop: the selected tab, or the first when none is selected.
-  const stop = Math.max(
-    items.findIndex((item) => item.selected),
-    0
-  )
-  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
-    const tabs = Array.from(ref.current?.querySelectorAll<HTMLElement>('[role="tab"]') ?? [])
-    const index = tabs.indexOf(document.activeElement as HTMLElement)
-    if (index < 0) return
-    const last = tabs.length - 1
-    const keys = TAB_KEYS[orientation]
-    const next =
-      event.key === keys.next
-        ? index === last
-          ? 0
-          : index + 1
-        : event.key === keys.prev
-          ? index === 0
-            ? last
-            : index - 1
-          : event.key === 'Home'
-            ? 0
-            : event.key === 'End'
-              ? last
-              : null
-    if (next == null) return
-    event.preventDefault()
-    tabs[next]?.focus()
-    if (followFocus) items[next]?.onSelect()
-  }
-  return (
-    <div
-      ref={ref}
-      role="tablist"
-      aria-label="Agents"
-      aria-orientation={orientation}
-      onKeyDown={onKeyDown}
-      className={cn(
-        'flex',
-        vertical
-          ? // `box-content`: the hairline sits outside the 40px (56px touch) column,
-            // so a 28px (44px) tab has 6px on each side and its centre is the rail's.
-            cn(
-              'box-content shrink-0 flex-col items-center border-r border-border',
-              AGENT_TRACK_CLASS.railPadding,
-              touch ? 'w-14' : 'w-10'
-            )
-          : cn('border-b border-border', touch ? 'px-3' : 'px-1')
-      )}
-    >
-      {items.map((item, index) => (
-        <button
-          key={item.key}
-          type="button"
-          role="tab"
-          aria-selected={item.selected}
-          aria-label={item.label}
-          title={item.title}
-          tabIndex={index === stop ? 0 : -1}
-          disabled={disabled}
-          data-testid={`agent-tab-${item.key}`}
-          onClick={item.onSelect}
-          className={cn(
-            'relative flex items-center justify-center transition-colors duration-150 ease-out disabled:cursor-not-allowed disabled:opacity-60',
-            vertical
-              ? // A square as tall as a list row (28px), so each icon sits on the
-                // list's row grid; 6px radius like the rows.
-                cn('rounded-md', touch ? AGENT_TRACK_CLASS.railTabTouch : AGENT_TRACK_CLASS.railTab)
-              : cn('flex-1 rounded-t-md', touch ? 'h-11' : 'h-8'),
-            // Icons keep their colour (brand or foreground); state reads from
-            // the icon's opacity, as the active fill alone is too faint.
-            'group/tab text-foreground',
-            !item.selected && (vertical ? 'hover:bg-foreground/5' : 'hover:bg-row-hover'),
-            ROW_FOCUS
-          )}
-        >
-          {item.selected ? (
-            <motion.span
-              layoutId={`${id}-indicator`}
-              aria-hidden="true"
-              transition={quick(reduced)}
-              className={cn(
-                'pointer-events-none absolute',
-                // Rail: the popover's active-segment fill (docs/design/colors.md)
-                // filling the tab. Top strip: a bar under the tab.
-                vertical
-                  ? cn('inset-0 rounded-md', PICKER_ROW_SELECTED)
-                  : 'inset-x-2 -bottom-px h-0.5 rounded-full bg-foreground'
-              )}
-            />
-          ) : null}
-          <span
-            data-tab-glyph=""
-            className={cn(
-              'relative inline-flex transition-opacity duration-150 ease-out motion-reduce:transition-none',
-              item.selected ? 'opacity-100' : 'opacity-55 group-hover/tab:opacity-80'
-            )}
-          >
-            {item.glyph}
-          </span>
-        </button>
-      ))}
     </div>
   )
 }
@@ -604,8 +145,8 @@ function revealChosenRow(list: HTMLElement): void {
 }
 
 /**
- * The footer's session option rows: the agent's other options, after the
- * active model's own ones when no active row holds them.
+ * The footer's session option rows: the agent's options other than the
+ * active model's own, which always open from its Edit.
  */
 function SessionOptions({
   sections,
@@ -626,7 +167,10 @@ function SessionOptions({
       onKeyDown={(event) => {
         moveFocus(event, ref.current, '[data-option-row]')
       }}
-      className={cn('flex min-w-0 flex-col border-t border-border', touch ? 'px-3 py-1.5' : 'p-1')}
+      className={cn(
+        'flex min-w-0 flex-col border-t-[0.5px] border-border',
+        touch ? 'px-3 py-1.5' : 'p-1'
+      )}
     >
       {sections.map((section) =>
         section.kind === 'toggle' ? (
@@ -661,7 +205,7 @@ function SessionOptions({
  * Model picker v2: the same state as `SelectorPanel` (one hook) in a denser
  * layout. Glyph tabs with an underline, a Favorites section, 28px rows, and
  * an Edit flyout on the active model for Thinking, Context and Fast mode.
- * Visual direction after volt (MIT, github.com/LeulAria/volt), on Termul
+ * Visual direction after volt (MIT, github.com/LeulAria/volt), on Troupe
  * tokens.
  */
 export function SelectorPanelV2(props: SelectorPanelV2Props): React.JSX.Element {
@@ -681,7 +225,9 @@ export function SelectorPanelV2(props: SelectorPanelV2Props): React.JSX.Element 
   const { effectiveCatalog, capabilities, nameOf, tabOf } = state
   const searchRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement | null>(null)
+  const setup = usePanelAgentSetup(state, props.escapeRef, { list: listRef, search: searchRef })
   const favoritesLabelId = useId()
+  const moreLabelId = useId()
 
   const { isRejected, trySet } = useRejectedOptionValues(
     effectiveId,
@@ -691,12 +237,20 @@ export function SelectorPanelV2(props: SelectorPanelV2Props): React.JSX.Element 
   const { context, rest } = splitContextOption(props.genericOptions)
   const edit = editSections(props, context, isRejected, trySet)
   // The Edit flyout hangs off the active model's row. With no such row on
-  // screen (no model list, or a value outside it) the footer takes its rows.
+  // screen (no model list, or a value outside it) the model is pinned under
+  // the Context row with its own Edit, so Thinking, Context and Fast mode
+  // always open from the picked model.
   const activeShown =
     modelValue !== undefined &&
     (view.kind === 'effective'
       ? Boolean(view.catalog?.options.some((m) => m.value === modelValue))
       : view.kind === 'search' && view.own.some((m) => m.value === modelValue))
+  // The pinned row's name: the model's own name, else the agent's.
+  const pinnedName =
+    (modelValue !== undefined && props.modelOption
+      ? flattenConfigOptionValues(props.modelOption).find((m) => m.value === modelValue)?.name
+      : undefined) ?? nameOf(effectiveId)
+  const pinnedTab = tabOf(effectiveId)
 
   const [searchFocused, setSearchFocused] = useState(false)
   // Command palette: while typing, the first result is highlighted and Enter
@@ -707,7 +261,8 @@ export function SelectorPanelV2(props: SelectorPanelV2Props): React.JSX.Element 
         ? rowKeyOf(effectiveId, view.own[0].value)
         : view.others[0]
           ? rowKeyOf(view.others[0].configId, view.others[0].model.value)
-          : agentRowKey(view.agents.find((tab) => !state.notSetUp(tab)))
+          : // A Needs setup agent is a result too: Enter opens its setup.
+            agentRowKey(view.agents[0])
       : null
 
   // Screen readers hear which result Enter picks while search has focus.
@@ -831,15 +386,21 @@ export function SelectorPanelV2(props: SelectorPanelV2Props): React.JSX.Element 
     })
   }
 
-  const agentRow = (tab: AgentTab, key: string, onPick: () => void): React.JSX.Element => (
+  const agentRow = (
+    tab: AgentTab,
+    key: string,
+    onPick: () => void,
+    badge: string | null = state.badgeOf(tab)
+  ): React.JSX.Element => (
     <AgentRow
       key={key}
       tab={tab}
-      badge={state.badgeOf(tab)}
+      badge={badge}
       highlighted={agentRowKey(tab) === highlightKey}
-      disabled={disabled || state.notSetUp(tab)}
+      disabled={disabled}
       touch={touch}
-      onPick={onPick}
+      // Needs setup: its setup, in place of the list (the chat cannot arm it yet).
+      onPick={state.notSetUp(tab) ? () => setup.open(tab) : onPick}
     />
   )
 
@@ -865,7 +426,36 @@ export function SelectorPanelV2(props: SelectorPanelV2Props): React.JSX.Element 
         )
       break
     case 'more':
-      body = view.tabs.map((tab) => agentRow(tab, tab.configId, () => state.openAgent(tab)))
+      // Ready agents that did not fit the track come first, unlabelled; then
+      // "Needs setup" and "Install", as in the mobile provider list.
+      body = view.groups.map(({ group, label, tabs: inGroup }, index) => {
+        const labelId = `${moreLabelId}-${group}`
+        const rows = inGroup.map((tab) =>
+          agentRow(
+            tab,
+            tab.configId,
+            () => state.openAgent(tab),
+            // The heading says it; no "Not set up" pill on each row.
+            group === 'setup' ? null : state.badgeOf(tab)
+          )
+        )
+        return (
+          <Fragment key={group}>
+            {index > 0 ? (
+              <div aria-hidden="true" className="mx-2 my-1 h-[0.5px] bg-border" />
+            ) : null}
+            {group === 'ready' ? (
+              rows
+            ) : (
+              // biome-ignore lint/a11y/useSemanticElements: a fieldset would give agent rows form semantics and min-content sizing
+              <div role="group" aria-labelledby={labelId}>
+                <SectionLabel id={labelId}>{label}</SectionLabel>
+                {rows}
+              </div>
+            )}
+          </Fragment>
+        )
+      })
       break
     case 'install':
       body = (
@@ -948,7 +538,11 @@ export function SelectorPanelV2(props: SelectorPanelV2Props): React.JSX.Element 
               onCancelAndSwitch={state.cancelAndSwitch}
             />
           ) : (
-            <Hint>{`Switches to ${nameOf(viewId)} on the next send`}</Hint>
+            <Hint>
+              {sw.emptyChat
+                ? `Starts this chat on ${nameOf(viewId)}.`
+                : `Switches to ${nameOf(viewId)} on the next send.`}
+            </Hint>
           )}
         </>
       )
@@ -969,13 +563,17 @@ export function SelectorPanelV2(props: SelectorPanelV2Props): React.JSX.Element 
               touch={touch}
             />
           ) : view.retry ? (
-            <button
-              type="button"
-              onClick={view.retry}
-              className={cn(DENSE_ROW, denseRowSize(touch), 'justify-center')}
-            >
-              Try again
-            </button>
+            <div className="flex px-1">
+              <Button
+                type="button"
+                variant="secondary"
+                size={touch ? 'touch' : 'xs'}
+                onClick={view.retry}
+                className="min-w-0 flex-1"
+              >
+                Try again
+              </Button>
+            </div>
           ) : null}
         </div>
       )
@@ -984,14 +582,30 @@ export function SelectorPanelV2(props: SelectorPanelV2Props): React.JSX.Element 
       body = <ListMessage loading title={view.title} />
       break
   }
+  if (setup.tab) {
+    body = (
+      <PanelAgentSetup
+        key={setup.tab.configId}
+        tab={setup.tab}
+        workspace={sw.workspace}
+        disabled={disabled}
+        touch={touch}
+        onBack={setup.back}
+        onReady={setup.ready}
+      />
+    )
+  }
 
   const tabItems: TabItem[] = tabs.visible.map((tab) => ({
     key: tab.configId,
     label: tab.name,
     glyph: <TabGlyph tab={tab} colorClassName="text-current" />,
-    selected: !showingMore && tab.configId === viewId,
+    selected: !showingMore && agentTabSelected(tab, viewId),
     title: state.hasUpdate(tab) ? `${tab.name} · update available` : tab.name,
-    onSelect: () => state.openAgent(tab)
+    onSelect: () => {
+      setup.leave()
+      state.openAgent(tab)
+    }
   }))
   if (tabs.overflow.length > 0) {
     tabItems.push({
@@ -1002,10 +616,15 @@ export function SelectorPanelV2(props: SelectorPanelV2Props): React.JSX.Element 
       // as active while that agent's models are open.
       selected: showingMore || state.viewInOverflow,
       title: 'More agents',
-      onSelect: state.showMore
+      end: true,
+      onSelect: () => {
+        setup.leave()
+        state.showMore()
+      }
     })
   }
-  const showTabs = !searching && tabItems.length > 1
+  // "More" alone still shows when no agent is set up: it is the way to the rest.
+  const showTabs = !searching && (tabItems.length > 1 || tabs.overflow.length > 0)
   const tabStrip = (orientation: 'horizontal' | 'vertical'): React.JSX.Element => (
     <AgentTabStrip
       id={`agent-tabs-${sw.key}`}
@@ -1071,7 +690,7 @@ export function SelectorPanelV2(props: SelectorPanelV2Props): React.JSX.Element 
     >
       <div
         className={cn(
-          'flex items-center gap-2 border-b border-border transition-colors duration-150 ease-out',
+          'flex items-center gap-2 border-b-[0.5px] border-border transition-colors duration-150 ease-out',
           BAND_FOCUS_CLASS,
           // With the rail, the 14px icon sits on the rail's centre line (20px in);
           // on touch px-5 already centres the 16px icon on the 56px rail.
@@ -1088,7 +707,10 @@ export function SelectorPanelV2(props: SelectorPanelV2Props): React.JSX.Element 
           // biome-ignore lint/a11y/noAutofocus: the selector opens to search, like a command list
           autoFocus={!touch}
           value={query}
-          onChange={(event) => state.setQuery(event.target.value)}
+          onChange={(event) => {
+            setup.leave()
+            state.setQuery(event.target.value)
+          }}
           onKeyDown={onSearchKeyDown}
           onFocus={() => {
             pickedRow.current = null
@@ -1099,7 +721,7 @@ export function SelectorPanelV2(props: SelectorPanelV2Props): React.JSX.Element 
           aria-label="Search models and agents"
           className={cn(
             `min-w-0 flex-1 bg-transparent text-foreground placeholder:text-muted-foreground ${INNER_FIELD_FOCUS_CLASS}`,
-            touch ? 'text-base' : 'text-sm'
+            touch ? 'text-base' : 'text-xs'
           )}
         />
         {view.kind === 'search' ? (
@@ -1119,7 +741,7 @@ export function SelectorPanelV2(props: SelectorPanelV2Props): React.JSX.Element 
         {showTabs && agentRail === 'left' ? tabStrip('vertical') : null}
         <motion.div
           ref={attachList}
-          key={state.listKey}
+          key={setup.tab ? `setup\0${setup.tab.configId}` : state.listKey}
           role={showTabs ? 'tabpanel' : undefined}
           aria-label={showTabs ? (showingMore ? 'More agents' : viewTab?.name) : undefined}
           data-testid="selector-list"
@@ -1146,13 +768,34 @@ export function SelectorPanelV2(props: SelectorPanelV2Props): React.JSX.Element 
       </div>
       {!searching && state.contextUsage ? (
         <>
-          <div className="h-px bg-border" />
+          <div className="h-[0.5px] bg-border" />
           <ContextSummary usage={state.contextUsage} touch={touch} />
         </>
       ) : null}
+      {state.ownFooter && !activeShown && edit.length > 0 ? (
+        <div data-testid="selector-pinned-model" className={cn('flex min-w-0 flex-col pb-1', pad)}>
+          <SectionLabel>Current model</SectionLabel>
+          {/* Already the picked model: no star, and a pick does nothing. */}
+          <DenseModelRow
+            name={pinnedName}
+            tooltip={effectiveId === sw.currentConfigId ? capabilities || undefined : undefined}
+            selected
+            glyph={pinnedTab ? <TabGlyph tab={pinnedTab} /> : null}
+            agentId={effectiveId}
+            edit={edit}
+            inFavorites={false}
+            rowKey={rowKeyOf(effectiveId, modelValue ?? '')}
+            highlighted={rowKeyOf(effectiveId, modelValue ?? '') === highlightKey}
+            disabled={disabled}
+            touch={touch}
+            reduced={reduced}
+            onPick={() => undefined}
+          />
+        </div>
+      ) : null}
       {state.ownFooter ? (
         <SessionOptions
-          sections={[...(activeShown ? [] : edit), ...restSections(rest, isRejected, trySet)]}
+          sections={restSections(rest, isRejected, trySet)}
           disabled={disabled}
           touch={touch}
         />
@@ -1160,7 +803,7 @@ export function SelectorPanelV2(props: SelectorPanelV2Props): React.JSX.Element 
       {otherHint ? (
         <p
           className={cn(
-            'flex items-center border-t border-border text-xs text-muted-foreground',
+            'flex items-center border-t-[0.5px] border-border text-xs text-muted-foreground',
             touch ? 'min-h-12 px-5' : 'min-h-9 px-3'
           )}
         >

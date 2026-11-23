@@ -15,11 +15,13 @@ import type {
   AutomationChanged,
   AutomationDetail,
   AutomationId,
+  AutomationLayout,
   AutomationOp,
   AutomationRun,
   AutomationStep,
   AutomationSuggestion,
   KnownAgent,
+  NodeId,
   RunId,
   Schedule
 } from '@shared/types/automation.types'
@@ -31,6 +33,7 @@ import {
   parseAutomationChange,
   parseAutomationDetail,
   parseAutomationList,
+  parseDecided,
   parseRun,
   parseRunList,
   parseSchedulePreview,
@@ -60,11 +63,14 @@ export interface AutomationTransport {
   get(id: AutomationId): Reply
   create(projectId: string, name: string): Reply
   applyOps(id: AutomationId, baseRevision: number, ops: AutomationOp[]): Reply
+  previewOps(id: AutomationId, baseRevision: number, ops: AutomationOp[]): Reply
+  setLayout(id: AutomationId, layout: AutomationLayout): Reply
   remove(id: AutomationId): Reply
   setEnabled(id: AutomationId, enabled: boolean): Reply
   approve(id: AutomationId, revision: number): Reply
   runNow(id: AutomationId): Reply
   cancelRun(runId: RunId): Reply
+  decideApproval(runId: RunId, nodeId: NodeId, approved: boolean): Reply
   listRuns(id: AutomationId, limit: number): Reply
   runSteps(runId: RunId): Reply
   markSeen(id: AutomationId): Reply
@@ -84,11 +90,16 @@ export const desktopAutomationTransport: AutomationTransport = {
   get: (id) => invokeIpc('automation_get', { id }),
   create: (projectId, name) => invokeIpc('automation_create', { projectId, name }),
   applyOps: (id, baseRevision, ops) => invokeIpc('automation_apply_ops', { id, baseRevision, ops }),
+  previewOps: (id, baseRevision, ops) =>
+    invokeIpc('automation_preview_ops', { id, baseRevision, ops }),
+  setLayout: (id, layout) => invokeIpc('automation_set_layout', { id, layout }),
   remove: (id) => invokeIpc('automation_delete', { id }),
   setEnabled: (id, enabled) => invokeIpc('automation_set_enabled', { id, enabled }),
   approve: (id, revision) => invokeIpc('automation_approve', { id, revision }),
   runNow: (id) => invokeIpc('automation_run_now', { id }),
   cancelRun: (runId) => invokeIpc('automation_cancel_run', { runId }),
+  decideApproval: (runId, nodeId, approved) =>
+    invokeIpc('automation_decide_approval', { runId, nodeId, approved }),
   listRuns: (id, limit) => invokeIpc('automation_list_runs', { id, limit }),
   runSteps: (runId) => invokeIpc('automation_run_steps', { runId }),
   markSeen: (id) => invokeIpc('automation_mark_seen', { id }),
@@ -120,11 +131,16 @@ export const webAutomationTransport: AutomationTransport = {
   create: (projectId, name) => postJsonOnce(AUTOMATIONS, { project_id: projectId, name }),
   applyOps: (id, baseRevision, ops) =>
     postJsonOnce(`${AUTOMATIONS}/${seg(id)}/ops`, { base_revision: baseRevision, ops }),
+  previewOps: (id, baseRevision, ops) =>
+    postJsonOnce(`${AUTOMATIONS}/${seg(id)}/ops/preview`, { base_revision: baseRevision, ops }),
+  setLayout: (id, layout) => postJsonOnce(`${AUTOMATIONS}/${seg(id)}/layout`, { layout }),
   remove: (id) => deleteJson(`${AUTOMATIONS}/${seg(id)}`),
   setEnabled: (id, enabled) => postJsonOnce(`${AUTOMATIONS}/${seg(id)}/enabled`, { enabled }),
   approve: (id, revision) => postJsonOnce(`${AUTOMATIONS}/${seg(id)}/approve`, { revision }),
   runNow: (id) => postJsonOnce(`${AUTOMATIONS}/${seg(id)}/run`, {}),
   cancelRun: (runId) => postJsonOnce(`${RUNS}/${seg(runId)}/cancel`, {}),
+  decideApproval: (runId, nodeId, approved) =>
+    postJsonOnce(`${RUNS}/${seg(runId)}/approval`, { node_id: nodeId, approved }),
   listRuns: (id, limit) => getJson(`${AUTOMATIONS}/${seg(id)}/runs?limit=${limit}`),
   runSteps: (runId) => getJson(`${RUNS}/${seg(runId)}/steps`),
   markSeen: (id) => postJsonOnce(`${AUTOMATIONS}/${seg(id)}/seen`, {}),
@@ -200,6 +216,30 @@ export function applyAutomationOps(
   return parsed('apply_ops', transport().applyOps(id, baseRevision, ops), parseApplyOpsResult)
 }
 
+/**
+ * Dry run of {@link applyAutomationOps}: the would-be graph, issues and run
+ * policy, at `baseRevision`. Nothing is saved and no change is announced.
+ */
+export function previewAutomationOps(
+  id: AutomationId,
+  baseRevision: number,
+  ops: AutomationOp[]
+): Promise<IpcResult<AutomationDetail>> {
+  return parsed('preview_ops', transport().previewOps(id, baseRevision, ops), parseAutomationDetail)
+}
+
+/**
+ * Saves canvas node positions. Not an edit: the revision and the approval
+ * stay, and the host drops keys that are not `trigger` or a node. Positions
+ * are not logged.
+ */
+export function setAutomationLayout(
+  id: AutomationId,
+  layout: AutomationLayout
+): Promise<IpcResult<Automation>> {
+  return parsed('set_layout', transport().setLayout(id, layout), (data) => parseAutomation(data))
+}
+
 export async function deleteAutomation(id: AutomationId): Promise<IpcResult<void>> {
   const result = await unit('delete', transport().remove(id))
   if (result.success) log('info', `deleted automation=${id}`)
@@ -227,6 +267,30 @@ export async function runAutomationNow(id: AutomationId): Promise<IpcResult<Auto
 
 export function cancelAutomationRun(runId: RunId): Promise<IpcResult<void>> {
   return unit('cancel_run', transport().cancelRun(runId))
+}
+
+/**
+ * Approve or reject the approval node `nodeId` a run is parked on. `false`
+ * means the run had already moved on (decided elsewhere, timed out or
+ * cancelled), so there was nothing to decide.
+ */
+export async function decideAutomationApproval(
+  runId: RunId,
+  nodeId: NodeId,
+  approved: boolean
+): Promise<IpcResult<boolean>> {
+  const result = await parsed(
+    'decide_approval',
+    transport().decideApproval(runId, nodeId, approved),
+    parseDecided
+  )
+  if (result.success) {
+    log(
+      'info',
+      `decided approval run=${runId} node=${nodeId} approved=${approved} applied=${result.data}`
+    )
+  }
+  return result
 }
 
 export function listAutomationRuns(

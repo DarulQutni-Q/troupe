@@ -1,7 +1,7 @@
 # Claude Agent ACP
 
-Termul launches the official Claude Agent ACP adapter using a host-managed,
-version-pinned npm package. Termul does not install or update Anthropic's
+Troupe launches the official Claude Agent ACP adapter using a host-managed,
+version-pinned npm package. Troupe does not install or update Anthropic's
 separate Claude Code CLI.
 
 ## Prerequisites
@@ -10,8 +10,8 @@ separate Claude Code CLI.
 - Claude Code CLI installed from Anthropic and available as `claude`.
 - Either an existing Claude Code login or an Anthropic API key.
 
-Termul checks Node's major version, npm, and the external CLI before install.
-If Node is older than 22, upgrade it and restart Termul. If the CLI is missing,
+Troupe checks Node's major version, npm, and the external CLI before install.
+If Node is older than 22, upgrade it and restart Troupe. If the CLI is missing,
 install it using Anthropic's official instructions.
 
 ## Desktop setup
@@ -23,13 +23,13 @@ terminal:
 claude auth login
 ```
 
-Then start a Claude Agent chat and choose **Install** when prompted. Termul
+Then start a Claude Agent chat and choose **Install** when prompted. Troupe
 installs the exact catalog version into its managed host cache.
 
 The API-key method is available on headless hosts only (see below).
 
 Claude Code login is the default. API keys are host-wide; the selected auth
-mode is per state directory. API keys stay in the OS keychain; Termul never
+mode is per state directory. API keys stay in the OS keychain; Troupe never
 displays a saved key or sends it to a browser client. The selected auth mode
 is not a secret: it is stored as a plain file at `<state
 dir>/claude-auth-mode` (beside `acp-registry-binaries` — the app-data dir on
@@ -37,7 +37,7 @@ desktop), so `claude-code` mode keeps working on hosts with no OS keychain.
 Setting the mode writes this file and removes the legacy
 `acp.claude-agent.auth-mode` keychain entry that older versions used.
 
-When host status confirms a Claude Code login, Termul does not also invoke the
+When host status confirms a Claude Code login, Troupe does not also invoke the
 ACP adapter's separate sign-in methods before creating a session. This confirms
 only that the CLI reports an active login, not that the adapter can use that
 session. Anthropic's guidance restricts using Claude.ai subscription
@@ -53,26 +53,26 @@ using the same state directory as the server process if it was configured with
 `--state-dir`:
 
 ```sh
-termul-server claude auth status
-termul-server claude auth login
-termul-server claude install
+troupe-server claude auth status
+troupe-server claude auth login
+troupe-server claude install
 ```
 
 The API-key mode is optional. On bash or zsh, provide the key through a hidden
-prompt and pipe it to Termul so it is not echoed or placed in command history:
+prompt and pipe it to Troupe so it is not echoed or placed in command history:
 
 ```sh
 read -s -r -p "Anthropic API key: " CLAUDE_API_KEY
-printf '%s' "$CLAUDE_API_KEY" | termul-server claude api-key set
+printf '%s' "$CLAUDE_API_KEY" | troupe-server claude api-key set
 unset CLAUDE_API_KEY
-termul-server claude auth mode api-key
+troupe-server claude auth mode api-key
 ```
 
 To return to Claude Code login or remove the saved key:
 
 ```sh
-termul-server claude auth mode claude-code
-termul-server claude api-key delete
+troupe-server claude auth mode claude-code
+troupe-server claude api-key delete
 ```
 
 For an explicit state directory, pass `--state-dir PATH` after `claude`.
@@ -82,23 +82,39 @@ in the OS keychain.
 ## Claude accounts
 
 In Claude Code login mode, a host can hold several Claude subscription logins
-(Accounts). Each Project uses one Account; a Project with no choice uses the
-Default Account. The built-in Account uses the host's normal Claude config
+(Accounts). A chat uses its own Account when it has one, else its Project's
+Account, else the Default Account. A new chat starts on its Project's Account.
+The choices live in `claude-accounts.json` (`projectAccounts` and
+`chatAccounts`). The built-in Account uses the host's normal Claude config
 folder (`~/.claude`, or `CLAUDE_CONFIG_DIR` when the host sets it). See
 [ADR-0004](./adr/0004-claude-accounts-linked-config-dirs.md).
 
 Every other Account has its own folder at `<state dir>/claude-accounts/<id>`.
-Termul starts the Claude agent of that Account with `CLAUDE_CONFIG_DIR` set to
+Troupe starts the Claude agent of that Account with `CLAUDE_CONFIG_DIR` set to
 it. The login and `.claude.json` stay in that folder; `projects`, `skills`,
 `plugins`, `rules`, `plans`, `file-history`, `agents`, `commands`,
 `settings.json` and `CLAUDE.md` are links back to the shared folder, so session
-history, settings and skills are the same on every Account. Termul never reads
+history, settings and skills are the same on every Account. Troupe never reads
 or refreshes the login tokens; Claude Code keeps them in its own credential
 store. The Account list (`<state dir>/claude-accounts.json`) holds names and
 ids only.
 
-When a Project's Account changes, each open Claude chat restarts on the new
-Account and resumes the same session. If the new Account cannot find the
+The account picker in a chat (`set_chat_claude_account`) moves only that chat:
+it restarts on a new agent with the chosen Account and resumes the same
+session. Other chats of the Project, including chats on the same agent, keep
+running. "Follow project" removes the chat's own choice. Choosing the Account
+the chat already runs on changes nothing. When a person moves a chat at its
+limit from the limit card, its held turn is cancelled and the chat continues
+with a short notice, worded like the host's, instead of the last prompt sent
+again. A chat that is opened
+again starts its agent with the chat id (`spawn_agent` `sessionId`), so the
+host starts it on the chat's Account. Such an agent belongs to that chat: the
+renderer registers it under a reuse key with the chat id, and no other chat or
+warm session takes it.
+
+When a Project's Account changes, each open Claude chat of the Project without
+its own Account restarts on the new Account and resumes the same session.
+Chats with their own Account stay where they are. If the new Account cannot find the
 session (the agent answers `session/resume` with `Resource not found`), the
 chat continues in a new session. That session starts from a summary of the
 conversation, the same handoff as an agent switch, and the earlier messages
@@ -107,23 +123,23 @@ stay above a handoff divider.
 Headless hosts manage Accounts with:
 
 ```sh
-termul-server claude account list
-termul-server claude account add "Work"
-termul-server claude account login <id>
-termul-server claude account rename <id> "Office"
-termul-server claude account default <id>
-termul-server claude account project <project-id> <id>
-termul-server claude account project <project-id> default
-termul-server claude account remove <id>
+troupe-server claude account list
+troupe-server claude account add "Work"
+troupe-server claude account login <id>
+troupe-server claude account rename <id> "Office"
+troupe-server claude account default <id>
+troupe-server claude account project <project-id> <id>
+troupe-server claude account project <project-id> default
+troupe-server claude account remove <id>
 ```
 
 ### Account usage
 
-Termul reads the usage windows of each Account (5-hour session, weekly, and
+Troupe reads the usage windows of each Account (5-hour session, weekly, and
 per-model weekly windows, with percent used and reset time) through the Claude
 Agent SDK that ships with the managed Claude ACP package. It runs a short
 `node` probe with the Account's `CLAUDE_CONFIG_DIR`, so Claude Code uses and
-refreshes its own login; Termul never reads a token, and the probe prints only
+refreshes its own login; Troupe never reads a token, and the probe prints only
 the limits and the plan type. The probe asks only for plan limits
 (`skipBehaviors`), writes no session file, and loads no MCP servers or user
 settings. Reads are cached on the host for 5 minutes; a forced refresh reuses a
@@ -133,7 +149,66 @@ unknown reply shape yields no windows instead of an error.
 
 During a turn, the Claude ACP adapter also attaches the live rate-limit state
 (`allowed`, `allowed_warning`, or `rejected`, with reset time and percent) to
-`usage_update` events. Termul forwards it as `rateLimit` on `acp:usage_update`.
+`usage_update` events. Troupe forwards a state that does not block the chat as
+`rateLimit` on `acp:usage_update`. A state that blocks the chat (`rejected`
+with no overage in use) travels only as `limitReached`, so a client from before
+the host switch never runs its own account switch on it.
+
+### At the limit
+
+The host acts on a blocking limit itself, with or without a client connected.
+A supervisor in the host (`src-tauri/src/acp/claude_limit/`) receives each
+`limitReached` from a managed `claude-acp` agent that runs on a Troupe Account
+inside a Project:
+
+- When automatic switching is on and another signed-in Account has room, the
+  host sets the chat's own Account to the Account with the most room, with a
+  compare-and-set on the Account the chat ran on. The Project's Account does
+  not change, and no other chat moves. The host takes the chat off its agent
+  (it stops the agent when no other durable chat runs on it, and otherwise
+  closes only this chat there), starts a new agent for the chat from the
+  launch recipe the client's spawn recorded, resumes the same session, and
+  sends a short continuation notice as a user prompt.
+- When no Account has room, the host schedules a resume at the reset time in
+  `claude-limit-resumes.json` in the host state folder. The resume survives the
+  agent being reaped and a host restart. A turn of the chat, closing it, or
+  `set_claude_resume` with `at: null` cancels it.
+- When the agent runs another Account than the chat now uses (a client moved
+  the chat, or the Project, first), the host restarts the chat on its
+  Account.
+
+Each step is recorded as `acp:claude_limit_action` in the chat's session log,
+and clients follow it. While the host moves a chat, a client that reopens it
+waits for the move and then finds it on the new agent. The launch recipe stays
+in memory only, and the host forgets it when the chat closes or its agent stops,
+unless the chat waits for a scheduled resume.
+
+### Worker chats
+
+An agent can start worker chats with the `start_chat` host tool
+(`src-tauri/src/acp/worker_chats/`). The host builds the worker from the
+caller's launch recipe: the same agent config, Project, folder, worktree, MCP
+list and additional folders. A caller with no recipe is refused, and so is a
+start whose Project is removed or archived while the worker starts. The user's
+automatic account switching setting is the consent to run a worker on another
+Account: with it off, the worker follows its Project whatever `account` says.
+With it on and the caller a managed Claude chat on an Account, `account:
+"auto"` (the default) takes the signed-in Account with the most room by the
+same ranking a chat at its limit moves by, and skips the Accounts the
+supervisor saw reach a limit. A named `account` must be signed in. The host
+starts the worker's agent on that Account, then writes it as the worker's own
+Account before the first message, so the supervisor moves the worker alone
+when it reaches a limit. When no Account has room, or the caller runs on
+credentials no Account switch changes, the worker follows its Project and the
+tool result says why. The worker starts in the caller's current mode, so a
+caller that allowed its tools does not leave a worker waiting on a permission
+prompt with no client to answer it.
+
+`send_to_chat` reaches only chats the caller started (`startedBy` in the
+session metadata). It refuses while the worker answers its last message, and
+when no live agent holds the worker. `list_started_chats` lists the caller's
+workers and whether each is working, idle or stopped. A worker cannot start workers, and one
+caller may have six running.
 
 `remove` signs the Claude CLI out of that Account, deletes its folder (never
 the shared folder), and moves its Projects back to the Default Account. The
@@ -171,7 +246,7 @@ rename and remove an Account (`add_claude_account`, `rename_claude_account`,
 (`start_claude_link_login`, `finish_claude_link_login`,
 `cancel_claude_login`): the host runs `claude auth login` without a browser,
 returns the sign-in link, and writes the code the user pastes from the Claude
-page to the CLI, which stores the login. Termul never sees the token.
+page to the CLI, which stores the login. Troupe never sees the token.
 View-only connections can only list; Settings hides the add, sign-in, rename
 and remove controls on them.
 
@@ -197,18 +272,18 @@ keeps serving its open chats and running work until the idle reaper stops it.
 
 ## Startup failures
 
-- **Node.js 22 or newer required:** upgrade Node and restart Termul.
+- **Node.js 22 or newer required:** upgrade Node and restart Troupe.
 - **Claude Code CLI missing:** install Anthropic's CLI separately, then run
   `claude auth login`.
 - **API-key mode selected but no key is saved:** run the headless
   `api-key set` command.
 - **OS keychain unavailable:** `claude-code` mode still launches and
-  `termul-server claude auth status` still reports (keychain-derived fields
+  `troupe-server claude auth status` still reports (keychain-derived fields
   show as unavailable). API-key flows stay fail-closed: `api-key set`,
   `api-key delete`, and launching in `api-key` mode all require a working
   keychain.
 
 `Incoming transport closed` means the ACP process closed its stdio connection
 during initialization. It does not, by itself, prove which prerequisite or
-runtime step failed. Check the host's prerequisite/auth status and Termul's ACP
+runtime step failed. Check the host's prerequisite/auth status and Troupe's ACP
 startup error without sharing credentials or environment dumps.

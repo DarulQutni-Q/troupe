@@ -2,9 +2,9 @@ use super::*;
 use axum::body::to_bytes;
 use axum::http::{Method, Request};
 use axum::routing::Router;
-use tower::ServiceExt; // for `oneshot`
 use flate2::read::GzDecoder;
 use std::io::Read as _;
+use tower::ServiceExt; // for `oneshot`
 
 #[test]
 fn dist_web_dir_points_at_repo_root_sibling() {
@@ -27,6 +27,27 @@ fn dist_web_ready_reflects_index_html_on_disk() {
     // just that it doesn't panic and matches the filesystem.
     let expected = dist_web_dir().join(INDEX_HTML).is_file();
     assert_eq!(dist_web_ready(), expected);
+}
+
+#[test]
+fn web_ui_available_counts_the_embedded_bundle() {
+    // Regression (#1802): the "static routes will 404" warning keyed on
+    // `dist_web_ready()` alone, so a shipped binary (UI embedded, no `dist-web/`
+    // on disk) warned falsely. Force the four disk/embed combinations so a
+    // built `dist-web/` cannot mask a predicate that ignores the embed.
+    assert!(
+        web_ui_available_from(false, true),
+        "embedded bundle must make the UI available with no files on disk"
+    );
+    assert!(web_ui_available_from(true, false));
+    assert!(web_ui_available_from(true, true));
+    assert!(!web_ui_available_from(false, false));
+    // Production wiring still composes the two live checks.
+    assert_eq!(
+        web_ui_available(),
+        web_ui_available_from(dist_web_ready(), embedded_web_ready())
+    );
+    assert_eq!(embedded_web_ready(), Assets::get(INDEX_HTML).is_some());
 }
 
 /// Drive a path through `serve_embedded` (the release fallback) and return
@@ -207,7 +228,7 @@ async fn serve_embedded_manifest_has_webmanifest_mime() {
     // Sanity: the embedded manifest parses as JSON and names the app.
     let json: serde_json::Value =
         serde_json::from_slice(&body).expect("manifest.webmanifest should be valid JSON");
-    assert_eq!(json["name"], "Termul");
+    assert_eq!(json["name"], "Troupe");
 }
 
 /// `embedded_response` cache policy: `assets/` → immutable, every other
@@ -575,9 +596,7 @@ async fn disk_served_hashed_asset_is_immutable_and_gzipped() {
         .expect("router response");
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(
-        !resp
-            .headers()
-            .contains_key(header::CONTENT_ENCODING),
+        !resp.headers().contains_key(header::CONTENT_ENCODING),
         "identity request must not be compressed"
     );
     let cache = resp
@@ -668,7 +687,11 @@ async fn missing_hashed_asset_falls_back_not_immutable() {
         .await
         .expect("router response");
     // ServeDir's configured fallback serves the SPA shell for missing paths.
-    assert_eq!(resp.status(), StatusCode::OK, "missing asset → SPA fallback");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "missing asset → SPA fallback"
+    );
     let cache = resp
         .headers()
         .get(header::CACHE_CONTROL)
@@ -814,5 +837,161 @@ async fn serve_embedded_evaluates_if_none_match_only_for_get_and_head() {
             .await
             .expect("read body");
         assert_eq!(body.as_ref(), expected_body, "{method}");
+    }
+}
+
+/// #1801: a 304 carries no `Content-Length` for HEAD as well as GET, and the
+/// compression layer leaves it alone (no `Content-Encoding` on a bodiless
+/// reply). Goes through a router so axum's own HEAD handling runs.
+#[tokio::test]
+async fn not_modified_has_no_content_length_or_encoding_for_head_and_get() {
+    let router = Router::new()
+        .fallback(|| async { not_modified() })
+        .layer(static_compression_layer());
+    for method in [Method::HEAD, Method::GET] {
+        let resp = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method.clone())
+                    .uri("/")
+                    .header(header::ACCEPT_ENCODING, "gzip")
+                    .body(Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("router response");
+        assert_eq!(resp.status(), StatusCode::NOT_MODIFIED, "{method}");
+        assert!(
+            resp.headers().get(header::CONTENT_LENGTH).is_none(),
+            "{method}: {:?}",
+            resp.headers().get(header::CONTENT_LENGTH)
+        );
+        assert!(
+            resp.headers().get(header::CONTENT_ENCODING).is_none(),
+            "{method}: {:?}",
+            resp.headers().get(header::CONTENT_ENCODING)
+        );
+        let body = to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        assert!(body.is_empty(), "{method}");
+    }
+}
+
+/// #1801 on the embedded bundle: a conditional HEAD of `/` answers 304 with no
+/// `Content-Length`, while an unconditional HEAD still reports the real
+/// length (#1728).
+#[tokio::test]
+async fn serve_embedded_conditional_head_304_has_no_content_length() {
+    if !embed_present() {
+        return;
+    }
+    let router = Router::new()
+        .fallback(serve_embedded)
+        .layer(static_compression_layer());
+    let head = |etag: Option<String>| {
+        let mut request = Request::builder().method(Method::HEAD).uri("/");
+        if let Some(tag) = etag {
+            request = request.header(header::IF_NONE_MATCH, tag);
+        }
+        router
+            .clone()
+            .oneshot(request.body(Body::empty()).expect("build request"))
+    };
+    let fresh = head(None).await.expect("router response");
+    assert_eq!(fresh.status(), StatusCode::OK);
+    let length = fresh.headers()[header::CONTENT_LENGTH].clone();
+    assert_ne!(length, "0");
+    let etag = fresh.headers()[header::ETAG]
+        .to_str()
+        .expect("ascii etag")
+        .to_string();
+
+    let revalidated = head(Some(etag)).await.expect("router response");
+    assert_eq!(revalidated.status(), StatusCode::NOT_MODIFIED);
+    assert!(revalidated.headers().get(header::CONTENT_LENGTH).is_none());
+    assert!(revalidated
+        .headers()
+        .get(header::CONTENT_ENCODING)
+        .is_none());
+}
+
+/// #1801 on the dev disk path: `ServeDir` answers a matching
+/// `If-Modified-Since` with a 304 that already has no `Content-Length` (it
+/// does not go through axum's handler `IntoResponse`, which is what set
+/// `Content-Length: 0` on the embed/canvas 304s). An unconditional HEAD still
+/// reports the real length (#1728). Uses the same layers `router()` /
+/// `router_with_static` install for the disk path.
+#[tokio::test]
+async fn disk_served_conditional_head_304_has_no_content_length() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let document = b"<!doctype html>shell";
+    std::fs::write(root.join("index.html"), document).expect("index.html");
+
+    let router = Router::new()
+        .fallback_service(static_service_from(root))
+        .layer(axum::middleware::from_fn(shell_no_cache_headers))
+        .layer(axum::middleware::from_fn(immutable_asset_cache_headers))
+        .layer(static_compression_layer());
+
+    let send = |method: Method, since: Option<axum::http::HeaderValue>| {
+        let mut request = Request::builder().method(method).uri("/index.html");
+        if let Some(value) = since {
+            request = request.header(header::IF_MODIFIED_SINCE, value);
+        }
+        router.clone().oneshot(
+            request
+                .header(header::ACCEPT_ENCODING, "gzip")
+                .body(Body::empty())
+                .expect("build request"),
+        )
+    };
+
+    let fresh_get = send(Method::GET, None).await.expect("router response");
+    assert_eq!(fresh_get.status(), StatusCode::OK);
+    let content_type = fresh_get
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(content_type.starts_with("text/html"), "got {content_type}");
+    assert!(fresh_get.headers().get(header::CONTENT_ENCODING).is_none());
+    let length = fresh_get.headers()[header::CONTENT_LENGTH].clone();
+    let last_modified = fresh_get.headers()[header::LAST_MODIFIED].clone();
+    let body = to_bytes(fresh_get.into_body(), usize::MAX)
+        .await
+        .expect("read body");
+    assert_eq!(&body[..], document.as_slice());
+    assert_eq!(length, body.len().to_string());
+
+    let fresh_head = send(Method::HEAD, None).await.expect("router response");
+    assert_eq!(fresh_head.status(), StatusCode::OK);
+    assert_eq!(fresh_head.headers()[header::CONTENT_LENGTH], length);
+
+    for method in [Method::HEAD, Method::GET] {
+        let revalidated = send(method.clone(), Some(last_modified.clone()))
+            .await
+            .expect("router response");
+        assert_eq!(revalidated.status(), StatusCode::NOT_MODIFIED, "{method}");
+        assert!(
+            revalidated.headers().get(header::CONTENT_LENGTH).is_none(),
+            "{method}: {:?}",
+            revalidated.headers().get(header::CONTENT_LENGTH)
+        );
+        assert!(
+            revalidated
+                .headers()
+                .get(header::CONTENT_ENCODING)
+                .is_none(),
+            "{method}: {:?}",
+            revalidated.headers().get(header::CONTENT_ENCODING)
+        );
+        let body = to_bytes(revalidated.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        assert!(body.is_empty(), "{method}");
     }
 }

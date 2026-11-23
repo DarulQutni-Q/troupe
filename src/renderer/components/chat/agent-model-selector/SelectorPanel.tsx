@@ -21,6 +21,7 @@ import {
 import { OtherAgentSignIn } from './SignInActions'
 import {
   type AgentTab,
+  agentTabSelected,
   type CatalogModel,
   entryDisableReason,
   type ModelCatalog
@@ -99,12 +100,16 @@ export function SelectorPanel(props: SelectorPanelProps): React.JSX.Element {
         onPick={() => pick(configId, catalog, model.value)}
       />
     ))
+  // V1 has no setup view: the launcher picks a not-set-up agent at once and
+  // saves its config (#907), so that row keeps no "Not set up" pill there.
+  // Chat cannot arm it (the store rejects the arm), so the row is disabled.
+  const pickNow = (tab: AgentTab): boolean => notSetUp(tab) && sw.selectAgent != null
   const agentRow = (tab: AgentTab, onPick: () => void, key = tab.configId): ReactNode => (
     <AgentRow
       key={key}
       tab={tab}
-      badge={badgeOf(tab)}
-      disabled={disabled || notSetUp(tab)}
+      badge={pickNow(tab) ? (hasUpdate(tab) ? 'Update' : null) : badgeOf(tab)}
+      disabled={disabled || (notSetUp(tab) && !pickNow(tab))}
       touch={touch}
       onPick={onPick}
     />
@@ -150,7 +155,7 @@ export function SelectorPanel(props: SelectorPanelProps): React.JSX.Element {
         )
       break
     case 'more':
-      body = view.tabs.map((tab) => agentRow(tab, () => openAgent(tab)))
+      body = tabs.overflow.map((tab) => agentRow(tab, () => openAgent(tab)))
       break
     case 'install':
       body = (
@@ -213,7 +218,11 @@ export function SelectorPanel(props: SelectorPanelProps): React.JSX.Element {
               onCancelAndSwitch={state.cancelAndSwitch}
             />
           ) : (
-            <Hint>{`Switches to ${nameOf(viewId)} on the next send`}</Hint>
+            <Hint>
+              {sw.emptyChat
+                ? `Starts this chat on ${nameOf(viewId)}`
+                : `Switches to ${nameOf(viewId)} on the next send`}
+            </Hint>
           )}
         </>
       )
@@ -252,7 +261,7 @@ export function SelectorPanel(props: SelectorPanelProps): React.JSX.Element {
   }
 
   const tabItems: TrackItem[] = tabs.visible.map((tab) => {
-    const selected = !showingMore && tab.configId === viewId
+    const selected = !showingMore && agentTabSelected(tab, viewId)
     return {
       key: tab.configId,
       span: selected ? 2 : 1,

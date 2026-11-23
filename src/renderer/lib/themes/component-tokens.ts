@@ -2,7 +2,7 @@
  * Per-theme component tokens. Each value is a complete CSS value (a color or
  * a shadow list), read as `var(--token)`. The defaults restate what the
  * components drew before these tokens existed, so a theme that sets nothing
- * renders exactly as it did. Termul themes override them through
+ * renders exactly as it did. Troupe themes override them through
  * `ThemeChrome.tokens`.
  */
 export const COMPONENT_TOKEN_DEFAULTS = {
@@ -61,6 +61,25 @@ export const COMPONENT_TOKEN_DEFAULTS = {
    * Defaults to the panel elevation; a theme can tie it to the composer's lift.
    */
   '--prompt-panel-shadow': 'var(--elevation-panel)',
+  /**
+   * Secondary and outline button fill: one step above the popover or card
+   * the button sits on (tactile dark control).
+   */
+  '--control-fill': 'oklch(var(--muted))',
+  /** Secondary and outline button fill on hover: 5% toward the ink. */
+  '--control-fill-hover': 'color-mix(in oklab, oklch(var(--muted)), oklch(var(--foreground)) 5%)',
+  /** Secondary and outline button edge and drop: a 0.5px edge and a tight black drop. */
+  '--shadow-control': '0 0 0 0.5px var(--popover-edge), 0 1px 2px rgb(0 0 0 / 0.5)',
+  /** Status rail surface: one step above the chat. Troupe Light uses the white container. */
+  '--rail-fill': 'oklch(var(--muted))',
+  /** Status rail edge and dividers: three steps above the rail fill. */
+  '--rail-edge': 'color-mix(in oklab, oklch(var(--muted)), oklch(var(--foreground)) 15%)',
+  /** Status rail depth: a 0.5px edge and a tight black drop. */
+  '--shadow-rail': '0 0 0 0.5px var(--rail-edge), 0 1px 2px rgb(0 0 0 / 0.5)',
+  /** Status rail segment on hover: one step above the rail fill. */
+  '--rail-segment-hover': 'color-mix(in oklab, var(--rail-fill), oklch(var(--foreground)) 5%)',
+  /** Status rail segment while pressed or open: two steps above the rail fill. */
+  '--rail-segment-active': 'color-mix(in oklab, var(--rail-fill), oklch(var(--foreground)) 10%)',
   /** Raised "you are here" fill (active tab, row, segment), read by .keycap. */
   '--keycap-fill': 'oklch(var(--muted))',
   /** Raised "you are here" depth, read by .keycap and the Rail keycap default. */

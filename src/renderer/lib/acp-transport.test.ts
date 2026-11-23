@@ -37,6 +37,7 @@ import {
   WsAcpTransport
 } from './acp-transport'
 import { DesktopAcpTransport } from './acp-transport/desktop-transport'
+import { SESSION_RETRY_MAX_MS } from './acp-transport/ws-session-retry'
 import { classifySetupError } from './agents/acp-spawn-errors'
 
 // Reconnect backoff carries ±25 % jitter; pin it to the neutral factor so the
@@ -133,6 +134,8 @@ class FakeWebSocket {
   projectRequests: Array<{ type: string; payload: Record<string, unknown> }> = []
   /** When set, the project registry stubs reply with this instead of ok. */
   projectErr: { code: string; message: string; details?: unknown } | null = null
+  /** Fields a host with per-chat Claude Accounts adds to its replies; an older host sends none. */
+  claudeChatFields: { chatAccounts?: unknown; movedChatIds?: unknown } = {}
   /** CAP-11 compat: when true, `list_agents` replies with bare id strings
    * (the pre-CAP-11 server shape) instead of summary objects. */
   listAgentsAsStrings = false
@@ -394,6 +397,38 @@ class FakeWebSocket {
       })
       return
     }
+    if (req.type === 'import_agent_session') {
+      const payload = req.payload as { sessionId: string; agentId: string; cwd: string }
+      if (payload.sessionId === 'already-known') {
+        this.emitReply({
+          id: req.id,
+          ok: false,
+          err: { code: 'duplicate', message: 'this session is already in the chat history' }
+        })
+        return
+      }
+      this.emitReply({
+        id: req.id,
+        ok: true,
+        payload: {
+          storageKey: 'imported-key',
+          sessionId: payload.sessionId,
+          stableAgentNamespace: 'config:test',
+          runtimeAgentId: payload.agentId,
+          cwd: payload.cwd,
+          title: 'Imported',
+          createdAt: 1,
+          lastActivityAt: 1,
+          status: 'closed',
+          messageCount: 4,
+          toolCount: 0,
+          lastSeq: 7,
+          discovered: false,
+          resumeEligible: true
+        }
+      })
+      return
+    }
     if (req.type === 'respond_permission') {
       // Story 1.7 T8.3: by default reject as not_implemented; tests set
       // `respondPermissionErr` to exercise the stale/duplicate → AcpTransportError mapping.
@@ -503,17 +538,48 @@ class FakeWebSocket {
       })
       return
     }
+    if (req.type === 'list_claude_accounts') {
+      const { chatAccounts } = this.claudeChatFields
+      this.emitReply({
+        id: req.id,
+        ok: true,
+        payload: {
+          accounts: [{ id: 'default', name: 'Default', builtin: true, signedIn: true }],
+          defaultAccountId: 'default',
+          projectAccounts: { p1: 'default' },
+          autoSwitch: true,
+          ...(chatAccounts === undefined ? {} : { chatAccounts })
+        }
+      })
+      return
+    }
+    if (req.type === 'remove_claude_account') {
+      const { movedChatIds } = this.claudeChatFields
+      this.emitReply({
+        id: req.id,
+        ok: true,
+        payload: {
+          movedProjectIds: ['p1'],
+          ...(movedChatIds === undefined ? {} : { movedChatIds })
+        }
+      })
+      return
+    }
     // Claude Account choice: an `expectedAccountId` of `stale` loses the
     // compare-and-set, like a project another client already switched.
-    if (req.type === 'set_project_claude_account' || req.type === 'set_claude_auto_switch') {
+    if (
+      req.type === 'set_project_claude_account' ||
+      req.type === 'set_chat_claude_account' ||
+      req.type === 'set_claude_auto_switch'
+    ) {
       const payload = req.payload as { expectedAccountId?: string }
       this.emitReply({
         id: req.id,
         ok: true,
         payload:
-          req.type === 'set_project_claude_account'
-            ? { applied: payload.expectedAccountId !== 'stale' }
-            : {}
+          req.type === 'set_claude_auto_switch'
+            ? {}
+            : { applied: payload.expectedAccountId !== 'stale' }
       })
       return
     }
@@ -854,6 +920,10 @@ describe('WsAcpTransport', () => {
       await expect(transport.setProjectClaudeAccount('p1', 'ab12')).resolves.toBe(true)
       await expect(transport.setProjectClaudeAccount('p1', 'ab12', 'default')).resolves.toBe(true)
       await expect(transport.setProjectClaudeAccount('p1', null, 'stale')).resolves.toBe(false)
+      await expect(transport.setChatClaudeAccount('p1', 's1', 'ab12', 'default')).resolves.toBe(
+        true
+      )
+      await expect(transport.setChatClaudeAccount('p1', 's1', null, 'stale')).resolves.toBe(false)
       await transport.setClaudeAutoSwitch(false)
 
       const sent = socket()
@@ -870,8 +940,47 @@ describe('WsAcpTransport', () => {
           type: 'set_project_claude_account',
           payload: { projectId: 'p1', accountId: null, expectedAccountId: 'stale' }
         },
+        {
+          type: 'set_chat_claude_account',
+          payload: {
+            projectId: 'p1',
+            sessionId: 's1',
+            accountId: 'ab12',
+            expectedAccountId: 'default'
+          }
+        },
+        {
+          type: 'set_chat_claude_account',
+          payload: { projectId: 'p1', sessionId: 's1', accountId: null, expectedAccountId: 'stale' }
+        },
         { type: 'set_claude_auto_switch', payload: { enabled: false } }
       ])
+      transport.dispose()
+    })
+
+    it('reads the chat accounts and the moved chats, and an older host as having none', async () => {
+      const { transport, socket } = await connected()
+
+      await expect(transport.listClaudeAccounts()).resolves.toEqual({
+        accounts: [{ id: 'default', name: 'Default', builtin: true, signedIn: true }],
+        defaultAccountId: 'default',
+        projectAccounts: { p1: 'default' },
+        autoSwitch: true,
+        chatAccounts: {}
+      })
+      await expect(transport.removeClaudeAccount('ab12')).resolves.toEqual({
+        movedProjectIds: ['p1'],
+        movedChatIds: []
+      })
+
+      socket().claudeChatFields = { chatAccounts: { s1: 'ab12', bad: 7 }, movedChatIds: ['s1'] }
+      await expect(transport.listClaudeAccounts()).resolves.toMatchObject({
+        chatAccounts: { s1: 'ab12' }
+      })
+      await expect(transport.removeClaudeAccount('ab12')).resolves.toEqual({
+        movedProjectIds: ['p1'],
+        movedChatIds: ['s1']
+      })
       transport.dispose()
     })
 
@@ -2285,6 +2394,49 @@ describe('WsAcpTransport', () => {
     transport.dispose()
   })
 
+  it('importAgentSession sends import_agent_session and returns the imported summary', async () => {
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+    })
+    await transport.connect()
+    const sock = (transport as unknown as { socket: FakeWebSocket }).socket
+
+    const summary = await transport.importAgentSession({
+      sessionId: 'cli-1',
+      agentId: 'agent-1',
+      cwd: '/work',
+      title: 'From the CLI',
+      updatedAt: 42,
+      projectId: 'p1'
+    })
+
+    expect(summary).toMatchObject({ sessionId: 'cli-1', discovered: false, messageCount: 4 })
+    const frame = sock.sent
+      .map((raw) => JSON.parse(raw) as { type: string; payload: Record<string, unknown> })
+      .find((f) => f.type === 'import_agent_session')
+    expect(frame?.payload).toEqual({
+      sessionId: 'cli-1',
+      agentId: 'agent-1',
+      cwd: '/work',
+      title: 'From the CLI',
+      updatedAt: 42,
+      projectId: 'p1'
+    })
+    transport.dispose()
+  })
+
+  it('importAgentSession rejects with the duplicate code for a chat already in the history', async () => {
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+    })
+    await expect(
+      transport.importAgentSession({ sessionId: 'already-known', agentId: 'a', cwd: '/work' })
+    ).rejects.toMatchObject({ name: 'AcpTransportError', code: 'duplicate' })
+    transport.dispose()
+  })
+
   it('recordAgentSwitch sends a record_agent_switch request frame over the WS seam', async () => {
     const transport = new WsAcpTransport({
       url: 'ws://test/ws',
@@ -3638,6 +3790,7 @@ describe('WsAcpTransport visibility-triggered reconnect (web idle persist)', () 
     })
     await transport.connect()
     await transport.subscribeSession('sess-A')
+    transport.setReconnectPriorityProvider(() => ['sess-A'])
     const internals = transport as unknown as TransportInternals
     internals.socket.close()
     await vi.advanceTimersByTimeAsync(600) // reconnect: auth ok, resubscribe in flight
@@ -3992,9 +4145,10 @@ describe('WsAcpTransport half-open socket during the resubscribe pass', () => {
     // Without the probe the pass would still be waiting on sess-2/sess-3 (45s).
     expect(halfOpen.readyState).toBe(FakeWebSocket.CLOSED)
     const subscribes = halfOpen.sent
-      .map((raw) => JSON.parse(raw) as { type: string })
+      .map((raw) => JSON.parse(raw) as { type: string; payload: { sessionId: string } })
       .filter((req) => req.type === 'subscribe')
-    expect(subscribes).toHaveLength(1)
+    // sess-1's retry is armed before the probe, so it may go out once more.
+    expect([...new Set(subscribes.map((req) => req.payload.sessionId))]).toEqual(['sess-1'])
     expect(internals.reconnectTimer).not.toBeNull() // backoff re-armed, pass failed as a connection error
     transport.dispose()
   })
@@ -4024,6 +4178,424 @@ describe('WsAcpTransport half-open socket during the resubscribe pass', () => {
     // Ping answered → healthy socket: not torn down.
     expect(kept.readyState).toBe(FakeWebSocket.OPEN)
     expect(internals.socket).toBe(kept)
+    transport.dispose()
+  })
+})
+
+describe('WsAcpTransport reconnect resubscribes the priority sessions first', () => {
+  class HeldSubscribeSocket extends FakeWebSocket {
+    static instances: HeldSubscribeSocket[] = []
+    held: Array<{ id: string; sessionId: string }> = []
+    readonly holdsSubscribes: boolean
+
+    constructor(url: string) {
+      super(url)
+      this.holdsSubscribes = HeldSubscribeSocket.instances.push(this) > 1
+    }
+
+    send(data: string): void {
+      const req = JSON.parse(data) as { id: string; type: string; payload: { sessionId: string } }
+      if (req.type === 'subscribe' && this.holdsSubscribes) {
+        this.sent.push(data)
+        this.held.push({ id: req.id, sessionId: req.payload.sessionId })
+        return
+      }
+      super.send(data)
+    }
+
+    subscribedIds(): string[] {
+      return this.sent
+        .map((raw) => JSON.parse(raw) as { type: string; payload: { sessionId: string } })
+        .filter((req) => req.type === 'subscribe')
+        .map((req) => req.payload.sessionId)
+    }
+
+    answer(sessionId: string, errCode?: string): void {
+      const req = this.held.find((h) => h.sessionId === sessionId)
+      if (!req) throw new Error(`no held subscribe for ${sessionId}`)
+      this.held = this.held.filter((h) => h !== req)
+      this.emit(
+        errCode
+          ? { id: req.id, ok: false, err: { code: errCode, message: errCode } }
+          : {
+              id: req.id,
+              ok: true,
+              payload: { sessionId, replayed: 0, logEpoch: 'epoch-A', headSeq: 0 }
+            }
+      )
+    }
+  }
+
+  async function reconnectWithVisibleLast(
+    priority = ['sess-visible'],
+    cursors: Record<string, number> = {},
+    sessions = ['sess-a', 'sess-b', 'sess-visible']
+  ) {
+    vi.useFakeTimers()
+    HeldSubscribeSocket.instances = []
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: HeldSubscribeSocket as unknown as typeof WebSocket
+    })
+    await transport.connect()
+    for (const sid of sessions) {
+      if (cursors[sid])
+        transport.seedSessionCursor(sid, { lastSeq: cursors[sid], logEpoch: 'epoch-A' })
+      await transport.subscribeSession(sid)
+    }
+    transport.setReconnectPriorityProvider(() => priority)
+    const reconnectStates: boolean[] = []
+    transport.setReconnectListener((reconnecting) => reconnectStates.push(reconnecting))
+    const resyncing: Array<readonly string[]> = []
+    transport.setResyncListener((sessionIds) => resyncing.push(sessionIds))
+    const internals = transport as unknown as TransportInternals
+    internals.socket.close()
+    await vi.advanceTimersByTimeAsync(600)
+    const socket = HeldSubscribeSocket.instances[1]
+    return { transport, internals, socket, reconnectStates, resyncing }
+  }
+
+  function promptAndSubscribeFrames(socket: HeldSubscribeSocket): Array<[string, string]> {
+    return socket.sent
+      .map((raw) => JSON.parse(raw) as { type: string; payload: { sessionId: string } })
+      .filter((req) => req.type === 'subscribe' || req.type === 'send_prompt')
+      .map((req) => [req.type, req.payload.sessionId])
+  }
+
+  it('resubscribes a chat promoted while the background pass runs right after the in-flight one, once', async () => {
+    const { transport, socket } = await reconnectWithVisibleLast(['sess-visible'], {}, [
+      'sess-a',
+      'sess-b',
+      'sess-c',
+      'sess-visible'
+    ])
+    socket.answer('sess-visible')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(socket.subscribedIds()).toEqual(['sess-visible', 'sess-a'])
+
+    transport.prioritizeResubscribe('sess-c')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(socket.subscribedIds()).toEqual(['sess-visible', 'sess-a'])
+
+    socket.answer('sess-a')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(socket.subscribedIds()).toEqual(['sess-visible', 'sess-a', 'sess-c'])
+    socket.answer('sess-c')
+    await vi.advanceTimersByTimeAsync(0)
+    socket.answer('sess-b')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(socket.subscribedIds()).toEqual(['sess-visible', 'sess-a', 'sess-c', 'sess-b'])
+    expect(socket.held).toEqual([])
+    transport.dispose()
+  })
+
+  it('sends a prompt for a chat the background pass is resubscribing only after that subscribe replies', async () => {
+    const { transport, socket } = await reconnectWithVisibleLast()
+    socket.answer('sess-visible')
+    await vi.advanceTimersByTimeAsync(0)
+    let settled = false
+    const sent = transport.sendPrompt('a1', 'sess-a', 'hello').then(() => {
+      settled = true
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(promptAndSubscribeFrames(socket)).toEqual([
+      ['subscribe', 'sess-visible'],
+      ['subscribe', 'sess-a']
+    ])
+    expect(settled).toBe(false)
+
+    socket.answer('sess-a')
+    await sent
+    expect(promptAndSubscribeFrames(socket)).toEqual([
+      ['subscribe', 'sess-visible'],
+      ['subscribe', 'sess-a'],
+      ['subscribe', 'sess-b'],
+      ['send_prompt', 'sess-a']
+    ])
+    transport.dispose()
+  })
+
+  it('keeps reconnecting when the socket dies while the pass waits on a priority chat a prompt claimed', async () => {
+    const { transport, socket, reconnectStates } = await reconnectWithVisibleLast([
+      'sess-visible',
+      'sess-b'
+    ])
+    const outcome = transport.sendPrompt('a1', 'sess-b', 'hello').then(
+      () => 'sent',
+      (error: AcpTransportError) => error.code
+    )
+    await vi.advanceTimersByTimeAsync(0)
+    expect(socket.subscribedIds()).toEqual(['sess-visible', 'sess-b'])
+
+    socket.answer('sess-visible')
+    await vi.advanceTimersByTimeAsync(0)
+    socket.close()
+    expect(await outcome).not.toBe('sent')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(reconnectStates).toEqual([true])
+    transport.dispose()
+  })
+
+  it('probes and tears down a half-open socket when a prompt-claimed priority resubscribe times out', async () => {
+    const { transport, socket, reconnectStates } = await reconnectWithVisibleLast([
+      'sess-visible',
+      'sess-b'
+    ])
+    const outcome = transport.sendPrompt('a1', 'sess-b', 'hello').then(
+      () => 'sent',
+      (error: AcpTransportError) => error.code
+    )
+    await vi.advanceTimersByTimeAsync(0)
+    expect(socket.subscribedIds()).toEqual(['sess-visible', 'sess-b'])
+    socket.holdPing = true
+    socket.answer('sess-visible')
+    await vi.advanceTimersByTimeAsync(15_000 + 100)
+    expect(await outcome).toBe('timeout')
+    await vi.advanceTimersByTimeAsync(5_100)
+    expect(socket.readyState).toBe(FakeWebSocket.CLOSED)
+    expect(reconnectStates).toEqual([true])
+    transport.dispose()
+  })
+
+  it('keeps a background chat resyncing and subscribes it before a prompt while its timeout probe runs', async () => {
+    const { transport, socket, resyncing } = await reconnectWithVisibleLast()
+    socket.answer('sess-visible')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(socket.subscribedIds()).toEqual(['sess-visible', 'sess-a'])
+    socket.holdPing = true
+    await vi.advanceTimersByTimeAsync(15_000 + 100)
+    expect(resyncing.at(-1)).toContain('sess-a')
+
+    void transport.sendPrompt('a1', 'sess-a', 'hello').catch(() => undefined)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(promptAndSubscribeFrames(socket)).toEqual([
+      ['subscribe', 'sess-visible'],
+      ['subscribe', 'sess-a'],
+      ['subscribe', 'sess-a']
+    ])
+    transport.dispose()
+  })
+
+  it('rejects a prompt whose in-flight background subscribe fails, without sending it, and retries the chat', async () => {
+    const { transport, socket, resyncing } = await reconnectWithVisibleLast()
+    socket.answer('sess-visible')
+    await vi.advanceTimersByTimeAsync(0)
+    const sent = transport.sendPrompt('a1', 'sess-a', 'hello')
+    const outcome = sent.then(
+      () => 'sent',
+      (error: AcpTransportError) => error.code
+    )
+    await vi.advanceTimersByTimeAsync(0)
+
+    socket.answer('sess-a', 'internal')
+    expect(await outcome).toBe('internal')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(promptAndSubscribeFrames(socket)).toEqual([
+      ['subscribe', 'sess-visible'],
+      ['subscribe', 'sess-a'],
+      ['subscribe', 'sess-b']
+    ])
+    expect(resyncing.at(-1)).toEqual(['sess-a', 'sess-b'])
+    transport.dispose()
+  })
+
+  it('reports the background chats as resyncing once the channel is live, each until its resubscribe completes', async () => {
+    const { transport, socket, resyncing, reconnectStates } = await reconnectWithVisibleLast()
+    expect(resyncing).toEqual([])
+
+    socket.answer('sess-visible')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(reconnectStates).toEqual([true, false])
+    expect(resyncing).toEqual([['sess-a', 'sess-b']])
+    socket.answer('sess-a')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(resyncing.at(-1)).toEqual(['sess-b'])
+    socket.answer('sess-b')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(resyncing).toEqual([['sess-a', 'sess-b'], ['sess-b'], []])
+    transport.dispose()
+  })
+
+  it('stops reporting chats as resyncing when the transport is disposed mid-pass', async () => {
+    const { transport, socket, resyncing } = await reconnectWithVisibleLast()
+    socket.answer('sess-visible')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(resyncing.at(-1)).toEqual(['sess-a', 'sess-b'])
+    transport.dispose()
+    expect(resyncing.at(-1)).toEqual([])
+  })
+
+  afterEach(() => {
+    _resetAcpTransportForTests(null)
+    vi.useRealTimers()
+  })
+
+  it('reports the reconnect done once the visible chat resubscribed, then resubscribes the rest', async () => {
+    const { transport, socket, reconnectStates } = await reconnectWithVisibleLast()
+    expect(socket.subscribedIds()).toEqual(['sess-visible'])
+    expect(reconnectStates).toEqual([true])
+    expect(transport.getConnectionState()).toBe('reconnecting')
+
+    socket.answer('sess-visible')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(reconnectStates).toEqual([true, false])
+    expect(transport.getConnectionState()).toBe('connected')
+    expect(socket.subscribedIds()).toEqual(['sess-visible', 'sess-a'])
+
+    socket.answer('sess-a')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(socket.subscribedIds()).toEqual(['sess-visible', 'sess-a', 'sess-b'])
+    socket.answer('sess-b')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(socket.held).toEqual([])
+    expect(reconnectStates).toEqual([true, false])
+    transport.dispose()
+  })
+
+  it('drops a background session the host no longer knows', async () => {
+    const { transport, internals, socket } = await reconnectWithVisibleLast()
+    socket.answer('sess-visible')
+    await vi.advanceTimersByTimeAsync(0)
+    socket.answer('sess-a', 'not_found')
+    await vi.advanceTimersByTimeAsync(0)
+    socket.answer('sess-b')
+    await vi.advanceTimersByTimeAsync(0)
+    expect([...internals.subscribed]).toEqual(['sess-b', 'sess-visible'])
+    expect(vi.mocked(logFrontendError)).toHaveBeenCalledWith({
+      level: 'warn',
+      source: 'WsAcpTransport.reconnect',
+      message: 'Dropped obsolete ACP subscription session ids: sess-a'
+    })
+    transport.dispose()
+  })
+
+  it('stops the background pass when its socket dies, leaving the sessions to the next reconnect', async () => {
+    const { transport, internals, socket } = await reconnectWithVisibleLast()
+    socket.answer('sess-visible')
+    await vi.advanceTimersByTimeAsync(0)
+    socket.answer('sess-a')
+    socket.close()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(HeldSubscribeSocket.instances).toHaveLength(2)
+    expect(socket.subscribedIds()).toEqual(['sess-visible', 'sess-a'])
+
+    await vi.advanceTimersByTimeAsync(1_100)
+    const next = HeldSubscribeSocket.instances[2]
+    expect(internals.socket).toBe(next)
+    expect(next.subscribedIds()).toEqual(['sess-visible'])
+    next.answer('sess-visible')
+    await vi.advanceTimersByTimeAsync(0)
+    next.answer('sess-a')
+    await vi.advanceTimersByTimeAsync(0)
+    next.answer('sess-b')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(next.subscribedIds()).toEqual(['sess-visible', 'sess-a', 'sess-b'])
+    expect(HeldSubscribeSocket.instances).toHaveLength(3)
+    transport.dispose()
+  })
+
+  it('skips a background session that the user subscribed again on the new socket', async () => {
+    const { transport, socket } = await reconnectWithVisibleLast()
+    socket.answer('sess-visible')
+    await vi.advanceTimersByTimeAsync(0)
+    const reopened = transport.subscribeSession('sess-b', 0, true)
+    await vi.advanceTimersByTimeAsync(0)
+    socket.answer('sess-b')
+    await reopened
+    socket.answer('sess-a')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(socket.subscribedIds()).toEqual(['sess-visible', 'sess-a', 'sess-b'])
+    expect(socket.held).toEqual([])
+    transport.dispose()
+  })
+
+  it('resubscribes the priority sessions in the order the provider lists them', async () => {
+    const { transport, socket } = await reconnectWithVisibleLast(['sess-visible', 'sess-b'])
+    socket.answer('sess-visible')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(socket.subscribedIds()).toEqual(['sess-visible', 'sess-b'])
+    transport.dispose()
+  })
+
+  it('subscribes a chat the pass still owes before sending its prompt, from its stored cursor', async () => {
+    const { transport, socket } = await reconnectWithVisibleLast(['sess-visible'], { 'sess-b': 7 })
+    socket.answer('sess-visible')
+    await vi.advanceTimersByTimeAsync(0)
+    const sent = transport.sendPrompt('a1', 'sess-b', 'hello')
+    await vi.advanceTimersByTimeAsync(0)
+    socket.answer('sess-b')
+    await sent
+    socket.answer('sess-a')
+    await vi.advanceTimersByTimeAsync(0)
+
+    const frames = socket.sent
+      .map(
+        (raw) =>
+          JSON.parse(raw) as { type: string; payload: { sessionId: string; lastSeq?: number } }
+      )
+      .filter((req) => req.type === 'subscribe' || req.type === 'send_prompt')
+      .map((req) => [req.type, req.payload.sessionId, req.payload.lastSeq])
+    expect(frames).toEqual([
+      ['subscribe', 'sess-visible', 0],
+      ['subscribe', 'sess-a', 0],
+      ['subscribe', 'sess-b', 7],
+      ['send_prompt', 'sess-b', undefined]
+    ])
+    expect(socket.held).toEqual([])
+    transport.dispose()
+  })
+
+  it('subscribes a chat whose background resubscribe failed before sending its prompt, and drops its pending retry', async () => {
+    const { transport, socket, resyncing } = await reconnectWithVisibleLast(['sess-visible'], {
+      'sess-a': 5
+    })
+    socket.answer('sess-visible')
+    await vi.advanceTimersByTimeAsync(0)
+    socket.answer('sess-a', 'internal')
+    await vi.advanceTimersByTimeAsync(0)
+    socket.answer('sess-b')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(resyncing.at(-1)).toEqual(['sess-a'])
+
+    const sent = transport.sendPrompt('a1', 'sess-a', 'hello')
+    await vi.advanceTimersByTimeAsync(0)
+    socket.answer('sess-a')
+    await sent
+    await vi.advanceTimersByTimeAsync(SESSION_RETRY_MAX_MS)
+
+    const frames = socket.sent
+      .map(
+        (raw) =>
+          JSON.parse(raw) as { type: string; payload: { sessionId: string; lastSeq?: number } }
+      )
+      .filter((req) => req.type === 'subscribe' || req.type === 'send_prompt')
+      .map((req) => [req.type, req.payload.sessionId, req.payload.lastSeq])
+    expect(frames).toEqual([
+      ['subscribe', 'sess-visible', 0],
+      ['subscribe', 'sess-a', 5],
+      ['subscribe', 'sess-b', 0],
+      ['subscribe', 'sess-a', 5],
+      ['send_prompt', 'sess-a', undefined]
+    ])
+    expect(resyncing.at(-1)).toEqual([])
+    transport.dispose()
+  })
+
+  it('tears the socket down and reconnects when a background subscribe times out and the probe fails', async () => {
+    const { transport, socket, reconnectStates } = await reconnectWithVisibleLast()
+    socket.holdPing = true
+    socket.answer('sess-visible')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(reconnectStates).toEqual([true, false])
+
+    await vi.advanceTimersByTimeAsync(15_000 + 5_000 + 100)
+    expect(socket.readyState).toBe(FakeWebSocket.CLOSED)
+    expect(reconnectStates).toEqual([true, false, true])
+    expect(transport.getConnectionState()).toBe('reconnecting')
+
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(HeldSubscribeSocket.instances).toHaveLength(3)
+    expect(HeldSubscribeSocket.instances[2].subscribedIds()).toEqual(['sess-visible'])
     transport.dispose()
   })
 })

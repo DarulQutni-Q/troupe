@@ -107,6 +107,25 @@ export interface SessionIndexEntry {
    * multi-switch.
    */
   agents?: string[]
+  /**
+   * Switch-chain edge (spec-in-chat-agent-switch): the previous session id
+   * this session continues from — the `agent_switch` marker's
+   * `newSessionId` target, stamped by the host at `record_agent_switch`.
+   * Additive: absent on pre-feature sessions and on a chain's first
+   * session. The durable markers stay authoritative; this is the O(1)
+   * index lookup the history fold uses to collapse a chain into one row.
+   * The renderer also stamps it optimistically at switch time and heals it
+   * when a source payload's markers are installed, so chains recorded
+   * before the host stamped the field still fold.
+   */
+  continuedFrom?: string
+  startedBy?: string
+  /**
+   * `quick` for a chat with no project. Absent on project chats and on
+   * sessions saved before quick chats existed. The unassigned project id is
+   * not this flag.
+   */
+  kind?: 'quick'
 }
 
 /** The failure behind a failed turn's terminator, as the host recorded it. */
@@ -321,6 +340,27 @@ export function maxPayloadSeq(
   return maxSeq
 }
 
+/**
+ * Lowest the local seq counter may sit after installing `payload`: above
+ * every timeline seq and every subagent message seq. A subagent message can
+ * open after the last timeline item, and a later child tool call must still
+ * sort after it.
+ */
+export function payloadSeqFloor(
+  payload: Pick<SessionPayload, 'messages' | 'toolCalls' | 'switches'>
+): number {
+  let floor = maxPayloadSeq(payload)
+  for (const toolCall of normalizedToolCalls(payload.toolCalls)) {
+    const messages: unknown = toolCall.subagentMessages
+    if (!Array.isArray(messages)) continue
+    for (const message of messages) {
+      const seq = (message as { seq?: unknown } | null)?.seq
+      if (typeof seq === 'number' && Number.isFinite(seq) && seq > floor) floor = seq
+    }
+  }
+  return floor
+}
+
 /** True for a restorable switch record: object + finite numeric seq + non-empty id. */
 function isRestorableSwitch(value: unknown): value is AgentSwitchRecord {
   if (typeof value !== 'object' || value === null) return false
@@ -375,7 +415,9 @@ export function toPersistedSessionSummaries(
     worktreePath: entry.worktreePath,
     worktreeBranch: entry.worktreeBranch,
     modelId: entry.modelId,
-    modelName: entry.modelName
+    modelName: entry.modelName,
+    continuedFrom: entry.continuedFrom,
+    startedBy: entry.startedBy
   }))
 }
 
@@ -406,11 +448,22 @@ export function deriveTitle(messages: ChatMessage[], fallbackTitle: string): str
 
 export type RecencyGroup = 'Today' | 'Yesterday' | 'Earlier'
 
-/** The history bucket for sessions the host could not attribute to any project. */
-export const UNASSIGNED_GROUP = 'Unassigned'
+/**
+ * Mobile Recents bucket for quick chats (`kind: 'quick'`). Legacy sessions
+ * stamped only with the unassigned project id stay out of this group.
+ */
+export const QUICK_CHATS_GROUP = 'Quick chats'
+/** Legacy chats with no project. They are not quick chats. */
+export const OLDER_CHATS_GROUP = 'Older chats'
+/** @deprecated Use {@link QUICK_CHATS_GROUP}. Kept so older imports still compile. */
+export const UNASSIGNED_GROUP = QUICK_CHATS_GROUP
 /** The mobile Recents bucket for chats open in the active project's tree, listed first. */
 export const ACTIVE_GROUP = 'Active'
-export type HistoryGroup = typeof ACTIVE_GROUP | RecencyGroup | typeof UNASSIGNED_GROUP
+export type HistoryGroup =
+  | typeof ACTIVE_GROUP
+  | RecencyGroup
+  | typeof QUICK_CHATS_GROUP
+  | typeof OLDER_CHATS_GROUP
 
 /**
  * The timestamp that buckets and orders history: last activity (the desktop
@@ -421,6 +474,18 @@ export type RecencyKey = 'lastActivityAt' | 'createdAt'
 /** Index entries stamped with the host's unassigned-project sentinel. */
 export function unassignedSessions(entries: SessionIndexEntry[]): SessionIndexEntry[] {
   return entries.filter((entry) => entry.projectId === UNASSIGNED_PROJECT_ID)
+}
+
+/** Quick chats only. A legacy unassigned session (no `kind`) is not included. */
+export function quickSessions(entries: SessionIndexEntry[]): SessionIndexEntry[] {
+  return entries.filter((entry) => entry.kind === 'quick')
+}
+
+/** Legacy chats with no project. Quick chats are not included. */
+export function olderChats(entries: SessionIndexEntry[]): SessionIndexEntry[] {
+  return entries.filter(
+    (entry) => entry.projectId === UNASSIGNED_PROJECT_ID && entry.kind !== 'quick'
+  )
 }
 
 /** An entry's `key` timestamp; a missing `createdAt` reads as 0 (oldest). */
@@ -520,6 +585,22 @@ function historyMode(): 'server' | 'live_only' | 'tauri_store' | undefined {
  */
 export const UNTITLED_HOST_TITLE = 'Untitled Chat'
 
+/** Matches an `Untitled Chat N` placeholder and captures its numeric suffix. */
+export const UNTITLED_CHAT_RE = /^Untitled Chat (\d+)$/
+
+/**
+ * True when `title` is a placeholder shown before a real title is derived from
+ * the first message: the bare host placeholder `Untitled Chat` or the
+ * renderer's numbered `Untitled Chat N` (see `nextUntitledTitle`). A
+ * placeholder must never overwrite a real derived/host title on the shared
+ * session index (issue #1798) — a watching device captures the placeholder in
+ * its live session before the host derives the title, and re-stamping it at
+ * turn end would clobber the derived title the chat list already shows.
+ */
+export function isUntitledTitle(title: string | null | undefined): boolean {
+  return title === UNTITLED_HOST_TITLE || UNTITLED_CHAT_RE.test(title ?? '')
+}
+
 export function fromPersistedSessionSummary(entry: PersistedSessionSummary): SessionIndexEntry {
   return {
     id: entry.sessionId,
@@ -542,7 +623,10 @@ export function fromPersistedSessionSummary(entry: PersistedSessionSummary): Ses
     worktreePath: entry.worktreePath,
     worktreeBranch: entry.worktreeBranch,
     modelId: entry.modelId,
-    modelName: entry.modelName
+    modelName: entry.modelName,
+    continuedFrom: entry.continuedFrom,
+    startedBy: entry.startedBy,
+    kind: entry.kind === 'quick' ? 'quick' : undefined
   }
 }
 

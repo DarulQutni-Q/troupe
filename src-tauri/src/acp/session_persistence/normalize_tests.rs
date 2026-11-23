@@ -62,7 +62,7 @@ fn a_framed_handoff_draft_with_skills_titles_from_the_user_text() {
 fn a_prompt_opening_with_a_tool_pill_titles_from_the_tool_name() {
     assert_eq!(
         title_of(
-            "(Use the browser tool from the termul MCP server) open localhost and check the login"
+            "(Use the browser tool from the troupe MCP server) open localhost and check the login"
         ),
         "Browser open localhost and check the login"
     );
@@ -71,15 +71,39 @@ fn a_prompt_opening_with_a_tool_pill_titles_from_the_tool_name() {
 #[test]
 fn a_tool_pill_mid_prompt_becomes_its_label() {
     assert_eq!(
-        title_of("schedule it (Use the automation tools from the termul MCP server) daily"),
+        title_of("schedule it (Use the automation tools from the troupe MCP server) daily"),
         "schedule it Automations daily"
+    );
+}
+
+#[test]
+fn an_orchestrate_pill_titles_from_its_label() {
+    assert_eq!(
+        title_of("(Use the subagent tools from the troupe MCP server) review this diff"),
+        "Orchestrate review this diff"
+    );
+    assert_eq!(
+        title_of("(Use the subagent tools from the troupe MCP server)"),
+        "Orchestrate"
     );
 }
 
 #[test]
 fn two_tool_pills_both_become_labels() {
     assert_eq!(
+        title_of("(Use the browser tool from the troupe MCP server) open localhost and (Use the canvas tools from the troupe MCP server)"),
+        "Browser open localhost and Canvas"
+    );
+}
+
+#[test]
+fn a_0_4_tool_pill_naming_the_termul_server_still_becomes_its_label() {
+    assert_eq!(
         title_of("(Use the browser tool from the termul MCP server) open localhost and (Use the canvas tools from the termul MCP server)"),
+        "Browser open localhost and Canvas"
+    );
+    assert_eq!(
+        title_of("(Use the browser tool from the termul MCP server) open localhost and (Use the canvas tools from the troupe MCP server)"),
         "Browser open localhost and Canvas"
     );
 }
@@ -87,7 +111,7 @@ fn two_tool_pills_both_become_labels() {
 #[test]
 fn a_tool_pill_only_prompt_titles_as_the_tool() {
     assert_eq!(
-        title_of("(Use the canvas tools from the termul MCP server)"),
+        title_of("(Use the canvas tools from the troupe MCP server)"),
         "Canvas"
     );
 }
@@ -95,14 +119,14 @@ fn a_tool_pill_only_prompt_titles_as_the_tool() {
 #[test]
 fn an_unknown_tool_hint_is_dropped() {
     assert_eq!(
-        title_of("(Use the terminal tools from the termul MCP server) list the panes"),
+        title_of("(Use the terminal tools from the troupe MCP server) list the panes"),
         "list the panes"
     );
 }
 
 #[test]
 fn prompt_text_for_suggestions_keeps_the_tool_instruction() {
-    let text = "(Use the browser tool from the termul MCP server) open localhost";
+    let text = "(Use the browser tool from the troupe MCP server) open localhost";
     assert_eq!(
         user_prompt_text(&json!({ "content": [{ "type": "text", "text": text }] })).as_deref(),
         Some(text)
@@ -367,4 +391,64 @@ fn a_subagents_multi_file_edit_masks_every_persisted_path() {
         second.starts_with("https://bob:") && !second.contains("hunter2pass"),
         "{second}"
     );
+}
+
+#[test]
+fn a_plan_tool_call_is_marked_and_drops_its_arguments() {
+    let kept = super::normalize_durable_payload(
+        "tool_call",
+        &json!({
+            "sessionId": "chat",
+            "toolCall": {
+                "toolCallId": "plan-1",
+                "kind": "other",
+                "status": "completed",
+                "title": "mcp__troupe__plan",
+                "rawInput": { "todos": [{ "content": "Ship it", "status": "pending" }] },
+            },
+        }),
+    );
+    let tool = &kept["toolCall"];
+    assert_eq!(tool["planTool"], json!(true));
+    assert!(tool.get("rawInput").is_none());
+    assert!(tool.get("title").is_none());
+    assert_eq!(
+        tool["planEntries"],
+        json!([{ "content": "Ship it", "status": "pending" }])
+    );
+}
+
+#[test]
+fn a_read_tool_call_is_not_marked_as_a_plan() {
+    let kept = super::normalize_durable_payload(
+        "tool_call",
+        &json!({
+            "sessionId": "chat",
+            "toolCall": {
+                "toolCallId": "read-1",
+                "kind": "read",
+                "status": "completed",
+                "title": "Read Plan.md",
+                "rawInput": { "path": "Plan.md" },
+            },
+        }),
+    );
+    assert!(kept["toolCall"].get("planTool").is_none());
+}
+
+#[test]
+fn claude_todowrite_and_codex_update_plan_are_plan_tools() {
+    for (title, tool_name) in [("TodoWrite", "TodoWrite"), ("update_plan", "update_plan")] {
+        let kept = super::normalize_durable_payload(
+            "tool_call",
+            &json!({
+                "toolCall": {
+                    "toolCallId": title,
+                    "status": "in_progress",
+                    "_meta": { "claudeCode": { "toolName": tool_name } },
+                },
+            }),
+        );
+        assert_eq!(kept["toolCall"]["planTool"], json!(true), "{title}");
+    }
 }

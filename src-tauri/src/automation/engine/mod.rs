@@ -1,8 +1,8 @@
 //! The run engine, one per host. A 30 s tick claims due automations and
 //! starts runs; each run walks its graph snapshot on its own task and settles
-//! exactly once, or parks on a `wait` and resumes later (`park.rs`). Boot
-//! settles runs a dead process left `running`, resumes parked ones and fires
-//! one catch-up per past-due automation.
+//! exactly once, or parks on a `wait` or `approval` and resumes later
+//! (`park.rs`). Boot settles runs a dead process left `running`, resumes
+//! parked ones and fires one catch-up per past-due automation.
 
 mod agent;
 mod control;
@@ -285,6 +285,7 @@ impl Engine {
             stop_reason: None,
             summary: None,
             conversation_id: None,
+            parked: None,
         };
         if overlapping {
             run.status = RunStatus::Skipped;
@@ -356,9 +357,9 @@ impl Engine {
             entry.cancel.cancel();
             return;
         }
-        for parked in self.parked_runs() {
-            if &parked.run.automation_id == automation_id {
-                self.cancel_parked(&parked.run);
+        for (run, _) in self.parked_runs() {
+            if &run.automation_id == automation_id {
+                self.cancel_parked(&run);
             }
         }
     }
@@ -420,6 +421,12 @@ impl Engine {
         self.notify(&project_id, Some(&run.automation_id));
     }
 
+    /// Whether a task is executing a run of `automation_id`.
+    #[cfg(test)]
+    pub(crate) fn is_executing(&self, automation_id: &AutomationId) -> bool {
+        self.active.lock().contains_key(automation_id)
+    }
+
     fn release_active(&self, run: &Run) {
         forget(&mut self.active.lock(), run);
     }
@@ -475,12 +482,13 @@ fn forget(active: &mut HashMap<AutomationId, ActiveRun>, run: &Run) {
 }
 
 /// A server's tools changed: every automation of the project with an
-/// `mcp_tool` node on it has new issues, so its open screens read it again.
+/// `mcp_tool` node on it, by its id or an alias, has new issues, so its open
+/// screens read it again, once per automation.
 fn listing_changed(
     store: Arc<AutomationStore>,
     changes: broadcast::Sender<AutomationChanged>,
 ) -> OnListingChanged {
-    Arc::new(move |project_id, server_id| {
+    Arc::new(move |project_id, server_ids| {
         let automations = match store.list(Some(project_id)) {
             Ok(automations) => automations,
             Err(error) => {
@@ -490,7 +498,7 @@ fn listing_changed(
         };
         let uses_server = |a: &Automation| {
             a.graph.nodes.iter().any(|n| {
-                matches!(&n.spec, NodeSpec::McpTool { server_id: id, .. } if id == server_id)
+                matches!(&n.spec, NodeSpec::McpTool { server_id, .. } if server_ids.contains(server_id))
             })
         };
         for automation in automations.iter().filter(|a| uses_server(a)) {
@@ -526,6 +534,8 @@ impl EngineHandle {
     }
 }
 
+#[cfg(test)]
+mod approval_tests;
 #[cfg(test)]
 mod control_tests;
 #[cfg(test)]

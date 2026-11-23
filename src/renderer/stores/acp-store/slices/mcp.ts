@@ -2,20 +2,29 @@
  * Mcp slice — extracted from ../acp-store.ts (spec-04 PR B). Pure move, no logic changes.
  */
 
+import { PersistenceKeys } from '@shared/types/persistence.types'
 import { toast } from 'sonner'
 import type { StateCreator } from 'zustand'
-import { acpApi, type McpServerConfig, type ProbeResult } from '@/lib/acp-api'
+import {
+  acpApi,
+  answerMcpInstall as answerMcpInstallApi,
+  MCP_OAUTH_CANCELLED,
+  McpOAuthError,
+  type McpServerConfig,
+  type ProbeResult
+} from '@/lib/acp-api'
 import {
   catalogInstallEntry,
   loadMcpServers as loadMcpServersFromDisk,
+  normalizeMcpRegistry,
   type StoredMcpServer,
-  saveMcpServers as saveMcpServersToDisk,
-  syncMcpRegistryToProjectBestEffort
+  saveMcpServers as saveMcpServersToDisk
 } from '@/lib/acp-mcp-persistence'
 import { logFrontendError } from '@/lib/log-api'
-import { isTauriContext } from '@/lib/tauri-runtime'
+import { pendingFromRequest } from '@/lib/mcp-install-request'
+import { syncSharedKey } from '@/lib/shared-key-sync'
 import { randomUUID } from '@/lib/uuid'
-import { useProjectStore } from '@/stores/project-store'
+import { forgetAnswering, noteAnswering } from '../pending-permission-sync'
 import type { AcpState } from '../types'
 
 // MCP registry mutations (save/import/toggle/delete) are serialized through a
@@ -27,11 +36,6 @@ import type { AcpState } from '../types'
 // against the registry state as of its own turn.
 let mcpRegistryQueue: Promise<unknown> = Promise.resolve()
 
-/** The project the host MCP file is addressed through (`''` until one is selected). */
-function activeProjectId(): string {
-  return useProjectStore.getState().activeProjectId
-}
-
 function runSerializedMcpRegistryMutation<T>(mutation: () => Promise<T>): Promise<T> {
   const run = mcpRegistryQueue.then(mutation)
   // Swallow for the chain only — the returned promise still rejects to callers.
@@ -39,13 +43,40 @@ function runSerializedMcpRegistryMutation<T>(mutation: () => Promise<T>): Promis
   return run
 }
 
+let sharedMcpSyncStarted = false
+
+/**
+ * Show the server list another browser or device saved. Started once, after
+ * the first load: the sync reports nothing before the key was read. Applying
+ * only updates memory, so a later save starts from the host's list instead of
+ * overwriting it with this page's stale one.
+ */
+function startSharedMcpSync(
+  set: Parameters<McpSliceCreator>[0],
+  get: Parameters<McpSliceCreator>[1]
+): void {
+  if (sharedMcpSyncStarted) return
+  sharedMcpSyncStarted = true
+  syncSharedKey<unknown>(PersistenceKeys.acpMcpServers, (change) => {
+    const previous = get().mcpServers
+    const next = change.exists ? normalizeMcpRegistry(change.data) : []
+    set({ mcpServers: next })
+    for (const server of next) {
+      const before = previous.find((item) => item.id === server.id)
+      if (before && !sameProbeConfig(before, server)) reprobeEditedServer(set, get, server)
+    }
+  })
+}
+
 type McpSliceState = Pick<
   AcpState,
   | 'mcpServers'
   | 'mcpServersLoaded'
+  | 'pendingMcpInstalls'
   | 'mcpProbeStatus'
   | 'mcpOAuthConnecting'
   | 'mcpOAuthConnected'
+  | 'mcpOAuthPasteBack'
   | 'mcpTools'
   | 'mcpToolsLoaded'
   | 'mcpProbing'
@@ -56,18 +87,19 @@ type McpSliceState = Pick<
   | 'saveCatalogInstall'
   | 'setMcpServerEnabled'
   | 'deleteMcpServer'
-  | 'syncMcpRegistryToProjectFile'
+  | 'answerMcpInstall'
+  | 'dismissMcpInstall'
+  | '_onMcpInstallRequest'
+  | '_onMcpInstallResolved'
+  | '_onMcpRegistryChanged'
   | 'probeMcpServer'
   | 'loadMcpTools'
   | 'connectMcpOAuth'
+  | 'completeMcpOAuthPaste'
+  | 'cancelMcpOAuth'
   | 'checkMcpOAuthStatus'
   | 'disconnectMcpOAuth'
 >
-
-// A project-file mirror requested before the MCP registry finished loading is
-// kept (with the project it named) and performed as soon as the registry loads
-// (mirroring the empty pre-load state would clobber the project's file).
-let projectFileMirrorPending: string | null = null
 
 function probeConfigOf(server: StoredMcpServer): McpServerConfig {
   const { id: _id, enabled: _enabled, catalog: _catalog, ...config } = server
@@ -101,9 +133,9 @@ function withoutProbeState(s: McpProbeState, id: string): McpProbeState {
 }
 
 // Per-id count of completed deletions. Absence from `mcpServers` alone does not
-// mean deleted: a web project switch swaps in another project's list. A probe
-// or OAuth call compares the count across its await, so a deleted id's result
-// never lands, even on a server re-added under the same id.
+// mean deleted: a reload replaces the whole list. A probe or OAuth call
+// compares the count across its await, so a deleted id's result never lands,
+// even on a server re-added under the same id.
 const deletionCounts = new Map<string, number>()
 
 export function mcpServerDeletionCount(id: string): number {
@@ -121,6 +153,15 @@ export function mcpProbesInFlight(): number {
 function deletionGuard(id: string): () => boolean {
   const before = mcpServerDeletionCount(id)
   return () => mcpServerDeletionCount(id) !== before
+}
+
+// The running OAuth flow per server id. Not store state: nothing renders the
+// controller. A flow only clears its own UI state while it is still the
+// entry here, so a cancelled or superseded flow never clobbers a newer one.
+const oauthFlows = new Map<string, AbortController>()
+
+function isOAuthCancelled(err: unknown): boolean {
+  return err instanceof McpOAuthError && err.code === MCP_OAUTH_CANCELLED
 }
 
 // Ids whose in-flight probe started before an OAuth sign-in or sign-out
@@ -177,9 +218,11 @@ function reprobeEditedServer(
 export const createMcpSlice: McpSliceCreator = (set, get) => ({
   mcpServers: [],
   mcpServersLoaded: false,
+  pendingMcpInstalls: {},
   mcpProbeStatus: {},
   mcpOAuthConnecting: {},
   mcpOAuthConnected: {},
+  mcpOAuthPasteBack: {},
   mcpTools: {},
   mcpToolsLoaded: {},
   mcpProbing: {},
@@ -187,13 +230,9 @@ export const createMcpSlice: McpSliceCreator = (set, get) => ({
 
   loadMcpServers: async () => {
     try {
-      const list = await loadMcpServersFromDisk(activeProjectId())
+      const list = await loadMcpServersFromDisk()
       set({ mcpServers: list, mcpServersLoaded: true })
-      if (projectFileMirrorPending) {
-        const projectId = projectFileMirrorPending
-        projectFileMirrorPending = null
-        await syncMcpRegistryToProjectBestEffort(projectId, list)
-      }
+      startSharedMcpSync(set, get)
     } catch (err) {
       void logFrontendError({
         source: 'acp-store.loadMcpServers',
@@ -214,7 +253,7 @@ export const createMcpSlice: McpSliceCreator = (set, get) => ({
           : list.map((item) => (item.id === server.id ? nextServer : item))
       set({ mcpServers: next })
       try {
-        await saveMcpServersToDisk(next, activeProjectId())
+        await saveMcpServersToDisk(next)
       } catch (err) {
         set({ mcpServers: list })
         void logFrontendError({
@@ -235,7 +274,7 @@ export const createMcpSlice: McpSliceCreator = (set, get) => ({
       const next = [...list, ...servers]
       set({ mcpServers: next })
       try {
-        await saveMcpServersToDisk(next, activeProjectId())
+        await saveMcpServersToDisk(next)
       } catch (err) {
         set({ mcpServers: list })
         void logFrontendError({
@@ -247,12 +286,9 @@ export const createMcpSlice: McpSliceCreator = (set, get) => ({
     })
   },
 
-  saveCatalogInstall: (result, projectId) =>
+  saveCatalogInstall: (result) =>
     runSerializedMcpRegistryMutation(async () => {
       if (!get().mcpServersLoaded) throw new Error('The MCP server list has not loaded yet')
-      if (!isTauriContext() && activeProjectId() !== projectId) {
-        throw new Error('The open project changed during the install')
-      }
       const list = get().mcpServers
       const entry = catalogInstallEntry(
         result,
@@ -263,7 +299,7 @@ export const createMcpSlice: McpSliceCreator = (set, get) => ({
       const next = [...list, entry]
       set({ mcpServers: next })
       try {
-        await saveMcpServersToDisk(next, activeProjectId())
+        await saveMcpServersToDisk(next)
       } catch (err) {
         set({ mcpServers: list })
         void logFrontendError({
@@ -286,7 +322,7 @@ export const createMcpSlice: McpSliceCreator = (set, get) => ({
       const next = list.map((server) => (server.id === id ? { ...server, enabled } : server))
       set({ mcpServers: next })
       try {
-        await saveMcpServersToDisk(next, activeProjectId())
+        await saveMcpServersToDisk(next)
       } catch (err) {
         set({ mcpServers: list })
         void logFrontendError({
@@ -297,13 +333,115 @@ export const createMcpSlice: McpSliceCreator = (set, get) => ({
       }
     }),
 
+  answerMcpInstall: async (requestId, decision, inputs, secretValues, planId, launchDigest) => {
+    const pending = get().pendingMcpInstalls[requestId]
+    if (!pending || pending.result) return
+    if (decision === 'approve') {
+      set((s) => ({
+        pendingMcpInstalls: {
+          ...s.pendingMcpInstalls,
+          [requestId]: { ...pending, saving: true, error: null }
+        }
+      }))
+    }
+    noteAnswering('mcpInstalls', requestId)
+    try {
+      await answerMcpInstallApi({
+        requestId,
+        sessionId: pending.sessionId,
+        decision,
+        inputs,
+        secretValues,
+        planId: planId ?? pending.planId,
+        launchDigest: launchDigest ?? pending.launchDigest
+      })
+    } catch (err) {
+      forgetAnswering('mcpInstalls', requestId)
+      set((s) => {
+        const current = s.pendingMcpInstalls[requestId]
+        if (!current) return {}
+        return {
+          pendingMcpInstalls: {
+            ...s.pendingMcpInstalls,
+            [requestId]: { ...current, saving: false }
+          }
+        }
+      })
+      void logFrontendError({
+        level: 'warn',
+        source: 'acp-store.answerMcpInstall',
+        message: `mcp install ${decision} failed (${err instanceof Error ? err.name : 'error'})`
+      })
+      throw err
+    }
+  },
+
+  dismissMcpInstall: (requestId) => {
+    set((s) => {
+      if (!s.pendingMcpInstalls[requestId]) return {}
+      const pendingMcpInstalls = { ...s.pendingMcpInstalls }
+      delete pendingMcpInstalls[requestId]
+      return { pendingMcpInstalls }
+    })
+  },
+
+  _onMcpInstallRequest: (event) => {
+    set((s) => {
+      const previous = s.pendingMcpInstalls[event.requestId]
+      if (previous?.result) return {}
+      return {
+        pendingMcpInstalls: {
+          ...s.pendingMcpInstalls,
+          [event.requestId]: { ...pendingFromRequest(event), saving: false }
+        }
+      }
+    })
+  },
+
+  _onMcpInstallResolved: (event) => {
+    forgetAnswering('mcpInstalls', event.requestId)
+    set((s) => {
+      const previous = s.pendingMcpInstalls[event.requestId]
+      if (!previous) return {}
+      if (event.outcome === 'declined' || event.outcome === 'cancelled') {
+        const pendingMcpInstalls = { ...s.pendingMcpInstalls }
+        delete pendingMcpInstalls[event.requestId]
+        return { pendingMcpInstalls }
+      }
+      return {
+        pendingMcpInstalls: {
+          ...s.pendingMcpInstalls,
+          [event.requestId]: {
+            ...previous,
+            saving: false,
+            error: null,
+            result: {
+              outcome: event.outcome,
+              name: event.name,
+              serverId: event.serverId,
+              nextSteps: event.nextSteps,
+              oauth: event.oauth
+            }
+          }
+        }
+      }
+    })
+  },
+
+  _onMcpRegistryChanged: () => {
+    void runSerializedMcpRegistryMutation(async () => {
+      const list = await loadMcpServersFromDisk()
+      set({ mcpServers: list, mcpServersLoaded: true })
+    })
+  },
+
   deleteMcpServer: (id) =>
     runSerializedMcpRegistryMutation(async () => {
       const list = get().mcpServers
       const next = list.filter((server) => server.id !== id)
       set({ mcpServers: next })
       try {
-        await saveMcpServersToDisk(next, activeProjectId())
+        await saveMcpServersToDisk(next)
       } catch (err) {
         set({ mcpServers: list })
         void logFrontendError({
@@ -313,27 +451,15 @@ export const createMcpSlice: McpSliceCreator = (set, get) => ({
         throw err
       }
       deletionCounts.set(id, mcpServerDeletionCount(id) + 1)
+      oauthFlows.get(id)?.abort()
+      oauthFlows.delete(id)
       set((s) => ({
         ...withoutProbeState(s, id),
         mcpOAuthConnected: omitKey(s.mcpOAuthConnected, id),
-        mcpOAuthConnecting: omitKey(s.mcpOAuthConnecting, id)
+        mcpOAuthConnecting: omitKey(s.mcpOAuthConnecting, id),
+        mcpOAuthPasteBack: omitKey(s.mcpOAuthPasteBack, id)
       }))
     }),
-
-  // CAP-7: mirror the app-store MCP registry to the named project's
-  // `.termul/mcp-servers.json` so the web `GET /mcp-servers?projectId=` route
-  // (file-based) serves the same registry. Invoked by `useProjectRegistry` when
-  // the `projects` watch reports a new default while shared-live runs, and when
-  // shared-live starts. Best-effort + non-fatal — the wrapper logs failures and
-  // never throws.
-  syncMcpRegistryToProjectFile: async (projectId) => {
-    if (!isTauriContext()) return
-    if (!get().mcpServersLoaded) {
-      projectFileMirrorPending = projectId
-      return
-    }
-    await syncMcpRegistryToProjectBestEffort(projectId, get().mcpServers)
-  },
 
   // MCP probe (on-demand, read-only). No persistence, no rollback. Dedupes
   // concurrent probes per server id via `mcpProbing`.
@@ -397,39 +523,121 @@ export const createMcpSlice: McpSliceCreator = (set, get) => ({
   },
   connectMcpOAuth: async (projectId, id) => {
     const server = get().mcpServers.find((s) => s.id === id)
-    if (!server) return
+    if (!server) return false
     const url = (server as Extract<StoredMcpServer, { type: 'http' | 'sse' }>).url
-    if (!url) return
+    if (!url) return false
     const deleted = deletionGuard(id)
+    oauthFlows.get(id)?.abort()
+    const flow = new AbortController()
+    oauthFlows.set(id, flow)
+    // Clears this flow's spinner and paste-back entry, unless a cancel or a
+    // newer flow already took them over.
+    const settle = (): void => {
+      if (oauthFlows.get(id) !== flow) return
+      oauthFlows.delete(id)
+      if (deleted()) return
+      set((s) => ({
+        mcpOAuthConnecting: { ...s.mcpOAuthConnecting, [id]: false },
+        mcpOAuthPasteBack: omitKey(s.mcpOAuthPasteBack, id)
+      }))
+    }
     set((s) => ({ mcpOAuthConnecting: { ...s.mcpOAuthConnecting, [id]: true } }))
     void logFrontendError({
+      level: 'info',
       source: 'acp-store.connectMcpOAuth',
       message: `OAuth flow started for server '${server.name}'`
     })
     try {
-      await acpApi.startMcpOAuth(projectId, url)
-      // startMcpOAuth now blocks until the token is stored (desktop: the
-      // Tauri command blocks; web: polls the status endpoint). Setting
-      // connected state here is correct — the token is confirmed.
-      if (deleted()) return
-      set((s) => ({
-        mcpOAuthConnected: { ...s.mcpOAuthConnected, [id]: true },
-        mcpOAuthConnecting: { ...s.mcpOAuthConnecting, [id]: false }
-      }))
-      void logFrontendError({
-        source: 'acp-store.connectMcpOAuth',
-        message: `OAuth token confirmed for server '${server.name}'`
+      await acpApi.startMcpOAuth(projectId, url, {
+        signal: flow.signal,
+        // Web only: the sign-in link is known, so the paste-back dialog opens.
+        onAuthUrl: (authUrl, redirectUri) => {
+          if (oauthFlows.get(id) !== flow || deleted()) return
+          set((s) => ({
+            mcpOAuthPasteBack: {
+              ...s.mcpOAuthPasteBack,
+              [id]: { projectId, serverUrl: url, serverName: server.name, authUrl, redirectUri }
+            }
+          }))
+        }
       })
-      // Re-probe now that we have a token — should succeed.
-      await probeAfterInFlight(get, id)
     } catch (err) {
-      if (!deleted()) set((s) => ({ mcpOAuthConnecting: { ...s.mcpOAuthConnecting, [id]: false } }))
+      // Desktop ignores the signal, so a superseded flow can still settle here.
+      const superseded = oauthFlows.get(id) !== flow
+      settle()
+      if (isOAuthCancelled(err) || superseded) {
+        void logFrontendError({
+          level: 'info',
+          source: 'acp-store.connectMcpOAuth',
+          message: `OAuth flow cancelled for server '${server.name}'`
+        })
+        return false
+      }
       void logFrontendError({
         source: 'acp-store.connectMcpOAuth',
         message: `OAuth flow failed for server '${server.name}' (${String(err)})`
       })
       throw err
     }
+    // startMcpOAuth blocks until the token is stored (desktop: the Tauri
+    // command blocks; web: polls the status endpoint). Setting connected
+    // state here is correct — the token is confirmed.
+    const superseded = oauthFlows.get(id) !== flow
+    settle()
+    if (superseded || deleted()) return false
+    set((s) => ({ mcpOAuthConnected: { ...s.mcpOAuthConnected, [id]: true } }))
+    void logFrontendError({
+      level: 'info',
+      source: 'acp-store.connectMcpOAuth',
+      message: `OAuth token confirmed for server '${server.name}'`
+    })
+    // Re-probe now that we have a token — should succeed.
+    await probeAfterInFlight(get, id)
+    return true
+  },
+
+  completeMcpOAuthPaste: async (id, callbackUrl) => {
+    const pending = get().mcpOAuthPasteBack[id]
+    if (!pending) return
+    // Never log the pasted URL: it carries the authorization code and state.
+    try {
+      await acpApi.completeMcpOAuth(pending.projectId, callbackUrl)
+    } catch (err) {
+      const code = err instanceof McpOAuthError ? err.code : 'UNKNOWN'
+      void logFrontendError({
+        level: 'warn',
+        source: 'acp-store.completeMcpOAuthPaste',
+        message: `OAuth paste-back failed for server '${pending.serverName}' (${code})`
+      })
+      if (code !== 'OAUTH_UNKNOWN_STATE') throw err
+      // The host holds no flow for this sign-in. It may already have used it
+      // (its own callback won, or a lost reply to an earlier paste): then the
+      // token is stored and the running poll finishes the connect. A failed
+      // check rejects as is: the dialog stays open for another try.
+      const stored = await acpApi.hasMcpOAuthToken(pending.projectId, pending.serverUrl)
+      if (!stored) {
+        // Expired: polling for its token can never succeed.
+        get().cancelMcpOAuth(id)
+        throw err
+      }
+    }
+    set((s) => ({ mcpOAuthPasteBack: omitKey(s.mcpOAuthPasteBack, id) }))
+    void logFrontendError({
+      level: 'info',
+      source: 'acp-store.completeMcpOAuthPaste',
+      message: `OAuth paste-back accepted for server '${pending.serverName}'`
+    })
+  },
+
+  cancelMcpOAuth: (id) => {
+    const flow = oauthFlows.get(id)
+    if (!flow) return
+    oauthFlows.delete(id)
+    flow.abort()
+    set((s) => ({
+      mcpOAuthConnecting: { ...s.mcpOAuthConnecting, [id]: false },
+      mcpOAuthPasteBack: omitKey(s.mcpOAuthPasteBack, id)
+    }))
   },
 
   checkMcpOAuthStatus: async (projectId, id) => {

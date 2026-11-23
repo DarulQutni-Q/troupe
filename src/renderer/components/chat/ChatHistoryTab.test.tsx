@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionIndexEntry } from '@/lib/acp-history-persistence'
 import { mockSessionIndexEntry } from '@/lib/test-utils/acp'
+import { useQuickChatStore } from '@/stores/quick-chat-store'
 import {
   _resetShellAnnouncerForTests,
   ANNOUNCE_DELAY_MS,
@@ -58,20 +59,23 @@ const {
 }))
 
 vi.mock('@/stores/acp-store', () => {
-  const useAcpStore = (sel: (s: unknown) => unknown) =>
-    sel({
-      sessionIndex: sessionIndexRef.current,
-      openHistorySession: mockOpen,
-      deleteHistorySession: mockDelete,
-      discoveredSessions: discoveredSessionsRef.current,
-      agents: agentsRef.current,
-      agentStatus: agentStatusRef.current,
-      agentConfigs: [],
-      configToLiveAgent: configToLiveAgentRef.current,
-      discoverSessions: mockDiscover,
-      openDiscoveredSession: mockOpenDiscovered,
-      activeSessionId: activeSessionIdRef.current
-    })
+  const state = () => ({
+    sessions: {},
+    sessionIndex: sessionIndexRef.current,
+    openHistorySession: mockOpen,
+    deleteHistorySession: mockDelete,
+    discoveredSessions: discoveredSessionsRef.current,
+    agents: agentsRef.current,
+    agentStatus: agentStatusRef.current,
+    agentConfigs: [],
+    configToLiveAgent: configToLiveAgentRef.current,
+    discoverSessions: mockDiscover,
+    openDiscoveredSession: mockOpenDiscovered,
+    activeSessionId: activeSessionIdRef.current
+  })
+  const useAcpStore = Object.assign((sel: (s: unknown) => unknown) => sel(state()), {
+    getState: state
+  })
   // Stubs for the store helpers the component imports.
   const agentReuseKey = (configId: string, cwd: string) => `${configId}\0${cwd.trim()}`
   const configIdFromReuseKey = () => ''
@@ -212,6 +216,23 @@ describe('ChatHistoryTab scoping', () => {
     expect(mockDiscover).not.toHaveBeenCalled()
   })
 
+  it('opens a quick chat in the quick view, not as a tab in this project', () => {
+    sessionIndexRef.current = [
+      entry('q1', {
+        projectId: '__unassigned__',
+        cwd: '/home/me/.troupe/quick-chats/x',
+        kind: 'quick'
+      })
+    ]
+    mockOpen.mockResolvedValue(undefined)
+    render(<ChatHistoryTab />)
+    fireEvent.click(screen.getByText('q1'))
+    expect(mockOpen).toHaveBeenCalledWith('q1')
+    expect(mockAddTab).not.toHaveBeenCalled()
+    expect(useQuickChatStore.getState().view).toEqual({ mode: 'chat', sessionId: 'q1' })
+    useQuickChatStore.setState({ view: { mode: 'closed' } })
+  })
+
   it('opens a visible chat via addAgentChatTab', () => {
     sessionIndexRef.current = [entry('s1', { projectId: 'p1', cwd: '/work' })]
     mockOpen.mockResolvedValue(undefined)
@@ -259,7 +280,7 @@ describe('ChatHistoryTab scoping', () => {
     render(<ChatHistoryTab />)
 
     // Discovered (external/CLI) sessions are never listed, so they can't be
-    // opened from the sidebar — only Termul-created sessions render.
+    // opened from the sidebar — only Troupe-created sessions render.
     expect(screen.queryByText('CLI chat')).not.toBeInTheDocument()
     expect(mockOpenDiscovered).not.toHaveBeenCalled()
   })

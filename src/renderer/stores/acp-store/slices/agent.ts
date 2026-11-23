@@ -39,7 +39,7 @@ import {
   liveInlineKeyAuthPolicy
 } from '../helpers'
 import { useAcpStore } from '../index'
-import { rejectedRateLimit, withRateLimit } from '../rate-limit'
+import { isAdapterPlanLimit, rejectedRateLimit, withRateLimit } from '../rate-limit'
 import {
   activeWirePromptTurns,
   bugReportCollectors,
@@ -594,11 +594,11 @@ export const createAgentSlice: StateCreator<AcpState, [], [], AgentSliceState> =
 
   pendingRestartVersions: {},
 
-  spawnAgent: async (config, projectId) => {
+  spawnAgent: async (config, projectId, sessionId) => {
     const tempKey = config.name
     set((s) => ({ agentStatus: { ...s.agentStatus, [tempKey]: 'spawning' } }))
     try {
-      const result = await acpApi.spawnAgent(config, projectId)
+      const result = await acpApi.spawnAgent(config, projectId, sessionId)
       const agentId = result.agentId
       set((s) => {
         // Drop the transient name-keyed `spawning` marker now that we have the
@@ -955,7 +955,9 @@ export const createAgentSlice: StateCreator<AcpState, [], [], AgentSliceState> =
           ...(detail.code === ACP_AUTH_REQUIRED_RPC_CODE
             ? { agentStatus: { ...s.agentStatus, [e.agentId]: 'error' as AgentStatus } }
             : {}),
-          ...(detail.providerCode === 'provider_quota_exceeded' && session.agentId === e.agentId
+          ...((detail.providerCode === 'provider_quota_exceeded' ||
+            isAdapterPlanLimit(detail.data)) &&
+          session.agentId === e.agentId
             ? {
                 sessionUsage: {
                   ...s.sessionUsage,

@@ -8,9 +8,19 @@ import { resetChatActivity, seedChatActivity } from '@/lib/test-utils/chat-activ
 import { _resetEphemeralSessionIdsForTesting, useAcpStore } from '@/stores/acp-store'
 import { FRESH, seedOptionsSession } from '@/stores/acp-store/testkit'
 import { useProjectStore } from '@/stores/project-store'
+import { useQuickChatStore } from '@/stores/quick-chat-store'
 import { MobileRecentsList } from './MobileRecentsList'
 
-const { workspaceRef, mockCloseAgentChat, mockAddAgentChatTab, mockNavigate } = vi.hoisted(() => ({
+const {
+  workspaceRef,
+  mockCloseAgentChat,
+  mockAddAgentChatTab,
+  mockNavigate,
+  mockWriteText,
+  mockToastSuccess
+} = vi.hoisted(() => ({
+  mockWriteText: vi.fn(),
+  mockToastSuccess: vi.fn(),
   mockNavigate: vi.fn(),
   workspaceRef: {
     current: {
@@ -49,6 +59,23 @@ vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom')
   return { ...actual, useNavigate: () => mockNavigate }
 })
+
+vi.mock('@/lib/clipboard-api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/clipboard-api')>()),
+  clipboardApi: { writeText: mockWriteText }
+}))
+
+vi.mock('sonner', () => ({ toast: { success: mockToastSuccess, error: vi.fn() } }))
+
+const mockRenameQuickChat = vi.hoisted(() => vi.fn())
+vi.mock('@/lib/quick-chat-rename', () => ({
+  renameQuickChat: (...args: unknown[]) => mockRenameQuickChat(...args)
+}))
+
+const mockOpenNewQuickChat = vi.hoisted(() => vi.fn())
+vi.mock('@/components/chat/new-chat/open-new-chat', () => ({
+  openNewQuickChat: (...args: unknown[]) => mockOpenNewQuickChat(...args)
+}))
 
 vi.mock('@/lib/agent-chat-close', () => ({
   closeAgentChat: mockCloseAgentChat
@@ -128,6 +155,8 @@ beforeEach(() => {
   onNavigate.mockReset()
   mockNavigate.mockReset()
   mockAddAgentChatTab.mockReset()
+  mockWriteText.mockReset().mockResolvedValue({ success: true })
+  mockToastSuccess.mockReset()
   mockOpenHistorySession.mockReset().mockResolvedValue(undefined)
   mockDeleteHistorySession.mockReset().mockResolvedValue(undefined)
   mockCloseAgentChat
@@ -188,12 +217,44 @@ describe('MobileRecentsList merged list', () => {
 
     const rows = document.querySelectorAll('[data-recents-entry-id="s1"]')
     expect(rows).toHaveLength(1)
-    const row = screen.getByRole('button', { name: 'Live title, Working' })
+    const row = screen.getByRole('button', { name: 'Live title, Running' })
     expect(row).toHaveAttribute('aria-current', 'page')
     expect(row).toHaveClass('rounded-full', 'bg-secondary', 'text-base', 'min-h-11')
-    // Status is a glyph with sr-only text, never a visible chip beside the title.
-    expect(within(row).getByText('Working')).toHaveClass('sr-only')
+    // The Rail chat trail: the running spinner.
+    expect(within(row).getByRole('status', { name: 'Running' })).toBeInTheDocument()
     expect(screen.queryByText('Index title')).not.toBeInTheDocument()
+  })
+
+  it('names the chat that started a worker chat under its title, and nothing for an unknown parent', () => {
+    seedHistory([
+      { id: 'parent', title: 'Plan the refactor' },
+      { id: 'orphan', title: 'Orphan worker' }
+    ])
+    useAcpStore.setState((s) => ({
+      sessionIndex: [
+        ...s.sessionIndex.map((e) => (e.id === 'orphan' ? { ...e, startedBy: 'gone' } : e)),
+        mockSessionIndexEntry({
+          id: 'worker',
+          title: 'Split the parser',
+          projectId: 'p1',
+          cwd: '/work',
+          status: 'active',
+          startedBy: 'parent'
+        })
+      ]
+    }))
+    renderList()
+
+    const row = screen.getByRole('button', {
+      name: 'Split the parser, Started by Plan the refactor'
+    })
+    expect(within(row).getByText('Started by Plan the refactor')).toHaveClass(
+      'text-xs',
+      'text-muted-foreground'
+    )
+    expect(screen.getByRole('button', { name: 'Orphan worker' })).not.toHaveTextContent(
+      'Started by'
+    )
   })
 
   it('shows the host status of an open chat this phone has not loaded yet', () => {
@@ -202,8 +263,9 @@ describe('MobileRecentsList merged list', () => {
     seedChatActivity({ s1: { busy: true, needsYou: true } })
     renderList()
 
-    const row = screen.getByRole('button', { name: /^Desktop chat, Needs you, Working/ })
-    expect(within(row).getByTitle('Working')).toBeInTheDocument()
+    // One live state, as on the desktop Rail: Needs you wins over Running.
+    const row = screen.getByRole('button', { name: /^Desktop chat, Needs you(,|$)/ })
+    expect(within(row).getByText('Needs you')).toBeInTheDocument()
   })
 
   it('shows the host status of a Recents chat with no tab here, Failed included', () => {
@@ -232,7 +294,7 @@ describe('MobileRecentsList merged list', () => {
     })
     renderList()
 
-    expect(screen.getByRole('button', { name: /^Busy chat, Working/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Busy chat, Running/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /^Done chat, New activity/ })).toBeInTheDocument()
     expect(
       screen.getByRole('button', { name: /^Failed chat, Failed, Needs you/ })
@@ -304,7 +366,7 @@ describe('MobileRecentsList merged list', () => {
     expect(onNavigate).toHaveBeenCalledTimes(2)
   })
 
-  it('truncates a long title and keeps the status glyph and actions on the row', () => {
+  it('truncates a long title and keeps the status trail and actions on the row', () => {
     const long = 'A very long chat title that keeps going and going past the drawer width ok'
     expect(long.length).toBeGreaterThanOrEqual(70)
     seedHistory([{ id: 's1', title: long }])
@@ -315,10 +377,10 @@ describe('MobileRecentsList merged list', () => {
 
     const title = screen.getByText(long)
     expect(title).toHaveClass('truncate', 'min-w-0', 'flex-1')
-    const row = screen.getByRole('button', { name: `${long}, Working` })
+    const row = screen.getByRole('button', { name: `${long}, Running` })
     expect(row).toHaveClass('min-w-0', 'w-full')
-    // The glyph slot never shrinks; the actions button is pinned inside the row.
-    expect(within(row).getByText('Working').closest('.shrink-0')).toBeTruthy()
+    // The status slot never shrinks; the actions button is pinned inside the row.
+    expect(within(row).getByRole('status', { name: 'Running' }).closest('.shrink-0')).toBeTruthy()
     const actions = screen.getByRole('button', { name: `More actions for ${long}` })
     expect(actions).toHaveClass('absolute', 'right-1')
   })
@@ -410,6 +472,49 @@ describe('MobileRecentsList row actions', () => {
     fireEvent.click(within(confirm).getByRole('button', { name: 'Delete' }))
     expect(mockDeleteHistorySession).toHaveBeenCalledWith('h1')
     await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+  })
+
+  it('copies the reference of a history chat', async () => {
+    seedHistory([{ id: 'h1', title: 'Past chat' }])
+    renderList()
+
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Past chat' }))
+    const sheet = await screen.findByRole('dialog', { name: 'Past chat' })
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Copy chat reference' }))
+
+    await waitFor(() =>
+      expect(mockWriteText).toHaveBeenCalledWith(
+        'Troupe chat: Past chat\nChat ID: h1\nProject: termul (ID p1)\nFolder: /work\nRead it with the Troupe read_chat tool.'
+      )
+    )
+    expect(mockToastSuccess).toHaveBeenCalledWith('Chat reference copied', { description: 'h1' })
+  })
+
+  it('copies the reference of an open chat under its own project and live title', async () => {
+    useProjectStore.setState({
+      projects: [
+        ...useProjectStore.getState().projects,
+        { id: 'p2', name: 'skills-lab', color: 'blue', path: '/lab', worktrees: [] }
+      ]
+    })
+    seedHistory([])
+    seedOptionsSession('s7', 'agent-1', {
+      title: 'Other project chat',
+      projectId: 'p2',
+      cwd: '/lab'
+    })
+    seedTabs([{ type: 'agent-chat', id: 'tab-7', sessionId: 's7' }])
+    renderList()
+
+    fireEvent.contextMenu(screen.getByRole('button', { name: /^Other project chat/ }))
+    const sheet = await screen.findByRole('dialog', { name: 'Other project chat' })
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Copy chat reference' }))
+
+    await waitFor(() =>
+      expect(mockWriteText).toHaveBeenCalledWith(
+        'Troupe chat: Other project chat\nChat ID: s7\nProject: skills-lab (ID p2)\nFolder: /lab\nRead it with the Troupe read_chat tool.'
+      )
+    )
   })
 
   it('a touch held still opens the actions and swallows the click that ends it', async () => {
@@ -618,5 +723,134 @@ describe('MobileRecentsList Active section and created time', () => {
     ).toBeInTheDocument()
     // The window pages only the closed chats: 50 rendered, 10 left.
     expect(screen.getByRole('button', { name: 'Load more (10 more)' })).toBeInTheDocument()
+  })
+})
+
+describe('MobileRecentsList quick chats', () => {
+  afterEach(() => {
+    useQuickChatStore.setState({ view: { mode: 'closed' } })
+    mockOpenNewQuickChat.mockReset()
+  })
+
+  it('keeps a Quick chats heading with + when there is no quick chat yet', () => {
+    seedHistory([{ id: 'a', title: 'Project chat' }])
+    renderList()
+    fireEvent.click(screen.getByRole('button', { name: 'New quick chat' }))
+    expect(onNavigate).toHaveBeenCalled()
+    expect(mockOpenNewQuickChat).toHaveBeenCalledWith('mobile-drawer-quick')
+  })
+
+  it('highlights the open quick chat row and keeps one + on its heading', () => {
+    useAcpStore.setState({
+      sessionIndex: [
+        mockSessionIndexEntry({
+          id: 'q1',
+          title: 'Quick notes',
+          projectId: '__unassigned__',
+          kind: 'quick',
+          status: 'active'
+        })
+      ],
+      openHistorySession: mockOpenHistorySession,
+      deleteHistorySession: mockDeleteHistorySession
+    })
+    useQuickChatStore.setState({ view: { mode: 'chat', sessionId: 'q1' } })
+    renderList()
+    expect(screen.getAllByRole('button', { name: 'New quick chat' })).toHaveLength(1)
+    const row = document.querySelector('[data-recents-entry-id="q1"]') as HTMLElement
+    expect(row.querySelector('[aria-current="page"]')).toBeTruthy()
+  })
+
+  it('renames a quick chat from the row actions sheet; a project chat has no Rename', async () => {
+    useAcpStore.setState({
+      sessionIndex: [
+        mockSessionIndexEntry({
+          id: 'q1',
+          title: 'Quick notes',
+          projectId: '__unassigned__',
+          kind: 'quick'
+        }),
+        mockSessionIndexEntry({ id: 'p1', title: 'Project notes', projectId: 'p1', cwd: '/work' })
+      ],
+      openHistorySession: mockOpenHistorySession,
+      deleteHistorySession: mockDeleteHistorySession
+    })
+    renderList()
+    fireEvent.contextMenu(screen.getByRole('button', { name: /^Project notes/ }))
+    expect(await screen.findByRole('button', { name: 'Copy chat reference' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Rename chat' })).not.toBeInTheDocument()
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
+
+    fireEvent.contextMenu(screen.getByRole('button', { name: /^Quick notes/ }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Rename chat' }))
+    const input = screen.getByRole('textbox', { name: 'Rename Quick notes' })
+    fireEvent.change(input, { target: { value: 'Trip plan' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(mockRenameQuickChat).toHaveBeenCalledWith('q1', 'Trip plan', 'Quick notes')
+  })
+
+  it('keeps the heading + when the quick chats are outside the loaded window', () => {
+    useAcpStore.setState({
+      sessionIndex: [
+        ...Array.from({ length: 55 }, (_, i) =>
+          mockSessionIndexEntry({
+            id: `p${i}`,
+            title: `Project chat ${i}`,
+            projectId: 'p1',
+            cwd: '/work',
+            createdAt: 1000 + i
+          })
+        ),
+        mockSessionIndexEntry({
+          id: 'q-old',
+          title: 'Old quick chat',
+          projectId: '__unassigned__',
+          kind: 'quick',
+          createdAt: 1
+        })
+      ],
+      openHistorySession: mockOpenHistorySession,
+      deleteHistorySession: mockDeleteHistorySession
+    })
+    renderList()
+    expect(screen.queryByText('Old quick chat')).not.toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'New quick chat' })).toHaveLength(1)
+  })
+
+  it('starts a second rename from the title the first rename set', async () => {
+    mockRenameQuickChat.mockImplementation((id: string, title: string) => {
+      useAcpStore.setState((state) => ({
+        sessionIndex: state.sessionIndex.map((entry) =>
+          entry.id === id ? { ...entry, title } : entry
+        )
+      }))
+    })
+    useAcpStore.setState({
+      sessionIndex: [
+        mockSessionIndexEntry({
+          id: 'q1',
+          title: 'Quick notes',
+          projectId: '__unassigned__',
+          kind: 'quick'
+        })
+      ],
+      openHistorySession: mockOpenHistorySession,
+      deleteHistorySession: mockDeleteHistorySession
+    })
+    renderList()
+    fireEvent.contextMenu(screen.getByRole('button', { name: /^Quick notes/ }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Rename chat' }))
+    const first = screen.getByRole('textbox', { name: 'Rename Quick notes' })
+    fireEvent.change(first, { target: { value: 'Trip plan' } })
+    // Leaving the field commits the rename and keeps the sheet open.
+    fireEvent.blur(first)
+    expect(mockRenameQuickChat).toHaveBeenLastCalledWith('q1', 'Trip plan', 'Quick notes')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Rename chat' }))
+    const second = screen.getByRole('textbox', { name: 'Rename Trip plan' })
+    expect(second).toHaveValue('Trip plan')
+    fireEvent.change(second, { target: { value: 'Trip plan v2' } })
+    fireEvent.keyDown(second, { key: 'Enter' })
+    expect(mockRenameQuickChat).toHaveBeenLastCalledWith('q1', 'Trip plan v2', 'Trip plan')
   })
 })

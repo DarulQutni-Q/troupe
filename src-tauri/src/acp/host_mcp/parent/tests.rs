@@ -1524,3 +1524,100 @@ impl crate::browser_automation::BrowserHost for EchoHost {
         crate::browser_automation::engine::EngineFacts::all_trusted()
     }
 }
+
+/// Metadata of a `read_chat` target; only the project id varies.
+fn read_chat_metadata(
+    project_id: Option<&str>,
+) -> crate::acp::session_persistence::SessionMetadata {
+    crate::acp::session_persistence::SessionMetadata {
+        schema_version: crate::acp::session_persistence::SESSION_SCHEMA_VERSION,
+        storage_key: "key".to_string(),
+        session_id: "chat-b".to_string(),
+        stable_agent_namespace: None,
+        runtime_agent_id: None,
+        project_id: project_id.map(str::to_string),
+        cwd: "/work/b".to_string(),
+        title: None,
+        title_source: None,
+        created_at: 0,
+        last_activity_at: 0,
+        status: crate::acp::session_persistence::PersistedSessionStatus::Closed,
+        message_count: 0,
+        tool_count: 0,
+        last_seq: 0,
+        fold_open_role: None,
+        fold_counted: false,
+        discovered: false,
+        worktree_path: None,
+        worktree_branch: None,
+        model_id: None,
+        model_name: None,
+        worktree_branch_source: None,
+        worktree_launch_branch: None,
+        command_id: None,
+        log_epoch: None,
+        head_ahead_of_durable: false,
+        sweep_checkpoint: None,
+        continued_from: None,
+        kind: crate::acp::session_persistence::SessionKind::Project,
+        quick_chat_id: None,
+        started_by: None,
+    }
+}
+
+#[test]
+fn read_chat_project_name_comes_from_the_registry_and_falls_back_to_the_id() {
+    use crate::web::project_registry::{ProjectRegistry, ProjectSummary};
+
+    let registry = ProjectRegistry::new();
+    registry.upsert(ProjectSummary {
+        id: "project-b".to_string(),
+        name: "Skills playground".to_string(),
+        color: "blue".to_string(),
+        path: None,
+        is_archived: false,
+        is_default: false,
+    });
+
+    let known = read_chat::names(&read_chat_metadata(Some("project-b")), Some(&registry));
+    assert_eq!(known.project.as_deref(), Some("Skills playground"));
+
+    let unknown = read_chat::names(&read_chat_metadata(Some("other")), Some(&registry));
+    assert_eq!(unknown.project, None);
+
+    let no_registry = read_chat::names(&read_chat_metadata(Some("project-b")), None);
+    assert_eq!(no_registry.project, None);
+}
+
+/// An orchestrated child runs on a private session no client subscribes to:
+/// its `ask_user` question shows on its chat as the child's agent, the chat's
+/// turn end leaves it waiting, and the answer by question id still reaches
+/// the child's parked call.
+#[test]
+fn a_child_ask_user_shows_on_its_chat_and_is_answered_from_there() {
+    let sink = Arc::new(QuestionSink::default());
+    let server = HostPlanServer::start(vec![sink.clone()], None);
+    let (port, token, provisional) = server.register_session("child-agent");
+    server.route_cards_to_chat(&token, "chat-root");
+    server.bind_session(&token, "sess-child");
+    server.begin_turn("child-agent", "sess-child");
+
+    let runtime = Runtime::new().unwrap();
+    runtime.block_on(async {
+        let frame = ask_frame(&token, &provisional, "Ship it?");
+        let call = tokio::spawn(async move { connect_and_send(port, &frame).await });
+        let question_id = wait_for_open_ask(&server).await;
+
+        server.cancel_asks_for_session("chat-root");
+        assert_eq!(server.open_ask_ids(), std::slice::from_ref(&question_id), "the chat's turn end keeps it");
+        assert!(server.answer_ask(&question_id, Some(vec!["Yes".to_string()])));
+
+        let reply = call.await.unwrap();
+        assert_eq!(reply["result"]["answers"], serde_json::json!(["Yes"]));
+    });
+
+    let payloads = sink.payloads.lock().unwrap();
+    assert_eq!(payloads.len(), 1, "exactly one question event");
+    assert_eq!(payloads[0]["sessionId"], "chat-root");
+    assert_eq!(payloads[0]["agentId"], "child-agent");
+}

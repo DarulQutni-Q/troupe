@@ -1,18 +1,7 @@
-import { PersistenceKeys } from '@shared/types/persistence.types'
 import { act, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useUpdaterStore } from '@/stores/updater-store'
 import App from './App'
-
-const { mockContextBarSettingsRead } = vi.hoisted(() => ({
-  mockContextBarSettingsRead: vi.fn()
-}))
-
-vi.mock('./hooks/use-context-bar-settings', () => ({
-  useContextBarSettings: () => {
-    void mockContextBarSettingsRead(PersistenceKeys.contextBarSettings)
-  }
-}))
 
 const { mockUseVisibilityState } = vi.hoisted(() => ({
   mockUseVisibilityState: vi.fn(() => undefined)
@@ -39,6 +28,23 @@ vi.mock('@/lib/web-setup-gate', () => ({
   useWebSetupGate: () => setupGateRef.current,
   checkWebSetupGate: mockCheckWebSetupGate
 }))
+
+// The real web auth gate keeps its probe state at module level: the first
+// mount in a file re-publishes 'checking' and renders AppEffects twice, later
+// mounts do not. Hold it at one state so every test mounts the same way.
+vi.mock('@/lib/web-auth-gate', () => {
+  const gate = { status: 'checking', submitting: false }
+  return {
+    useWebAuthGate: () => gate,
+    useWebAuthGateOk: () => false,
+    getWebAuthGateState: () => gate,
+    checkWebAuthGate: vi.fn(),
+    submitWebAuthToken: vi.fn(async () => 'ok'),
+    flagWebAuthUnauthorized: vi.fn(),
+    isUnauthorizedResult: vi.fn(() => false),
+    _resetWebAuthGateForTesting: vi.fn()
+  }
+})
 
 vi.mock('@/components/setup/ServerSetupGate', () => ({
   ServerSetupGate: ({ children }: { children: React.ReactNode }) =>
@@ -252,14 +258,6 @@ describe('App Routes', () => {
     expect(document.body.innerHTML).toBeTruthy()
   })
 
-  it('loads context bar settings on mount', async () => {
-    render(<App />)
-
-    await waitFor(() => {
-      expect(mockContextBarSettingsRead).toHaveBeenCalledWith(PersistenceKeys.contextBarSettings)
-    })
-  })
-
   it('wires app visibility tracking at app scope', () => {
     render(<App />)
     expect(mockUseVisibilityState).toHaveBeenCalled()
@@ -338,7 +336,7 @@ describe('App CAP-3 resilience wiring (web entry)', () => {
       isOpen: true,
       version: '0.4.8',
       notes: 'Release notes',
-      htmlUrl: 'https://github.com/gnoviawan/termul/releases/tag/v0.4.8',
+      htmlUrl: 'https://github.com/gnoviawan/troupe/releases/tag/v0.4.8',
       close: vi.fn()
     })
 
@@ -434,7 +432,6 @@ describe('App server setup gate (gh-1105)', () => {
     expect(mockUsePersistenceErrorToasts).not.toHaveBeenCalled()
     expect(mockUseVisibilityState).not.toHaveBeenCalled()
     expect(mockUseRemoteProjects).not.toHaveBeenCalled()
-    expect(mockContextBarSettingsRead).not.toHaveBeenCalled()
     // The probe itself lives in the App body (outside the swapped subtree)
     // and still primed.
     expect(mockCheckWebSetupGate).toHaveBeenCalled()

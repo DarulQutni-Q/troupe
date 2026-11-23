@@ -1,10 +1,9 @@
-import type { ShellInfo } from '@shared/types/ipc.types'
 import { motion } from 'framer-motion'
 import { lazy, Suspense } from 'react'
 import { Outlet } from 'react-router-dom'
 import { ChatRoute } from '@/components/ChatRoute'
+import { AgentChatPanel } from '@/components/chat/AgentChatPanel'
 import { FolderKanban } from '@/components/icons'
-import { StatusBar } from '@/components/StatusBar'
 import { useTopRow } from '@/components/shell/top-row-context'
 import { Button } from '@/components/ui/button'
 import { ProjectSwitchIndicator } from '@/components/workspace/ProjectSwitchIndicator'
@@ -12,7 +11,7 @@ import { ProjectTreeHost, useMountedProjectIds } from '@/components/workspace/Pr
 import { useMobileActiveLeaf } from '@/hooks/use-mobile-active-leaf'
 import { ShellSkeleton } from '@/layouts/workspace-layout/ShellSkeleton'
 import type { SSHWorkspaceState } from '@/layouts/workspace-layout/use-ssh-workspace'
-import { useDefaultShell } from '@/stores/app-settings-store'
+import { quickChatPanelKey, useQuickChatStore } from '@/stores/quick-chat-store'
 import { useTerminalActions } from '@/stores/terminal-store'
 import { useWorkspaceStore, type WorkspaceTab } from '@/stores/workspace-store'
 import type { Project } from '@/types/project'
@@ -25,51 +24,47 @@ interface WorkspaceMainProps {
   isMobileWebShell: boolean
   isWorkspaceRoute: boolean
   projects: Project[]
-  activeProject: Project | undefined
   ssh: SSHWorkspaceState
   setIsNewProjectModalOpen: (open: boolean) => void
-  handleAddTerminal: (paneId: string | undefined, shell?: ShellInfo) => void
-  handleNewBrowserTab: (paneId?: string) => void
   handleCloseTerminal: (id: string, tabId: string) => boolean
   handleCloseEditorTab: (filePath: string) => boolean
   handleCloseTabs: (targetTabs: WorkspaceTab[]) => void
   closingTerminalIds: string[]
 }
 
-/** The workspace main area: SSH workspace, empty state, pane tree or routed child. */
+/** The workspace main area: SSH workspace, a quick chat, empty state, pane tree or routed child. */
 export function WorkspaceMain({
   isMobileWebShell,
   isWorkspaceRoute,
   projects,
-  activeProject,
   ssh,
   setIsNewProjectModalOpen,
-  handleAddTerminal,
-  handleNewBrowserTab,
   handleCloseTerminal,
   handleCloseEditorTab,
   handleCloseTabs,
   closingTerminalIds
 }: WorkspaceMainProps): React.JSX.Element {
   const { renameTerminal } = useTerminalActions()
-  const appDefaultShell = useDefaultShell()
   // Every visited project's tree stays mounted; only the active one is visible.
   const mountedProjectIds = useMountedProjectIds()
   const activeTreeProjectId = useWorkspaceStore((state) => state.activeProjectId)
-  // Flagged shell only: the SSH header is the top row when it owns the window
-  // controls (no provider on the classic and mobile shells = unchanged).
+  // Flagged shell only: the SSH header is the top row in SSH mode (no
+  // provider on the mobile shell = unchanged). It ends with the window
+  // controls spacer unless the open right panel's header does.
   const topRowValue = useTopRow()
   const sshTopRow =
-    topRowValue?.roles.controlsOwner === 'ssh-header'
+    topRowValue?.roles.showPanelOwner === 'ssh-header'
       ? {
           dragRegion: topRowValue.platform.dragRegions,
-          windowControls: topRowValue.platform.windowControls,
-          showSidePanel: topRowValue.roles.showPanelOwner === 'ssh-header'
+          windowControls:
+            topRowValue.platform.windowControls && topRowValue.roles.controlsOwner === 'ssh-header',
+          startSlot: true
         }
       : undefined
   // Mobile shell only: a split synced from desktop collapses to the active
   // leaf (read-only; null on desktop so the desktop node is unchanged).
   const mobileActiveLeaf = useMobileActiveLeaf(isMobileWebShell)
+  const quickChat = useQuickChatStore((state) => state.view)
 
   return (
     <>
@@ -77,8 +72,14 @@ export function WorkspaceMain({
         <Suspense fallback={<ShellSkeleton />}>
           <SSHWorkspace topRow={sshTopRow} />
         </Suspense>
+      ) : isWorkspaceRoute && quickChat.mode === 'chat' ? (
+        <div className="relative flex h-full min-h-0 flex-1 flex-col" data-testid="quick-chat-main">
+          {/* Another chat remounts the panel, so no draft or panel state
+              carries over. A placeholder that became its session keeps it. */}
+          <AgentChatPanel key={quickChatPanelKey(quickChat)} sessionId={quickChat.sessionId} />
+        </div>
       ) : projects.length === 0 ? (
-        <div className="flex flex-1 flex-col items-center justify-center bg-background px-6 rounded-xl">
+        <div className="flex flex-1 flex-col items-center justify-center bg-background px-6">
           <motion.div
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
@@ -112,37 +113,23 @@ export function WorkspaceMain({
                       projectId={projectId}
                       isActiveProject={isActiveProject}
                       leafOverride={isActiveProject ? mobileActiveLeaf : null}
-                      onAddTerminal={handleAddTerminal}
-                      onAddBrowserTab={handleNewBrowserTab}
                       onCloseTerminal={handleCloseTerminal}
                       onRenameTerminal={renameTerminal}
                       onCloseEditorTab={handleCloseEditorTab}
                       onCloseTabs={handleCloseTabs}
                       closingTerminalIds={closingTerminalIds}
-                      defaultShell={
-                        (isActiveProject
-                          ? activeProject
-                          : projects.find((project) => project.id === projectId)
-                        )?.defaultShell || appDefaultShell
-                      }
                     />
                   )
                 })}
               </div>
             </>
           ) : (
-            <div className="relative flex-1 overflow-hidden bg-background rounded-xl">
+            <div className="relative flex-1 overflow-hidden bg-background">
               <div className="h-full w-full">
                 <Outlet />
               </div>
             </div>
           )}
-          {/* Story 11 (QA F9) put StatusBar on mobile; the mobile revamp
-              retires it there as desktop chrome. Connection health now
-              lives in the drawer footer. The last-command exit code has no
-              mobile surface until the header goal's terminal sheet lands,
-              and ContextBarSettingsPopover is not mounted on mobile. */}
-          {!isMobileWebShell && <StatusBar project={activeProject} />}
         </>
       )}
     </>

@@ -1,7 +1,11 @@
 import { LayoutGroup, Reorder } from 'framer-motion'
-import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
+import type { Dispatch, MutableRefObject, ReactNode, SetStateAction } from 'react'
+import { openNewChat } from '@/components/chat/new-chat/open-new-chat'
 import { ChevronDown, ChevronRight, FolderPlus } from '@/components/icons'
+import { useRailCollapsed } from '@/components/shell/rail/rail-density'
+import { RAIL_BLOCK_FADE_CLASS } from '@/components/shell/rail/rail-motion'
 import { RailTooltip } from '@/components/shell/rail-button'
+import { logRailEvent } from '@/components/shell/shell-log'
 import { CollapseExpandMotion } from '@/components/ui/collapse-expand-motion'
 import { FOCUS_RING_CLASS } from '@/components/ui/panel-styles'
 import { cn } from '@/lib/utils'
@@ -14,6 +18,8 @@ import { RailGroupRow } from './rail-group-row'
 import { RailProjectItem } from './rail-project-item'
 import { RAIL_SECTION_BUTTON_CLASS, RailSectionHeader } from './rail-section-header'
 import { useDragLift } from './use-drag-lift'
+
+const INSTANT_LAYOUT = { layout: { duration: 0 } } as const
 
 export interface ProjectListProps {
   projects: Project[]
@@ -38,7 +44,6 @@ export interface ProjectListProps {
 
   // Project rows
   ungroupedActiveProjects: Project[]
-  activeIndexById: ReadonlyMap<string, number>
   editingId: string | null
   editName: string
   projectStatus: (projectId: string) => ProjectRowStatus
@@ -66,8 +71,14 @@ export interface ProjectListProps {
    * Projects header above the list).
    */
   railSections?: boolean
+  /** Sits in the project scroll, directly under the project rows. */
+  trailing?: ReactNode
   onNewProject?: () => void
   onNewGroup?: () => void
+  /** Import chats into the open project (the `+` menu); absent hides the item. */
+  onImportChats?: () => void
+  /** Shown under each project's row, inside its drag item (the Rail's chats). */
+  renderProjectContent?: (project: Project, isActive: boolean) => ReactNode
 }
 
 export function ProjectList({
@@ -89,7 +100,6 @@ export function ProjectList({
   moveProjectToGroup,
   renderGroupContextMenu,
   ungroupedActiveProjects,
-  activeIndexById,
   editingId,
   editName,
   projectStatus,
@@ -106,28 +116,38 @@ export function ProjectList({
   setShowArchived,
   renderArchivedProjectContextMenu,
   railSections = false,
+  trailing,
   onNewProject,
-  onNewGroup
+  onNewGroup,
+  onImportChats,
+  renderProjectContent
 }: ProjectListProps): React.JSX.Element {
   // One draggable active-project row, shared by grouped and ungrouped lists.
   // Dropping on a folder header or group container moves the project there.
   // The row also watches git for its diff stat.
   const showSections = railSections
+  const collapsed = useRailCollapsed()
   // The lifted row's shadow is a CSS transition keyed off data-dragging:
   // Motion can't interpolate a var() shadow, so whileDrag would snap it.
   // The lift (opaque bg) holds until the row lands, and `relative` lets
   // Reorder's own zIndex apply, so neighbours never show through it.
   const { liftedId, lift, release, settle } = useDragLift()
+  const groupLift = useDragLift()
+  // Rows slide only during a reorder drag. On a project switch the chat list
+  // moves in one frame, so a sliding row would paint over the new chats.
+  const layoutTransition =
+    liftedId !== null || groupLift.liftedId !== null ? undefined : INSTANT_LAYOUT
   const renderProjectRow = (project: Project): React.JSX.Element => {
-    const shortcutIndex = activeIndexById.get(project.id) ?? -1
     return (
       <Reorder.Item
         key={project.id}
         value={project}
         drag="y"
         layout="position"
+        transition={layoutTransition}
         data-dragging={liftedId === project.id || undefined}
-        className="relative list-none rounded-lg transition-shadow duration-[110ms] ease-out motion-reduce:transition-none data-[dragging]:bg-sidebar data-[dragging]:shadow-md data-[dragging]:duration-150"
+        // `gap-px`: the project's chats sit 1px under its row.
+        className="relative flex list-none flex-col gap-px rounded-lg transition-shadow duration-[110ms] ease-out motion-reduce:transition-none data-[dragging]:bg-sidebar data-[dragging]:shadow-md data-[dragging]:duration-150"
         whileDrag={{
           scale: 1.02,
           pointerEvents: 'none'
@@ -169,12 +189,17 @@ export function ProjectList({
           isActive={project.id === activeProjectId}
           isEditing={editingId === project.id}
           editName={editName}
-          shortcut={
-            shortcutIndex >= 0 && shortcutIndex < 9 ? `Ctrl+${shortcutIndex + 1}` : undefined
-          }
           status={projectStatus(project.id)}
           onOpenNeedsYou={() => openNeedsYou(project.id)}
           onClick={() => openProject(project.id)}
+          onNewChat={() => {
+            logRailEvent(`new chat in project ${project.id}`)
+            // Open the project first: its panes are the ones the chat goes to.
+            openProject(project.id)
+            requestAnimationFrame(
+              () => void openNewChat({ projectId: project.id, reason: 'project-row' })
+            )
+          }}
           onContextMenu={onRowContextMenu}
           renderContextMenu={renderProjectContextMenu}
           onEditNameChange={setEditName}
@@ -184,19 +209,30 @@ export function ProjectList({
             useSettingsModalStore.getState().openProject(undefined, project.id)
           }
         />
+        {renderProjectContent?.(project, project.id === activeProjectId)}
       </Reorder.Item>
     )
   }
 
   return (
-    <div className="flex-1 overflow-y-auto px-2 pb-1" data-group-id="root">
+    <div
+      className={cn('flex-1 overflow-y-auto px-2 pt-0.5 pb-1', collapsed && 'scrollbar-hide')}
+      data-group-id="root"
+    >
       {projects.length === 0 ? (
-        <div className="flex flex-col items-center justify-center p-6 text-center opacity-60">
-          <p className="text-sm text-muted-foreground">No projects yet</p>
-          <p className="text-xs text-muted-foreground mt-1">
-            Create your first project to get started
-          </p>
-        </div>
+        collapsed ? null : (
+          <div
+            className={cn(
+              'flex flex-col items-center justify-center p-6 text-center opacity-60',
+              RAIL_BLOCK_FADE_CLASS
+            )}
+          >
+            <p className="text-sm text-muted-foreground">No projects yet</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              Create your first project to get started
+            </p>
+          </div>
+        )
       ) : (
         <div data-testid="active-projects-container">
           {/* LayoutGroup keeps Reorder layout measurements in sync when an item's
@@ -227,7 +263,7 @@ export function ProjectList({
               onReorder={(reordered) => {
                 reorderGroups(reordered.map((gp) => gp.group.id))
               }}
-              className="flex flex-col gap-0.5"
+              className="flex flex-col gap-px"
               data-testid="grouped-projects-container"
             >
               {visibleGroups.map((groupEntry) => {
@@ -239,11 +275,15 @@ export function ProjectList({
                     value={groupEntry}
                     drag="y"
                     layout="position"
+                    transition={layoutTransition}
+                    onDragStart={() => groupLift.lift(group.id)}
+                    onDragEnd={() => groupLift.release(group.id)}
+                    onDragTransitionEnd={() => groupLift.settle(group.id)}
                     className="list-none"
                   >
                     <div
                       className={cn(
-                        'flex flex-col gap-0.5',
+                        'flex flex-col gap-px',
                         // Rail: an expanded group and its projects share one
                         // soft surface; the rows keep the shared icon column.
                         !isCollapsed && '-mx-1 rounded-lg bg-foreground/[0.03] px-1 pb-1'
@@ -281,7 +321,7 @@ export function ProjectList({
                               reordered.map((p) => p.id)
                             )
                           }}
-                          className="flex flex-col gap-0.5"
+                          className="flex flex-col gap-px"
                           data-group-container-id={group.id}
                         >
                           {gpProjects.map(renderProjectRow)}
@@ -300,6 +340,7 @@ export function ProjectList({
                 <AddProjectMenu
                   onNewProject={() => onNewProject?.()}
                   onNewGroup={() => onNewGroup?.()}
+                  onImportChats={onImportChats}
                   buttonClassName={RAIL_SECTION_BUTTON_CLASS}
                 />
               </RailSectionHeader>
@@ -311,7 +352,7 @@ export function ProjectList({
                 onReorder={(reordered) => {
                   onReorderProjects(reordered.map((p) => p.id))
                 }}
-                className="mt-0.5 flex flex-col gap-0.5"
+                className="flex flex-col gap-px"
                 data-testid="ungrouped-projects-container"
               >
                 {ungroupedActiveProjects.map(renderProjectRow)}
@@ -319,9 +360,11 @@ export function ProjectList({
             )}
           </LayoutGroup>
 
-          {/* Archived Projects Section */}
-          {archivedProjects.length > 0 && (
-            <div className="mt-2 flex flex-col gap-0.5">
+          {/* Archived Projects Section (not on the collapsed Rail) */}
+          {!collapsed && archivedProjects.length > 0 && (
+            <div
+              className={cn('mt-2 flex flex-col gap-0.5 whitespace-nowrap', RAIL_BLOCK_FADE_CLASS)}
+            >
               <button
                 onClick={() => setShowArchived(!showArchived)}
                 className={`label-panel flex h-8 w-full items-center gap-1.5 rounded-md pl-1 pr-1.5 transition-colors duration-150 ease-out hover:bg-foreground/[0.03] hover:text-foreground focus-visible:ring-inset disabled:cursor-default disabled:hover:bg-transparent ${FOCUS_RING_CLASS}`}
@@ -349,6 +392,7 @@ export function ProjectList({
           )}
         </div>
       )}
+      {trailing}
     </div>
   )
 }

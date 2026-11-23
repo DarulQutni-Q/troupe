@@ -41,8 +41,8 @@ use crate::automation::model::{
 };
 use crate::automation::service::{AutomationService, ServiceError, ServiceResult};
 use crate::commands::automation::{
-    delete_secret, list_suggestions, match_suggestion, parse_ops, preview_schedule, set_secret,
-    UNAVAILABLE,
+    decide_approval, delete_secret, list_suggestions, match_suggestion, parse_layout, parse_ops,
+    preview_schedule, set_secret, UNAVAILABLE,
 };
 use crate::web::auth::BearerVerified;
 use crate::web::capabilities::WriteFlags;
@@ -68,12 +68,15 @@ const AUTOMATIONS: &str = "/api/automations";
 const PREVIEW: &str = "/api/automations/preview-schedule";
 const AUTOMATION: &str = "/api/automations/{id}";
 const OPS: &str = "/api/automations/{id}/ops";
+const OPS_PREVIEW: &str = "/api/automations/{id}/ops/preview";
+const LAYOUT: &str = "/api/automations/{id}/layout";
 const ENABLED: &str = "/api/automations/{id}/enabled";
 const APPROVE: &str = "/api/automations/{id}/approve";
 const RUN: &str = "/api/automations/{id}/run";
 const RUNS: &str = "/api/automations/{id}/runs";
 const SEEN: &str = "/api/automations/{id}/seen";
 const CANCEL_RUN: &str = "/api/automation-runs/{run_id}/cancel";
+const RUN_APPROVAL: &str = "/api/automation-runs/{run_id}/approval";
 const RUN_STEPS: &str = "/api/automation-runs/{run_id}/steps";
 const AGENTS: &str = "/api/automation-agents";
 const SECRETS: &str = "/api/automation-secrets";
@@ -88,12 +91,15 @@ pub fn automation_router<S>(state: AutomationRouteState) -> Router<S> {
         .route(PREVIEW, post(preview))
         .route(AUTOMATION, get(get_one).delete(delete_one))
         .route(OPS, post(apply_ops))
+        .route(OPS_PREVIEW, post(preview_ops))
+        .route(LAYOUT, post(set_layout))
         .route(ENABLED, post(set_enabled))
         .route(APPROVE, post(approve))
         .route(RUN, post(run_now))
         .route(RUNS, get(list_runs))
         .route(SEEN, post(mark_seen))
         .route(CANCEL_RUN, post(cancel_run))
+        .route(RUN_APPROVAL, post(decide))
         .route(RUN_STEPS, get(run_steps))
         .route(AGENTS, get(list_agents))
         .route(
@@ -267,6 +273,13 @@ pub(crate) struct OpsBody {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+pub(crate) struct LayoutBody {
+    // Parsed into a `Layout` by the command; the spec documents that shape.
+    #[schemars(with = "crate::automation::model::Layout")]
+    layout: Value,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 pub(crate) struct EnabledBody {
     enabled: bool,
 }
@@ -274,6 +287,12 @@ pub(crate) struct EnabledBody {
 #[derive(Deserialize, schemars::JsonSchema)]
 pub(crate) struct ApproveBody {
     revision: u64,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub(crate) struct ApprovalBody {
+    node_id: String,
+    approved: bool,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -383,6 +402,35 @@ async fn apply_ops(
     reply(OPS, result)
 }
 
+/// Read class, like `preview-schedule`: a dry run stores and announces nothing.
+async fn preview_ops(
+    State(state): State<AutomationRouteState>,
+    ConnectInfo(peer): Peer,
+    parts: Parts,
+    Path(id): Path<String>,
+    body: Body<OpsBody>,
+) -> Reply {
+    let service = admit(&state, &parts, peer, OPS_PREVIEW, false)?;
+    let Json(body) = body.map_err(|e| invalid_body(OPS_PREVIEW, &e))?;
+    let result = parse_ops(body.ops)
+        .and_then(|ops| service.preview_ops(&AutomationId::from(id), body.base_revision, &ops));
+    reply(OPS_PREVIEW, result)
+}
+
+async fn set_layout(
+    State(state): State<AutomationRouteState>,
+    ConnectInfo(peer): Peer,
+    parts: Parts,
+    Path(id): Path<String>,
+    body: Body<LayoutBody>,
+) -> Reply {
+    let service = admit(&state, &parts, peer, LAYOUT, true)?;
+    let Json(body) = body.map_err(|e| invalid_body(LAYOUT, &e))?;
+    let result = parse_layout(body.layout)
+        .and_then(|layout| service.set_layout(&AutomationId::from(id), layout));
+    reply(LAYOUT, result)
+}
+
 async fn set_enabled(
     State(state): State<AutomationRouteState>,
     ConnectInfo(peer): Peer,
@@ -454,6 +502,21 @@ async fn cancel_run(
 ) -> Reply {
     let service = admit(&state, &parts, peer, CANCEL_RUN, true)?;
     reply(CANCEL_RUN, service.cancel_run(&RunId::from(run_id)))
+}
+
+async fn decide(
+    State(state): State<AutomationRouteState>,
+    ConnectInfo(peer): Peer,
+    parts: Parts,
+    Path(run_id): Path<String>,
+    body: Body<ApprovalBody>,
+) -> Reply {
+    let service = admit(&state, &parts, peer, RUN_APPROVAL, true)?;
+    let Json(body) = body.map_err(|e| invalid_body(RUN_APPROVAL, &e))?;
+    reply(
+        RUN_APPROVAL,
+        decide_approval(&service, run_id, body.node_id, body.approved),
+    )
 }
 
 async fn run_steps(

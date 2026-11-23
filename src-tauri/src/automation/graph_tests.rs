@@ -1,7 +1,7 @@
 use serde_json::json;
 
 use super::graph::{apply_ops, topo_order, untrusted_flow, validate, OpError};
-use super::model::{Automation, IssueCode};
+use super::model::{Automation, IssueCode, NodeSpec};
 use super::test_support::{apply, node_id, ops, sample_automation};
 
 fn codes(a: &Automation) -> Vec<(IssueCode, Option<String>)> {
@@ -684,6 +684,59 @@ fn for_each_and_wait_bounds() {
     );
 }
 
+fn with_gate(timeout_ms: u64, message: &str) -> Automation {
+    apply(
+        &sample_automation(),
+        json!([
+            { "op": "add_node", "node": { "id": "gate", "label": "Post it?", "spec": {
+                "kind": "approval", "message": message, "timeout_ms": timeout_ms } } },
+            { "op": "disconnect", "edge": { "from": "shape", "port": "out", "to": "post" } },
+            { "op": "connect", "edge": { "from": "shape", "port": "out", "to": "gate" } },
+            { "op": "connect", "edge": { "from": "gate", "port": "out", "to": "post" } },
+            { "op": "connect", "edge": { "from": "gate", "port": "error", "to": "alert" } }
+        ]),
+    )
+}
+
+#[test]
+fn approval_nodes_route_out_and_error_within_timeout_bounds() {
+    let message = "Post {{nodes.shape.output.text}}?";
+    for ok in [60_000, 604_800_000] {
+        assert_eq!(codes(&with_gate(ok, message)), vec![], "{ok}");
+    }
+    for out_of_range in [59_999, 604_800_001] {
+        assert_eq!(
+            codes(&with_gate(out_of_range, message)),
+            vec![at(IssueCode::ApprovalTimeoutOutOfRange, "gate")],
+            "{out_of_range}"
+        );
+    }
+    let true_port = apply(
+        &with_gate(60_000, message),
+        json!([{ "op": "connect", "edge": { "from": "gate", "port": "true", "to": "alert" } }]),
+    );
+    assert_eq!(codes(&true_port), vec![at(IssueCode::IllegalPort, "gate")]);
+    assert_eq!(
+        codes(&with_gate(60_000, "Key {{secrets.API_KEY}}")),
+        vec![at(IssueCode::SecretNotAllowed, "gate")]
+    );
+}
+
+#[test]
+fn an_approval_may_sit_inside_a_loop_body_and_read_the_item() {
+    let a = apply(
+        &loop_automation(),
+        json!([
+            { "op": "add_node", "node": { "id": "gate", "label": "", "spec": { "kind": "approval",
+                "message": "Post {{nodes.each.item}}?", "timeout_ms": 60000 } } },
+            { "op": "disconnect", "edge": { "from": "each", "port": "item", "to": "post" } },
+            { "op": "connect", "edge": { "from": "each", "port": "item", "to": "gate" } },
+            { "op": "connect", "edge": { "from": "gate", "port": "out", "to": "post" } }
+        ]),
+    );
+    assert_eq!(codes(&a), vec![]);
+}
+
 #[test]
 fn a_body_node_with_an_edge_from_outside_the_body_is_not_closed() {
     let from_before = apply(
@@ -862,4 +915,66 @@ fn rule9_untrusted_data_reaches_an_agent_through_loop_items_and_merges() {
         codes(&after_merge),
         vec![at(IssueCode::UntrustedAgentOutboundTool, "think")]
     );
+}
+
+#[test]
+fn rule7_mcp_servers_need_the_other_tool() {
+    let scoped = |tools: serde_json::Value, scope: serde_json::Value| {
+        let mut spec = agent_spec("Summarize {{trigger.kind}}", tools);
+        spec["mcp_servers"] = scope;
+        set_spec(&sample_automation(), "extract", spec)
+    };
+    assert_eq!(
+        messages(&scoped(json!(["read"]), json!(["srv-1"]))),
+        vec![(
+            IssueCode::McpServersWithoutOther,
+            "extract".to_string(),
+            "mcp_servers takes effect only when tools lists other; list other or set mcp_servers to null".to_string()
+        )]
+    );
+    assert_eq!(
+        codes(&scoped(json!([]), json!([]))),
+        vec![at(IssueCode::McpServersWithoutOther, "extract")]
+    );
+    assert_eq!(codes(&scoped(json!(["other"]), json!(["srv-1"]))), vec![]);
+    assert_eq!(codes(&scoped(json!(["read"]), json!(null))), vec![]);
+}
+
+#[test]
+fn an_agent_mcp_scope_round_trips_through_add_and_update_ops() {
+    let scope_of = |a: &Automation, id: &str| {
+        let node = a.graph.nodes.iter().find(|n| n.id.as_str() == id).unwrap();
+        match &node.spec {
+            NodeSpec::Agent { mcp_servers, .. } => mcp_servers.clone(),
+            other => panic!("{id} is not an agent: {other:?}"),
+        }
+    };
+    let mut spec = agent_spec("Triage", json!(["other"]));
+    spec["mcp_servers"] = json!(["srv-gh", "srv-tebar"]);
+    let added = apply(
+        &sample_automation(),
+        json!([{ "op": "add_node", "node": { "id": "triage", "label": "Triage", "spec": spec } }]),
+    );
+    assert_eq!(
+        scope_of(&added, "triage"),
+        Some(vec!["srv-gh".to_string(), "srv-tebar".to_string()])
+    );
+    assert_eq!(
+        scope_of(&added, "extract"),
+        None,
+        "an absent scope reads as null"
+    );
+
+    spec["mcp_servers"] = json!([]);
+    let emptied = set_spec(&added, "triage", spec.clone());
+    assert_eq!(scope_of(&emptied, "triage"), Some(vec![]));
+    spec["mcp_servers"] = json!(null);
+    assert_eq!(
+        scope_of(&set_spec(&emptied, "triage", spec), "triage"),
+        None
+    );
+    let wire = serde_json::to_value(&emptied.graph).unwrap();
+    let nodes = wire["nodes"].as_array().unwrap();
+    let triage = nodes.iter().find(|n| n["id"] == "triage").unwrap();
+    assert_eq!(triage["spec"]["mcp_servers"], json!([]));
 }

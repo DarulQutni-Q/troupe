@@ -56,8 +56,7 @@ vi.mock('@/lib/acp-mcp-persistence', async (orig) => {
   return {
     ...actual,
     loadMcpServers: vi.fn(async () => []),
-    saveMcpServers: vi.fn(async () => {}),
-    syncMcpRegistryToProjectBestEffort: vi.fn(async () => {})
+    saveMcpServers: vi.fn(async () => {})
   }
 })
 
@@ -248,7 +247,7 @@ describe('session discovery (gh-407)', () => {
   it('discoverSessions does not promote discovered sessions into host persistence', async () => {
     // External/CLI sessions surfaced by session/list must NOT be written to the
     // Rust index nor merged into sessionIndex — the Chats tab shows only
-    // Termul-created sessions (`discovered !== true`). Promotion was removed.
+    // Troupe-created sessions (`discovered !== true`). Promotion was removed.
     useAcpStore.setState({
       agents: {
         'agent-1': {
@@ -277,7 +276,7 @@ describe('session discovery (gh-407)', () => {
     // Regression: openDiscoveredSession creates a session with `discovered: true`
     // but no sessionIndex entry. _onSessionClosed/_onAgentDisconnected still call
     // persistSession, which must preserve `discovered: true` so the external
-    // session does not leak into the Termul-only Chats tab as `discovered: false`.
+    // session does not leak into the Troupe-only Chats tab as `discovered: false`.
     useAcpStore.setState({
       ...FRESH,
       sessionIndex: [],
@@ -540,6 +539,7 @@ describe('session discovery (gh-407)', () => {
       agentId: 'agent-1',
       sessionId: 'sess-overlap',
       cwd: '/work',
+      mcpServers: [],
       commandId: expect.any(String)
     })
 
@@ -594,6 +594,7 @@ describe('session discovery (gh-407)', () => {
       agentId: 'agent-1',
       sessionId: 'sess-recreated',
       cwd: '/work',
+      mcpServers: [],
       commandId: expect.any(String)
     })
 
@@ -745,6 +746,66 @@ describe('session discovery (gh-407)', () => {
     expect(session.modes?.currentModeId).toBe('live')
     expect(session.models?.currentModelId).toBe('model-b')
     expect(session.configOptions).toEqual([])
+  })
+
+  describe('MCP servers on a discovered reopen', () => {
+    const ctx7 = {
+      id: 'srv-ctx7',
+      type: 'stdio' as const,
+      name: 'context7',
+      command: 'ctx7',
+      args: [],
+      env: []
+    }
+    const wireCtx7 = { type: 'stdio', name: 'context7', command: 'ctx7', args: [], env: [] }
+
+    function seedAgent(capabilities: Record<string, unknown>) {
+      useAcpStore.setState({
+        agents: { 'agent-1': { id: 'agent-1', capabilities } },
+        agentStatus: { 'agent-1': 'connected' },
+        mcpServers: [ctx7]
+      })
+    }
+
+    function payloadsFor(cmd: string) {
+      return vi
+        .mocked(invoke)
+        .mock.calls.filter(([c]) => c === cmd)
+        .map(([, payload]) => payload as { mcpServers?: unknown })
+    }
+
+    it('sends the configured list to session/load', async () => {
+      seedAgent({ loadSession: true })
+      vi.mocked(invoke).mockResolvedValue({})
+      await useAcpStore.getState().openDiscoveredSession('agent-1', 'sess-mcp-load', '/work', 'p1')
+      const loads = payloadsFor('acp_load_session')
+      expect(loads).toHaveLength(1)
+      expect(loads[0]!.mcpServers).toEqual([wireCtx7])
+    })
+
+    it('sends the configured list to session/resume', async () => {
+      seedAgent({ loadSession: false, sessionCapabilities: { resume: {} } })
+      vi.mocked(invoke).mockResolvedValue({})
+      await useAcpStore
+        .getState()
+        .openDiscoveredSession('agent-1', 'sess-mcp-resume', '/work', 'p1')
+      const resumes = payloadsFor('acp_resume_session')
+      expect(resumes).toHaveLength(1)
+      expect(resumes[0]!.mcpServers).toEqual([wireCtx7])
+    })
+
+    it('sends the configured list to the session/load fallback after a resume miss', async () => {
+      seedAgent({ loadSession: true, sessionCapabilities: { resume: {} } })
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === 'acp_resume_session') throw new Error('Session not found')
+        return {}
+      })
+      await useAcpStore.getState().openDiscoveredSession('agent-1', 'sess-mcp-miss', '/work', 'p1')
+      expect(payloadsFor('acp_resume_session')[0]!.mcpServers).toEqual([wireCtx7])
+      const loads = payloadsFor('acp_load_session')
+      expect(loads).toHaveLength(1)
+      expect(loads[0]!.mcpServers).toEqual([wireCtx7])
+    })
   })
 
   it('openDiscoveredSession drops partial chunks when resume fails', async () => {

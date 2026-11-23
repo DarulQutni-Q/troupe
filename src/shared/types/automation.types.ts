@@ -59,6 +59,8 @@ export type NodeSpec =
       timeout_ms: number
       max_attempts: number
       tools: AgentTool[]
+      /** Server ids its session starts with when `tools` has `other`: null for every enabled server, [] for none. */
+      mcp_servers: string[] | null
     }
   | { kind: 'transform'; fields: NamedTemplate[] }
   | { kind: 'condition'; left: Template; op: ConditionOp; right: Template | null }
@@ -68,6 +70,11 @@ export type NodeSpec =
   | { kind: 'merge'; mode: MergeMode }
   /** Parks the run durably for `duration_ms`. */
   | { kind: 'wait'; duration_ms: number }
+  /**
+   * Parks the run until a person approves it (`out`). A rejection, or
+   * `timeout_ms` passing first, fails the step (`error`).
+   */
+  | { kind: 'approval'; message: Template; timeout_ms: number }
   | {
       kind: 'mcp_tool'
       /** The project MCP server's registry entry id. */
@@ -87,6 +94,11 @@ export type Edge = { from: NodeId | 'trigger'; port: Port; to: NodeId }
 
 export type Graph = { nodes: AutomationNode[]; edges: Edge[] }
 
+export type NodePosition = { x: number; y: number }
+
+/** Keys are node ids plus `'trigger'`. Not part of the revision: saving one never changes `revision` or the approval. */
+export type AutomationLayout = Partial<Record<NodeId | 'trigger', NodePosition>>
+
 export type RunStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'skipped'
 
 export type LastRun = { run_id: RunId; status: RunStatus; finished_at: number }
@@ -100,6 +112,7 @@ export type Automation = {
   enabled: boolean
   trigger: Trigger
   graph: Graph
+  layout: AutomationLayout
   isolation: Isolation
   next_run_at: number | null
   consecutive_errors: number
@@ -138,6 +151,7 @@ export type IssueCode =
   | 'invalid_output_schema'
   | 'agent_timeout_out_of_range'
   | 'agent_max_attempts_out_of_range'
+  | 'mcp_servers_without_other'
   | 'missing_condition_operand'
   | 'invalid_schedule'
   | 'untrusted_agent_outbound_tool'
@@ -148,6 +162,7 @@ export type IssueCode =
   | 'nested_for_each'
   | 'loop_item_outside_body'
   | 'merge_needs_two_inputs'
+  | 'approval_timeout_out_of_range'
   | 'unknown_agent'
   | 'mcp_timeout_out_of_range'
   | 'invalid_mcp_arguments'
@@ -161,6 +176,9 @@ export type Issue = { node_id: NodeId | null; code: IssueCode; message: string }
 export type ApplyOpsResult = { automation: Automation; issues: Issue[] }
 
 export type RunTrigger = 'scheduled' | 'catch_up' | 'manual'
+
+/** The step a `running` run is parked on; `until` is when the park ends (epoch ms). */
+export type Parked = { node_id: NodeId; iteration: number | null; until: number }
 
 export type AutomationRun = {
   id: RunId
@@ -177,6 +195,8 @@ export type AutomationRun = {
   summary: string | null
   conversation_id: string | null
   worktree_id: string | null
+  /** Read from the run's `waiting` step; a parked run's status stays `running`. */
+  parked: Parked | null
 }
 
 export type StepStatus = 'running' | 'succeeded' | 'failed' | 'skipped' | 'waiting'
@@ -191,9 +211,19 @@ export type AutomationStep = {
   error: string | null
   started_at: number | null
   finished_at: number | null
-  /** When a `waiting` step's run resumes. */
+  /** When a `waiting` step's park ends. */
   wait_until: number | null
 }
+
+export type ApprovalDecision = 'approved' | 'rejected' | 'timed_out'
+
+/**
+ * An approval step's `output`: the rendered message, plus the decision once
+ * made. A cancelled approval keeps only the message.
+ */
+export type ApprovalStepOutput =
+  | { message: string; decision?: undefined }
+  | { message: string; decision: ApprovalDecision; decided_at: number }
 
 export type AgentPolicy = {
   node_id: NodeId
@@ -202,7 +232,12 @@ export type AgentPolicy = {
   timeout_ms: number
   /** Sorted and deduplicated; empty means no tools. */
   tools: AgentTool[]
+  /** The enabled MCP servers its session starts with, in Settings order; empty unless `tools` has `other`. */
+  mcp_servers: AgentMcpServer[]
 }
+
+/** An MCP server an agent node's session starts with. */
+export type AgentMcpServer = { server_id: string; name: string }
 
 /** An `mcp_tool` node; `server_name` is null when the server is not configured. */
 export type McpToolPolicy = {

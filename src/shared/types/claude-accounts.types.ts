@@ -77,6 +77,40 @@ export interface ClaudeAccountsSnapshot {
   defaultAccountId: string
   /** Project id → Account id, only for Projects with an explicit choice. */
   projectAccounts: Record<string, string>
+  /** Session id → Account id, only for chats with their own choice. */
+  chatAccounts: Record<string, string>
   /** A chat at its Account's limit continues on the signed-in Account with the most room. */
   autoSwitch: boolean
 }
+
+/** What removing a Claude Account moved; clients restart the open chats of both lists. */
+export interface RemovedClaudeAccount {
+  /** Projects that used the Account and now follow the Default Account. */
+  movedProjectIds: string[]
+  /** Chats that had the Account as their own and now follow their Project. */
+  movedChatIds: string[]
+}
+
+export interface ClaudeAccountRef {
+  id: string
+  name: string
+}
+
+/**
+ * `acp:claude_limit_action`: what the host did for a chat at its Account's
+ * limit. Mirrors the Rust `claude_limit::ClaudeLimitActionEvent`.
+ */
+export type ClaudeLimitActionEvent = { sessionId: string; projectId: string } & (
+  | {
+      action: 'switched'
+      from: ClaudeAccountRef
+      to: ClaudeAccountRef
+      fromAgentId: string
+      newAgentId: string
+    }
+  /** `at`: epoch milliseconds. */
+  | { action: 'resume_scheduled'; at: number }
+  | { action: 'resume_cancelled' }
+  | { action: 'resumed'; fromAgentId: string | null; newAgentId: string }
+  | { action: 'failed'; reason: string }
+)

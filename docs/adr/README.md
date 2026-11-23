@@ -1,12 +1,13 @@
 # Architecture decision records
 
-This directory holds the architecture decision records (ADRs) for Termul.
+This directory holds the architecture decision records (ADRs) for Troupe.
 Add an entry to the table when you add an ADR.
 
 | ADR | Title | Status |
 |-----|-------|--------|
 | [ADR-0004](./0004-claude-accounts-linked-config-dirs.md) | Claude accounts use linked config directories | Accepted |
 | [ADR-0005](./0005-selection-context-prompt-format.md) | Selection contexts are sent as leading quote blocks | Accepted |
+| [ADR-0006](./0006-quick-chats.md) | Quick chats use a host-owned folder and an explicit kind | Accepted |
 
 ## Missing ADRs
 

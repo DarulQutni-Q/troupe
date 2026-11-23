@@ -135,6 +135,10 @@ pub struct McpToolInfo {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// The tool's `inputSchema`, so an automation step can offer its
+    /// arguments as fields.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, schemars::JsonSchema)]
@@ -392,7 +396,7 @@ pub(crate) struct McpConnection {
     _tree: Option<crate::process_util::KillOnCloseJob>,
 }
 
-/// What every Termul MCP client advertises: no elicitation, sampling, roots
+/// What every Troupe MCP client advertises: no elicitation, sampling, roots
 /// or tasks, so a server cannot ask it for user input.
 pub(crate) fn client_config() -> ClientConfig {
     ClientConfig::default()
@@ -528,19 +532,28 @@ async fn connect_http(
         }
         config = config.custom_headers(headers);
     }
-    // If the server has a stored OAuth token, inject it as a Bearer auth
+    // If the server has a stored OAuth token and no configured Authorization
+    // header, inject the token as a Bearer auth
     // header so the probe succeeds without re-prompting. This is the
     // "connect once, use forever" path — after the OAuth flow completes and
     // the token is persisted, every subsequent probe loads and uses it.
-    let stored_token = match crate::acp::mcp_oauth::get_valid_token(url).await {
-        Ok(token) => token,
-        Err(e) => {
-            tracing::warn!(
-                server = %server.name,
-                transport,
-                "MCP probe: token lookup failed (url redacted): {e}"
-            );
-            None
+    let has_auth_header = server.headers.iter().any(|pair| {
+        pair.name.eq_ignore_ascii_case("Authorization")
+            && reqwest::header::HeaderValue::from_str(&pair.value).is_ok()
+    });
+    let stored_token = if has_auth_header {
+        None
+    } else {
+        match crate::acp::mcp_oauth::get_valid_token(url).await {
+            Ok(token) => token,
+            Err(e) => {
+                tracing::warn!(
+                    server = %server.name,
+                    transport,
+                    "MCP probe: token lookup failed (url redacted): {e}"
+                );
+                None
+            }
         }
     };
     if let Some(ref token) = stored_token {
@@ -649,6 +662,14 @@ async fn check_oauth_required(url: &str, headers: &[McpNameValuePair]) -> Option
     }
     None
 }
+fn tool_info(tool: rmcp::model::Tool) -> McpToolInfo {
+    McpToolInfo {
+        name: tool.name.to_string(),
+        description: tool.description.map(|cow| cow.to_string()),
+        input_schema: Some(serde_json::Value::Object((*tool.input_schema).clone())),
+    }
+}
+
 /// Drive an initialized rmcp client service: list all tools (paginated), then
 /// cancel (tear down the connection — the probe is one-shot). Maps the rmcp
 /// `Tool` model to the trimmed `McpToolInfo` the UI surfaces.
@@ -661,13 +682,7 @@ async fn drive_running(connection: McpConnection) -> ProbeResult {
             return ProbeResult::disconnected(format!("tools/list failed: {error}"));
         }
     };
-    let mapped = tools
-        .into_iter()
-        .map(|tool| McpToolInfo {
-            name: tool.name.to_string(),
-            description: tool.description.map(|cow| cow.to_string()),
-        })
-        .collect();
+    let mapped = tools.into_iter().map(tool_info).collect();
     // Tear down the connection (one-shot probe — no persistent hold).
     let _ = running.cancel().await;
     ProbeResult::connected(mapped)

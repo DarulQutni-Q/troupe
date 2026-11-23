@@ -53,8 +53,7 @@ vi.mock('@/lib/acp-mcp-persistence', async (orig) => {
   return {
     ...actual,
     loadMcpServers: vi.fn(async () => []),
-    saveMcpServers: vi.fn(async () => {}),
-    syncMcpRegistryToProjectBestEffort: vi.fn(async () => {})
+    saveMcpServers: vi.fn(async () => {})
   }
 })
 vi.mock('@/stores/workspace-store', () => ({
@@ -398,7 +397,12 @@ describe('acp-store: live-turn attach replays the open turn (reopen tool cards)'
     // reply lists it as still pending.
     transport.subscribeSession.mockImplementation(async () => {
       listeners.get('acp:elicitation_request')?.(elicitation, 11)
-      installPendingPrompts?.(id, { permissions: [], questions: [], elicitations: [elicitation] })
+      installPendingPrompts?.(id, {
+        permissions: [],
+        questions: [],
+        elicitations: [elicitation],
+        mcpInstalls: null
+      })
     })
     _setAcpTransportForTests(transport)
     const teardown = initAcpEventListeners()

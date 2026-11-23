@@ -1,12 +1,11 @@
-use std::path::Path;
 use std::sync::Arc;
 
 use serde_json::{json, Value};
 
-use super::registry::{desktop_store_servers, parse_registry, project_file_servers};
-use super::{McpServerConfig, McpServerEntry, DESKTOP_STORE_KEY};
+use super::registry::{agent_servers, attach_aliases, find_server, parse_registry, store_servers};
+use super::{McpServerConfig, McpServerEntry};
 use crate::acp::mcp_probe::McpNameValuePair;
-use crate::automation::engine::ProjectRoots;
+use crate::web::mcp_registry::{ALIASES_KEY, STORE_KEY};
 use crate::web::store::{Precondition, StorePolicy, WebStore};
 use crate::web::ws::ClientIdentity;
 
@@ -74,92 +73,199 @@ fn reads_the_renderer_envelope_and_nothing_from_other_shapes() {
     assert_eq!(parse_registry(&json!("x")), vec![]);
 }
 
-fn roots_at(root: &Path) -> ProjectRoots {
-    let root = root.to_path_buf();
-    Arc::new(move |project_id| (project_id == "p1").then(|| root.clone()))
-}
-
-fn write_project_file(root: &Path, value: &Value) {
-    let dir = root.join(".termul");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("mcp-servers.json"), value.to_string()).unwrap();
-}
-
-#[test]
-fn termul_server_reads_the_project_file() {
-    let root = tempfile::tempdir().unwrap();
-    let servers = project_file_servers(roots_at(root.path()));
-    assert_eq!(servers("p1"), vec![]);
-    write_project_file(root.path(), &stored_list());
-    assert_eq!(
-        ids(&servers("p1")),
-        vec![("srv-1", "Files"), ("srv-3", "Remote")]
-    );
-    assert_eq!(servers("other"), vec![]);
-    std::fs::write(root.path().join(".termul/mcp-servers.json"), "{not json").unwrap();
-    assert_eq!(servers("p1"), vec![]);
-    let oversized = format!("[{}]", " ".repeat(crate::web::mcp_servers_api::MAX_REGISTRY_BYTES));
-    std::fs::write(root.path().join(".termul/mcp-servers.json"), oversized).unwrap();
-    assert_eq!(servers("p1"), vec![]);
-}
-
-#[test]
-fn desktop_reads_the_store_key_and_falls_back_to_the_project_file() {
-    let root = tempfile::tempdir().unwrap();
-    write_project_file(
-        root.path(),
-        &json!([{ "id": "file-1", "name": "From file", "command": "x" }]),
-    );
-    let store =
-        Arc::new(WebStore::open(root.path().join("store.json"), StorePolicy::default()).unwrap());
-    let servers = desktop_store_servers(store.clone(), roots_at(root.path()));
-    assert_eq!(ids(&servers("p1")), vec![("file-1", "From file")]);
-
-    let desktop = ClientIdentity {
+fn write_list(store: &WebStore, value: Value) {
+    let client = ClientIdentity {
         device_id: "desktop-device".into(),
         client_instance_id: "tab-1".into(),
     };
+    // A base revision above any stored one always wins the last-writer merge.
+    let base = Precondition {
+        base_revision: Some(u64::MAX),
+        ..Precondition::default()
+    };
+    store.write(STORE_KEY, value, base, &client, 1).unwrap();
+}
+
+#[test]
+fn every_project_reads_the_one_stored_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let store =
+        Arc::new(WebStore::open(dir.path().join("store.json"), StorePolicy::default()).unwrap());
+    let servers = store_servers(store.clone());
+    assert_eq!(servers("p1"), vec![]);
+
+    write_list(&store, json!({ "_version": 1, "data": stored_list() }));
+    for project in ["p1", "any-project", ""] {
+        assert_eq!(
+            ids(&servers(project)),
+            vec![("srv-1", "Files"), ("srv-3", "Remote")],
+            "{project}"
+        );
+    }
+
+    write_list(&store, json!({ "_version": 1, "data": "not a list" }));
+    assert_eq!(servers("p1"), vec![]);
+}
+
+fn aliases_of(entries: &[McpServerEntry]) -> Vec<(&str, Vec<&str>)> {
+    entries
+        .iter()
+        .map(|e| {
+            let mut aliases: Vec<&str> = e.aliases.iter().map(String::as_str).collect();
+            aliases.sort_unstable();
+            (e.server_id.as_str(), aliases)
+        })
+        .collect()
+}
+
+#[test]
+fn an_alias_attaches_only_to_an_enabled_entry_and_never_shadows_an_id() {
+    let mut entries = parse_registry(&stored_list());
+    attach_aliases(
+        &mut entries,
+        &stored_list(),
+        &json!({ "_version": 1, "data": {
+            "old-files": "srv-1",
+            "older-files": "srv-1",
+            "old-off": "srv-2",
+            "old-gone": "srv-9",
+            "srv-3": "srv-1",
+            "bad": 7
+        } }),
+    );
+    assert_eq!(
+        aliases_of(&entries),
+        vec![
+            ("srv-1", vec!["old-files", "older-files"]),
+            ("srv-3", vec![])
+        ]
+    );
+    assert_eq!(
+        find_server(&entries, "older-files").unwrap().server_id,
+        "srv-1"
+    );
+    assert_eq!(find_server(&entries, "srv-3").unwrap().server_id, "srv-3");
+    assert!(find_server(&entries, "old-off").is_none());
+    assert!(find_server(&entries, "old-gone").is_none());
+
+    let mut bare = parse_registry(&stored_list());
+    attach_aliases(&mut bare, &stored_list(), &json!({ "old-files": "srv-1" }));
+    assert_eq!(find_server(&bare, "old-files").unwrap().server_id, "srv-1");
+    let mut wrong = parse_registry(&stored_list());
+    attach_aliases(&mut wrong, &stored_list(), &json!(["old-files"]));
+    assert!(find_server(&wrong, "old-files").is_none());
+}
+
+#[test]
+fn an_alias_never_takes_over_the_id_of_a_disabled_or_unparsed_stored_entry() {
+    let list = stored_list();
+    let mut entries = parse_registry(&list);
+    attach_aliases(
+        &mut entries,
+        &json!({ "_version": 1, "data": list }),
+        &json!({ "srv-2": "srv-1", "srv-4": "srv-1", "old-files": "srv-1" }),
+    );
+    assert_eq!(
+        aliases_of(&entries),
+        vec![("srv-1", vec!["old-files"]), ("srv-3", vec![])]
+    );
+    assert!(
+        find_server(&entries, "srv-2").is_none(),
+        "a disabled server's id runs nothing"
+    );
+    assert!(find_server(&entries, "srv-4").is_none());
+}
+
+#[test]
+fn the_stored_aliases_follow_the_stored_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let store =
+        Arc::new(WebStore::open(dir.path().join("store.json"), StorePolicy::default()).unwrap());
     store
-        .write(
-            DESKTOP_STORE_KEY,
-            json!({ "_version": 1, "data": stored_list() }),
-            Precondition::default(),
-            &desktop,
+        .insert_if_absent(
+            ALIASES_KEY,
+            json!({ "_version": 1, "data": { "old-files": "srv-1" } }),
             1,
         )
         .unwrap();
+    let servers = store_servers(store.clone());
+    assert_eq!(servers("p1"), vec![]);
+
+    write_list(&store, json!({ "_version": 1, "data": stored_list() }));
     assert_eq!(
-        ids(&servers("p1")),
-        vec![("srv-1", "Files"), ("srv-3", "Remote")]
+        find_server(&servers("p1"), "old-files").map(|s| s.server_id.clone()),
+        Some("srv-1".to_string())
     );
+
+    // The kept server deleted: its alias names nothing.
+    write_list(
+        &store,
+        json!({ "_version": 1, "data": [
+            { "id": "srv-3", "type": "http", "name": "Remote", "url": "https://mcp.example.com" }
+        ] }),
+    );
+    assert_eq!(aliases_of(&servers("p1")), vec![("srv-3", vec![])]);
+    assert!(find_server(&servers("p1"), "old-files").is_none());
+}
+
+#[test]
+fn each_entry_becomes_the_session_server_a_chat_session_gets() {
+    let entries = parse_registry(&json!([
+        { "id": "a", "name": "Files", "command": "npx", "args": ["-y", "fs"],
+          "env": [{ "name": "TOKEN", "value": "t-123" }] },
+        { "id": "b", "type": "stdio", "name": "Bare", "command": "fs-mcp" },
+        { "id": "c", "type": "http", "name": "Remote", "url": "https://mcp.example.com",
+          "headers": [{ "name": "X-Key", "value": "k-1" }] },
+        { "id": "d", "type": "sse", "name": "Events", "url": "https://sse.example.com" },
+        { "id": "e", "name": "No command" },
+        { "id": "f", "type": "http", "name": "No url" },
+        { "id": "g", "type": "ws", "name": "Unknown", "url": "wss://x" }
+    ]));
+    let servers: Vec<Value> = entries
+        .iter()
+        .filter_map(McpServerEntry::acp_server)
+        .map(|server| serde_json::to_value(server).unwrap())
+        .collect();
     assert_eq!(
-        ids(&servers("any-project")),
-        vec![("srv-1", "Files"), ("srv-3", "Remote")]
+        servers,
+        vec![
+            json!({ "name": "Files", "command": "npx", "args": ["-y", "fs"],
+                    "env": [{ "name": "TOKEN", "value": "t-123" }] }),
+            json!({ "name": "Bare", "command": "fs-mcp", "args": [], "env": [] }),
+            json!({ "type": "http", "name": "Remote", "url": "https://mcp.example.com",
+                    "headers": [{ "name": "X-Key", "value": "k-1" }] }),
+            json!({ "type": "sse", "name": "Events", "url": "https://sse.example.com",
+                    "headers": [] }),
+        ]
     );
 }
 
 #[test]
-fn desktop_falls_back_to_the_project_file_when_the_store_value_is_not_a_list() {
-    let root = tempfile::tempdir().unwrap();
-    write_project_file(
-        root.path(),
-        &json!([{ "id": "file-1", "name": "From file", "command": "x" }]),
+fn an_agent_scope_picks_its_servers_in_its_order_once_each() {
+    let mut entries = parse_registry(&stored_list());
+    attach_aliases(
+        &mut entries,
+        &stored_list(),
+        &json!({ "old-files": "srv-1" }),
     );
-    let store =
-        Arc::new(WebStore::open(root.path().join("store.json"), StorePolicy::default()).unwrap());
-    let desktop = ClientIdentity {
-        device_id: "desktop-device".into(),
-        client_instance_id: "tab-1".into(),
+    let picked = |scope: Option<&[String]>| -> Vec<&str> {
+        agent_servers(scope, &entries)
+            .into_iter()
+            .map(|s| s.server_id.as_str())
+            .collect()
     };
-    store
-        .write(
-            DESKTOP_STORE_KEY,
-            json!({ "_version": 1, "data": "not a list" }),
-            Precondition::default(),
-            &desktop,
-            1,
-        )
-        .unwrap();
-    let servers = desktop_store_servers(store, roots_at(root.path()));
-    assert_eq!(ids(&servers("p1")), vec![("file-1", "From file")]);
+    let scope = |ids: &[&str]| -> Vec<String> { ids.iter().map(|id| id.to_string()).collect() };
+
+    assert_eq!(picked(None), vec!["srv-1", "srv-3"]);
+    assert_eq!(picked(Some(&scope(&[]))), Vec::<&str>::new());
+    assert_eq!(
+        picked(Some(&scope(&["srv-3", "old-files"]))),
+        vec!["srv-3", "srv-1"]
+    );
+    let repeated = scope(&["srv-1", "srv-9", "srv-2", "old-files", "srv-1"]);
+    assert_eq!(
+        picked(Some(&repeated)),
+        vec!["srv-1"],
+        "unknown and disabled ids drop; an alias of a picked server adds nothing"
+    );
 }

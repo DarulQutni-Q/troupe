@@ -18,8 +18,15 @@ import type { AcpCatalog } from '@shared/types/acp-catalog.types'
 import type {
   ClaudeAccount,
   ClaudeAccountsSnapshot,
-  ClaudeAccountUsage
+  ClaudeAccountUsage,
+  RemovedClaudeAccount
 } from '@shared/types/claude-accounts.types'
+import type {
+  CodexAccount,
+  CodexAccountsSnapshot,
+  CodexAccountUsage,
+  RemovedCodexAccount
+} from '@shared/types/codex-accounts.types'
 import type { IpcResult } from '@shared/types/ipc.types'
 import type {
   McpCatalogIconPayload,
@@ -53,7 +60,8 @@ import {
   AcpTransportError,
   COMMAND_ACCEPTED_CODE,
   COMMAND_IN_PROGRESS_CODE,
-  type CommandCallOptions
+  type CommandCallOptions,
+  type SubagentSettingsView
 } from '@/lib/acp-transport/types'
 import type { AcpRuntimeAvailability } from '@/lib/agents/supported-acp-agents'
 
@@ -223,6 +231,9 @@ export function createInvokeAcpTransport(): AcpTransport {
       invoke<{ secs: number; source: 'default' | 'setting' | 'env' | 'operator' }>(
         'acp_get_agent_idle_window'
       ),
+    getSubagentSettings: () => invoke<SubagentSettingsView>('acp_get_subagent_settings'),
+    setSubagentSettings: (input) =>
+      invoke<SubagentSettingsView>('acp_set_subagent_settings', { input }),
     fetchRegistrySnapshot: () =>
       invoke<AcpRegistrySnapshot>('acp_fetch_registry_snapshot', { forceRefresh: true }),
     probeMcpServer: (server) => invoke<ProbeResult>('acp_probe_mcp_server', { server }),
@@ -238,15 +249,26 @@ export function createInvokeAcpTransport(): AcpTransport {
         accountId,
         expectedAccountId: expectedAccountId ?? null
       }),
+    setChatClaudeAccount: (projectId, sessionId, accountId, expectedAccountId) =>
+      invoke<boolean>('claude_accounts_set_chat', {
+        projectId,
+        sessionId,
+        accountId,
+        expectedAccountId: expectedAccountId ?? null
+      }),
     setClaudeAutoSwitch: async (enabled) => {
       await invoke('claude_accounts_set_auto_switch', { enabled })
+    },
+    setClaudeResume: async (sessionId, at) => {
+      await invoke('claude_set_resume', { sessionId, at })
     },
     addClaudeAccount: (name, options) =>
       invokeCommand<ClaudeAccount>('claude_accounts_add', { name }, options),
     renameClaudeAccount: async (accountId, name) => {
       await invoke('claude_accounts_rename', { accountId, name })
     },
-    removeClaudeAccount: (accountId) => invoke<string[]>('claude_accounts_remove', { accountId }),
+    removeClaudeAccount: (accountId) =>
+      invoke<RemovedClaudeAccount>('claude_accounts_remove', { accountId }),
     startClaudeLinkLogin: (accountId) =>
       invoke<string>('claude_accounts_start_link_login', { accountId }),
     finishClaudeLinkLogin: async (accountId, code, options) => {
@@ -254,10 +276,44 @@ export function createInvokeAcpTransport(): AcpTransport {
     },
     cancelClaudeLogin: (accountId) =>
       invoke<boolean>('claude_accounts_login_cancel', { accountId }),
-    spawnAgent: (config, options, projectId) =>
+    listCodexAccounts: () => invoke<CodexAccountsSnapshot>('codex_accounts_list'),
+    listCodexUsage: (force = false) =>
+      invoke<CodexAccountUsage[]>('codex_accounts_usage', { force }),
+    setDefaultCodexAccount: async (accountId) => {
+      await invoke('codex_accounts_set_default', { accountId })
+    },
+    setProjectCodexAccount: (projectId, accountId, expectedAccountId) =>
+      invoke<boolean>('codex_accounts_set_project', {
+        projectId,
+        accountId,
+        expectedAccountId: expectedAccountId ?? null
+      }),
+    setChatCodexAccount: (projectId, sessionId, accountId, expectedAccountId) =>
+      invoke<boolean>('codex_accounts_set_chat', {
+        projectId,
+        sessionId,
+        accountId,
+        expectedAccountId: expectedAccountId ?? null
+      }),
+    setCodexAutoSwitch: async (enabled) => {
+      await invoke('codex_accounts_set_auto_switch', { enabled })
+    },
+    setCodexResume: async (sessionId, at) => {
+      await invoke('codex_accounts_set_resume', { sessionId, at })
+    },
+    addCodexAccount: (name, options) =>
+      invokeCommand<CodexAccount>('codex_accounts_add', { name }, options),
+    renameCodexAccount: async (accountId, name) => {
+      await invoke('codex_accounts_rename', { accountId, name })
+    },
+    removeCodexAccount: (accountId) =>
+      invoke<RemovedCodexAccount>('codex_accounts_remove', { accountId }),
+    startCodexAccountLogin: (accountId, config, options) =>
+      invokeCommand<SpawnAgentResult>('codex_accounts_start_login', { accountId, config }, options),
+    spawnAgent: (config, options, projectId, sessionId) =>
       invokeCommand<SpawnAgentResult>(
         'acp_spawn_agent',
-        { config, projectId: projectId ?? null },
+        { config, projectId: projectId ?? null, sessionId: sessionId ?? null },
         options
       ),
     killAgent: async (agentId) => {
@@ -339,10 +395,12 @@ export function createInvokeAcpTransport(): AcpTransport {
         },
         options
       ),
-    listSessions: (agentId, cwd, cursor) =>
-      invoke<ListSessionsResponse>('acp_list_sessions', { agentId, cwd, cursor }),
+    listSessions: (agentId, cwd, cursor, projectId) =>
+      invoke<ListSessionsResponse>('acp_list_sessions', { agentId, cwd, cursor, projectId }),
     registerDiscoveredSession: (input, options) =>
       invokeCommand<PersistedSessionSummary>('acp_register_discovered_session', input, options),
+    importAgentSession: (input, options) =>
+      invokeCommand<PersistedSessionSummary>('acp_import_agent_session', input, options),
     sendPrompt: (agentId, sessionId, text, turnId, displayContent) =>
       invoke<PromptDispatchResult>('acp_send_prompt', {
         agentId,
@@ -384,6 +442,9 @@ export function createInvokeAcpTransport(): AcpTransport {
     },
     answerQuestion: async (agentId, questionId, values) => {
       await invoke('acp_answer_question', { agentId, questionId, values })
+    },
+    answerMcpInstall: async (request) => {
+      await invoke('acp_answer_mcp_install', request)
     },
     stopBrowserAgent: async (sessionId) => {
       await invoke('browser_stop', { sessionId })

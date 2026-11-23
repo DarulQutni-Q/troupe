@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import type { Locator, Page } from 'playwright/test'
 import { expect, request, test } from 'playwright/test'
 import { E2E_BASE_URL, E2E_TOKEN, storeKey, wsRequest } from './helpers'
+import { emptyChatComposer, sendFromEmptyChat, startNewChat } from './ui'
 
 /**
  * Mobile integration reconcile E2E (spec-mobile-integration-reconcile): a
@@ -203,11 +204,18 @@ async function chooseIsolation(
 
 /**
  * Start a chat from the mobile shell: the empty pane shows the launcher
- * composer directly, an open chat needs the header "New chat" first. Resolves
- * once the header names the new chat (the title is the prompt text).
+ * composer directly. In an open chat, the header "New chat" opens a new
+ * empty chat, and the prompt goes in its composer. Resolves once the header
+ * names the new chat (the title is the prompt text).
  */
 async function startChat(page: Page, prompt: string, options: { viaNewChat?: boolean } = {}) {
-  if (options.viaNewChat) await page.getByRole('button', { name: 'New chat', exact: true }).tap()
+  if (options.viaNewChat) {
+    await page.getByRole('button', { name: 'New chat', exact: true }).tap()
+    await expect(emptyChatComposer(page)).toBeVisible()
+    await sendFromEmptyChat(page, prompt, { tap: true })
+    await expect(page.getByRole('heading', { level: 1, name: prompt, exact: true })).toBeVisible()
+    return
+  }
   const launcher = page.getByRole('textbox', { name: 'Agent prompt' })
   const start = page.getByRole('button', { name: 'Start agent chat' })
   // The launcher re-renders once its git probe settles, which drops focus and
@@ -251,7 +259,7 @@ async function openDrawer(page: Page): Promise<Locator> {
 }
 
 async function settledDrawer(page: Page): Promise<Locator> {
-  const drawer = page.getByRole('dialog', { name: 'Termul', exact: true })
+  const drawer = page.getByRole('dialog', { name: 'Troupe', exact: true })
   await expect(drawer).toBeVisible()
   // The sheet slides in from the left: act only once it has landed.
   await expect
@@ -303,12 +311,12 @@ async function describeFocus(page: Page): Promise<string> {
 
 /** The chat status pill, and a helper that opens the Git sheet through its Changed files sheet. */
 function statusPill(page: Page): { pill: Locator; openGit: () => Promise<void> } {
-  const pill = page.getByRole('button', { name: /^Session status:/ })
+  const pill = page.getByRole('button', { name: /^Changes:/ })
   return {
     pill,
     openGit: async () => {
       await pill.tap()
-      await page.getByRole('button', { name: 'Open Git changes', exact: true }).tap()
+      await page.getByRole('button', { name: 'Review changes', exact: true }).tap()
       await expect(page.getByRole('dialog', { name: 'Git changes' })).toBeVisible()
     }
   }
@@ -343,7 +351,7 @@ test.describe('Git sheet focus return', () => {
     await startChat(page, `[DOCK] ${LONG} git action`)
     const { pill, openGit } = statusPill(page)
     const sheet = page.getByRole('dialog', { name: 'Git changes' })
-    await expect(pill).toHaveAccessibleName('Session status: 2 changed files')
+    await expect(pill).toHaveAccessibleName('Changes: 2 changed files')
     await pill.tap()
     const files = page.getByRole('dialog', { name: 'Changed files' })
     await expect(files.getByRole('button', { name: /src\/auth\.ts, Untracked$/ })).toBeVisible()
@@ -452,7 +460,7 @@ test.describe('drawer navigation focus', () => {
     // Opening the drawer from ☰ and dismissing it instead goes back to ☰.
     await openDrawer(page)
     await page.keyboard.press('Escape')
-    await expect(page.getByRole('dialog', { name: 'Termul', exact: true })).toBeHidden()
+    await expect(page.getByRole('dialog', { name: 'Troupe', exact: true })).toBeHidden()
     await expect(menuButton(page)).toBeFocused()
   })
 
@@ -592,7 +600,7 @@ test.describe('drawer opener', () => {
     await pill.tap()
     await settledDrawer(page)
     await page.goBack()
-    await expect(page.getByRole('dialog', { name: 'Termul', exact: true })).toBeHidden()
+    await expect(page.getByRole('dialog', { name: 'Troupe', exact: true })).toBeHidden()
     await expect(pill).toBeFocused()
 
     // ☰ records itself the same way after the pill: the record is per open.
@@ -668,7 +676,7 @@ test.describe('shell sheets focus return', () => {
     await more.tap()
     await sheet.getByRole('button', { name: 'Close chat', exact: true }).tap()
     await expect(sheet).toBeHidden()
-    await expect(title(page)).toHaveText('Termul')
+    await expect(title(page)).toHaveText('Troupe')
     await expect(title(page)).toHaveId(SHELL_TITLE_ID)
     await expect(title(page)).toBeFocused()
   })
@@ -808,16 +816,14 @@ test.describe('toast offset', () => {
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
     })
 
-    /** Boot the desktop shell on a fresh project and start a chat from its launcher. */
+    /** Boot the desktop shell on a fresh project and start a chat with the Rail New chat. */
     async function startDesktopChat(page: Page, prompt: string): Promise<void> {
       const project = await registerProject()
       await openApp(page, project)
       await expect(page.locator(`[aria-label^="Project: ${project.name}"]`).first()).toBeVisible()
-      // The Side panel's New chat button opens the launcher.
-      await page.getByRole('button', { name: 'New chat', exact: true }).first().click()
-      const composer = page
-        .locator('[data-composer-editor="true"][aria-label="Agent prompt"]')
-        .first()
+      // The Rail's New chat row opens a new empty chat (or, as a fallback,
+      // the launcher). The helper returns the composer that starts the chat.
+      const composer = await startNewChat(page)
       await composer.click()
       await page.keyboard.type(prompt)
       await page.keyboard.press('Enter')
@@ -844,14 +850,14 @@ test.describe('toast offset', () => {
         .toBe(20)
     })
 
-    test('the changed-files popover renders no Git action', async ({ page }) => {
+    test('the changed-files popover offers Review changes for the Changes tab', async ({
+      page
+    }) => {
       await startDesktopChat(page, `[DOCK] ${LONG} desktop bar`)
-      // Only the mobile shell wires `onOpenGitChanges`.
-      await page.getByRole('button', { name: /^Session status:/ }).click()
+      // The desktop shell hands "Review changes" to the Side panel's Changes tab.
+      await page.getByRole('button', { name: /^Changes:/ }).click()
       await expect(page.getByRole('dialog', { name: 'Changed files' })).toBeVisible()
-      await expect(page.getByRole('button', { name: 'Open Git changes', exact: true })).toHaveCount(
-        0
-      )
+      await expect(page.getByRole('button', { name: 'Review changes', exact: true })).toBeVisible()
     })
   })
 })

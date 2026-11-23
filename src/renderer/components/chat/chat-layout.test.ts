@@ -37,8 +37,11 @@ describe('composer elevation family', () => {
   it.each([
     ['AskUserQuestion.tsx', 'PROMPT_PANEL_CLASS'],
     ['ElicitationPrompt.tsx', 'PROMPT_PANEL_CLASS'],
-    ['ChatInputBar.tsx', 'COMPOSER_CARD_CLASS'],
-    ['../agents/AgentLauncher.tsx', 'COMPOSER_CARD_CLASS']
+    // Composer V2: the desktop tray and the phone compact card.
+    ['ChatInputBar.tsx', 'COMPOSER_TRAY_CLASS'],
+    ['ChatInputBar.tsx', 'COMPOSER_PHONE_CARD_CLASS'],
+    ['../agents/AgentLauncher.tsx', 'COMPOSER_TRAY_CLASS'],
+    ['../agents/AgentLauncher.tsx', 'COMPOSER_PHONE_CARD_CLASS']
   ])('%s takes %s and no hard-coded shadow', (file, constant) => {
     const source = readFileSync(join(__dirname, file), 'utf8')
     expect(source).toContain(constant)
@@ -47,10 +50,12 @@ describe('composer elevation family', () => {
 })
 
 describe('composer edge', () => {
-  it('casts no shadow or fade above the composer', () => {
+  it('fades the list into the panel fill above the composer, never a dark band', () => {
     const list = readFileSync(join(__dirname, 'ChatMessageList.tsx'), 'utf8')
-    expect(list).not.toMatch(/bg-gradient-to-t/)
-    expect(list).not.toMatch(/bottom-0[^"]*bg-gradient/)
+    const panel = readFileSync(join(__dirname, 'AgentChatPanel.tsx'), 'utf8')
+    // The fade colour must match the panel fill, or it reads as a drop shadow.
+    expect(list).toMatch(/bottom-0[^"]*bg-gradient-to-t from-terminal-bg to-transparent/)
+    expect(panel).toMatch(/relative isolate flex h-full flex-col bg-terminal-bg/)
     expect(COMPOSER_CARD_CLASS).toContain('shadow-composer')
   })
 })

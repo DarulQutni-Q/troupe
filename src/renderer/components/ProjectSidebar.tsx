@@ -1,14 +1,20 @@
 import type { DetectedShells } from '@shared/types/ipc.types'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { PANEL_HEADER_CLASS, PANEL_ICON_BUTTON_CLASS } from '@/components/ui/panel-styles'
-import { dialogApi, shellApi } from '@/lib/api'
+import { OlderChatsGroup } from '@/components/shell/OlderChatsGroup'
+import { QuickChatsGroup } from '@/components/shell/QuickChatsGroup'
+import { shellApi } from '@/lib/api'
+import { pickFolderAsProject } from '@/lib/project-folder'
+import { cn } from '@/lib/utils'
 import { useProjectActions, useProjectStore } from '@/stores/project-store'
 import type { Project, ProjectColor, ProjectGroup } from '@/types/project'
 import { ColorPickerPopover } from './ColorPickerPopover'
 import { ConfirmDialog } from './ConfirmDialog'
 import { NewGroupModal } from './NewGroupModal'
 import { NewWorktreeModal } from './NewWorktreeModal'
+import { useRailCollapsed } from './shell/rail/rail-density'
+import { RAIL_BLOCK_FADE_CLASS } from './shell/rail/rail-motion'
+import { useOpenRailWorktreeSwitcher } from './shell/rail/worktree-switcher'
 import { AddProjectMenu } from './sidebar/add-project-menu'
 import { GroupContextMenuContent } from './sidebar/group-context-menu'
 import {
@@ -17,12 +23,11 @@ import {
 } from './sidebar/project-context-menu'
 import { ProjectList } from './sidebar/project-list'
 import { layoutRailProjects } from './sidebar/rail-project-order'
+import { RAIL_SECTION_BUTTON_CLASS, RailSectionHeader } from './sidebar/rail-section-header'
 import { SSHResizableSection } from './sidebar/ssh-section'
 import type { ColorPickerState, ProjectSidebarProps } from './sidebar/types'
 import { useProjectRail } from './sidebar/use-project-rail'
-
-/** Projects header icon button: the panel button plus a 14px glyph. */
-const HEADER_ICON_BUTTON = `${PANEL_ICON_BUTTON_CLASS} cursor-pointer [&_svg]:size-3.5`
+import { useRailImportChats } from './sidebar/use-rail-import-chats'
 
 /**
  * The shell Rail's Projects section: header with one `+` menu, search, the
@@ -42,10 +47,11 @@ export function ProjectSidebar({
   onReorderProjects,
   onSSHConnect,
   onSelectSSHProfile,
-  activeSSHProfileId
+  activeSSHProfileId,
+  renderProjectContent
 }: ProjectSidebarProps): React.JSX.Element {
+  const collapsed = useRailCollapsed()
   const {
-    addProject,
     addGroup,
     removeGroup,
     renameGroup,
@@ -88,6 +94,10 @@ export function ProjectSidebar({
   const [colorPicker, setColorPicker] = useState<ColorPickerState | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null)
   const [worktreeProjectId, setWorktreeProjectId] = useState<string | null>(null)
+  const openWorktreeSwitcher = useOpenRailWorktreeSwitcher()
+
+  // Import chats (the `+` menu) into the open project's working copy.
+  const { onImportChats, dialog: importChatsDialog } = useRailImportChats(projects, activeProjectId)
 
   const handleOpenColorPicker = useCallback(
     (targetId: string, targetType: 'project' | 'group'): void => {
@@ -148,16 +158,17 @@ export function ProjectSidebar({
   const handleAddNewProjectToGroup = useCallback(
     async (groupId: string) => {
       try {
-        const result = await dialogApi.selectDirectory()
-        if (result.success && result.data) {
-          const projectPath = result.data
-          const folderName = projectPath.split(/[\\/]/).pop() || 'New Project'
-          const newProject = await addProject(folderName, 'blue', projectPath)
-          moveProjectToGroup(newProject.id, groupId)
-          toast('Project created', {
-            description: `Created project "${folderName}" and added to group.`
-          })
-        }
+        const result = await pickFolderAsProject()
+        if (result.kind === 'cancelled' || result.kind === 'restore-failed') return
+        moveProjectToGroup(result.project.id, groupId)
+        toast(
+          result.kind === 'added' ? 'Project created' : 'Project moved',
+          result.kind === 'added'
+            ? { description: `Created project "${result.project.name}" and added to group.` }
+            : {
+                description: `"${result.project.name}" was already a project. Moved it to the group.`
+              }
+        )
       } catch (err) {
         console.error('Failed to create project:', err)
         toast.error('Error', {
@@ -165,7 +176,7 @@ export function ProjectSidebar({
         })
       }
     },
-    [addProject, moveProjectToGroup]
+    [moveProjectToGroup]
   )
 
   // Shared by project and group rows.
@@ -264,6 +275,7 @@ export function ProjectSidebar({
         moveProjectToGroup={moveProjectToGroup}
         onCreateGroupForProject={(projectId) => setNewGroupModal({ projectIdToMove: projectId })}
         onNewWorktree={setWorktreeProjectId}
+        onSwitchWorktree={openWorktreeSwitcher}
         onArchiveProject={onArchiveProject}
         onConfirmDelete={setDeleteTarget}
       />
@@ -275,7 +287,8 @@ export function ProjectSidebar({
       onUpdateProject,
       onArchiveProject,
       groups,
-      moveProjectToGroup
+      moveProjectToGroup,
+      openWorktreeSwitcher
     ]
   )
 
@@ -295,19 +308,7 @@ export function ProjectSidebar({
       ? projects.find((p) => p.id === colorPicker.targetId)
       : groups.find((g) => g.id === colorPicker?.targetId)
 
-  // Map each active project id to its position in the UNFILTERED active list.
-  // The badge reflects this position (not the filtered render index) so the
-  // number a user sees doesn't shift around as they type a search query.
-  const activeIndexById = useMemo(() => {
-    const map = new Map<string, number>()
-    activeProjects.forEach((p, i) => {
-      map.set(p.id, i)
-    })
-    return map
-  }, [activeProjects])
-
-  // Groups in group order, then the ungrouped projects: the same order the
-  // collapsed Rail's stack reads.
+  // Groups in group order, then the ungrouped projects (both Rail densities).
   const { groups: visibleGroups, ungrouped: ungroupedActiveProjects } = useMemo(
     () => layoutRailProjects(projects, groups),
     [projects, groups]
@@ -320,17 +321,19 @@ export function ProjectSidebar({
 
   return (
     <div className="flex min-h-0 w-full flex-1 flex-col">
-      {/* Header with inline + button */}
+      {/* Header with inline + button. Collapsed Rail: a divider at its y. In
+          the list's 8px inset like the Groups and Quick chats headers, so its
+          label, its + and its collapsed divider line up with theirs. */}
       {!railSections && (
-        <div className={PANEL_HEADER_CLASS}>
-          <span className="label-panel">Projects</span>
-          <div className="flex items-center">
+        <div className="px-2">
+          <RailSectionHeader label="Projects">
             <AddProjectMenu
               onNewProject={onNewProject}
               onNewGroup={() => setNewGroupModal({})}
-              buttonClassName={HEADER_ICON_BUTTON}
+              onImportChats={onImportChats}
+              buttonClassName={RAIL_SECTION_BUTTON_CLASS}
             />
-          </div>
+          </RailSectionHeader>
         </div>
       )}
 
@@ -354,7 +357,6 @@ export function ProjectSidebar({
         moveProjectToGroup={moveProjectToGroup}
         renderGroupContextMenu={renderGroupContextMenu}
         ungroupedActiveProjects={ungroupedActiveProjects}
-        activeIndexById={activeIndexById}
         editingId={editingId}
         editName={editName}
         projectStatus={projectStatus}
@@ -373,14 +375,23 @@ export function ProjectSidebar({
         railSections={railSections}
         onNewProject={onNewProject}
         onNewGroup={() => setNewGroupModal({})}
+        onImportChats={onImportChats}
+        renderProjectContent={renderProjectContent}
+        trailing={<QuickChatsGroup />}
       />
 
-      {/* SSH Connections - Resizable */}
-      <SSHResizableSection
-        onSSHConnect={onSSHConnect}
-        onSelectProfile={onSelectSSHProfile}
-        activeProfileId={activeSSHProfileId}
-      />
+      {/* SSH Connections - Resizable. Hidden on the collapsed Rail. */}
+      {!collapsed && (
+        <div className={cn('flex shrink-0 flex-col', RAIL_BLOCK_FADE_CLASS)}>
+          <SSHResizableSection
+            onSSHConnect={onSSHConnect}
+            onSelectProfile={onSelectSSHProfile}
+            activeProfileId={activeSSHProfileId}
+          />
+        </div>
+      )}
+
+      <OlderChatsGroup />
 
       {/* Group Delete Confirmation Dialog */}
       <ConfirmDialog
@@ -427,6 +438,8 @@ export function ProjectSidebar({
         onClose={() => setWorktreeProjectId(null)}
         projectId={worktreeProjectId ?? ''}
       />
+
+      {importChatsDialog}
 
       {/* New Group Modal */}
       <NewGroupModal

@@ -110,6 +110,38 @@ describe('useProjectSwitch (client-only)', () => {
     expect(lifetime.retainedByProject.p2).toEqual(['newest'])
   })
 
+  it('retains and focuses the terminal session when the newest index entry is a chain member', () => {
+    // A pre-switch source can keep the freshest index activity while its
+    // switch target is the live continuation — restore must land on it.
+    useAcpStore.setState({
+      sessionIndex: [
+        indexEntry('src', 'p2', 9),
+        { ...indexEntry('dst', 'p2', 5), continuedFrom: 'src' }
+      ]
+    })
+    const { result } = renderHook(() => useProjectSwitch('test'))
+
+    result.current.switchTo('p2')
+
+    const lifetime = useAgentChatLifetimeStore.getState()
+    expect(lifetime.focusSessionByProject.p2).toBe('dst')
+    expect(lifetime.retainedByProject.p2).toEqual(['dst'])
+  })
+
+  it('does not resolve the restore onto a discovered continuation', () => {
+    useAcpStore.setState({
+      sessionIndex: [
+        indexEntry('src', 'p2', 9),
+        { ...indexEntry('mirror', 'p2', 5), continuedFrom: 'src', discovered: true }
+      ]
+    })
+    const { result } = renderHook(() => useProjectSwitch('test'))
+
+    result.current.switchTo('p2')
+
+    expect(useAgentChatLifetimeStore.getState().focusSessionByProject.p2).toBe('src')
+  })
+
   it('leaves a chat the user already had open in the target project to win', () => {
     useAcpStore.setState({ sessionIndex: [indexEntry('newest', 'p2', 9)] })
     useAgentChatLifetimeStore.getState().retainProjectChats('p2', ['kept'])
@@ -124,7 +156,7 @@ describe('useProjectSwitch (client-only)', () => {
   })
 })
 
-describe('useChatHistoryEntries (Unassigned bucket)', () => {
+describe('useChatHistoryEntries (Quick chats bucket)', () => {
   const DAY = 24 * 60 * 60 * 1000
 
   beforeEach(() => {
@@ -132,7 +164,7 @@ describe('useChatHistoryEntries (Unassigned bucket)', () => {
     seedProjectStore([mockProject({ id: 'p1', name: 'Alpha', path: '/work' })], 'p1')
   })
 
-  it('lists host-unassigned chats in their own group after every recency group', () => {
+  it('lists quick chats, then older no-project chats, after the recency groups', () => {
     const now = Date.now()
     useAcpStore.setState({
       sessionIndex: [
@@ -140,6 +172,7 @@ describe('useChatHistoryEntries (Unassigned bucket)', () => {
         { ...indexEntry('yesterday-chat', 'p1', now - DAY), cwd: '/work' },
         { ...indexEntry('earlier-chat', 'p1', now - 7 * DAY), cwd: '/work' },
         { ...indexEntry('stray', '__unassigned__', now), cwd: '/elsewhere' },
+        { ...indexEntry('quick', '__unassigned__', now), cwd: '/quick', kind: 'quick' },
         { ...indexEntry('other', 'p2', now), cwd: '/work' }
       ]
     })
@@ -149,10 +182,14 @@ describe('useChatHistoryEntries (Unassigned bucket)', () => {
       'Today',
       'Yesterday',
       'Earlier',
-      'Unassigned'
+      'Quick chats',
+      'Older chats'
     ])
-    const bucket = result.current.groups.find((g) => g.group === 'Unassigned')
-    expect(bucket?.entries.map((e) => e.id)).toEqual(['stray'])
+    const bucket = result.current.groups.find((g) => g.group === 'Quick chats')
+    expect(bucket?.entries.map((e) => e.id)).toEqual(['quick'])
+    const older = result.current.groups.find((g) => g.group === 'Older chats')
+    expect(older?.entries.map((e) => e.id)).toEqual(['stray'])
+    expect(result.current.mergedEntries.map((e) => e.id)).toContain('stray')
     expect(result.current.mergedEntries.map((e) => e.id)).not.toContain('other')
   })
 })

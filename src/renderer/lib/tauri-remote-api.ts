@@ -1,12 +1,11 @@
 import type {
   IpcResult,
-  RemoteBindMode,
   RemoteServerApi,
+  RemoteServerStartOptions,
   RemoteStatus
 } from '@shared/types/ipc.types'
 import type { ProjectSummary } from '@shared/types/web-projects.types'
 import type { PersistedSessionSummary } from '@shared/types/web-protocol.types'
-import type { StoredMcpServer } from './acp-mcp-persistence'
 import { invokeIpc } from './ipc/tauri'
 
 /**
@@ -28,10 +27,18 @@ const IPC_COMMANDS = {
 } as const
 
 export const remoteServerApi: RemoteServerApi = {
-  /** Start the embedded server on the chosen bind mode (OS-assigned port). */
-  async start(options?: { bindMode?: RemoteBindMode }): Promise<IpcResult<RemoteStatus>> {
-    const bindMode = options?.bindMode
-    return invokeIpc<RemoteStatus>(IPC_COMMANDS.START, bindMode ? { bindMode } : undefined)
+  /**
+   * Start the embedded server on the chosen bind mode (OS-assigned port).
+   * `allowWrites` gives remote clients full control; omitted → view-only.
+   */
+  async start(options?: RemoteServerStartOptions): Promise<IpcResult<RemoteStatus>> {
+    const args: { bindMode?: string; allowWrites?: boolean } = {}
+    if (options?.bindMode) args.bindMode = options.bindMode
+    if (options?.allowWrites) args.allowWrites = true
+    return invokeIpc<RemoteStatus>(
+      IPC_COMMANDS.START,
+      Object.keys(args).length > 0 ? args : undefined
+    )
   },
 
   /** Stop the embedded server and disconnect all web clients. */
@@ -61,26 +68,6 @@ export async function projectRegistryImport(
   return invokeIpc<{ imported: boolean }>('project_registry_import', {
     payload: { projects, defaultProjectId }
   })
-}
-
-/**
- * Mirror the desktop app-store MCP registry to the named project's
- * `.termul/mcp-servers.json` (CAP-7 — registry sync gap). The Rust
- * `remote_sync_mcp_registry` command resolves `projectId` through the shared
- * `ProjectRegistry` (an unknown, archived or pathless project is refused
- * `NOT_FOUND`) and writes the registry via `atomic_file::replace`, so the web
- * `GET /mcp-servers?projectId=` route (file-based) serves the same registry the
- * desktop app store holds.
- *
- * Best-effort: the result is `IpcResult<void>` (never throws — invoke errors map
- * to `{ success: false, code: 'INVOKE_ERROR' }`). Callers log a failure but never
- * let it block the app-store save or the project switch.
- */
-export async function syncMcpRegistryToProject(
-  projectId: string,
-  registry: StoredMcpServer[]
-): Promise<IpcResult<void>> {
-  return invokeIpc<void>('remote_sync_mcp_registry', { projectId, registry })
 }
 
 /**

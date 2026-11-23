@@ -148,7 +148,7 @@ describe('app-settings-store', () => {
   })
 
   describe('resetToDefaults', () => {
-    it('resets every preference to its default and keeps terminal profiles', () => {
+    it('resets every preference to its default and keeps terminal profiles and onboarding', () => {
       const profile = {
         id: 'p1',
         name: 'Zsh login',
@@ -172,7 +172,8 @@ describe('app-settings-store', () => {
           colorTheme: 'nord',
           appearanceMode: 'light' as const,
           uiZoomLevel: 1.2,
-          terminalProfiles: [profile]
+          terminalProfiles: [profile],
+          onboardingCompletedAt: '2026-11-20T08:00:00.000Z'
         },
         isLoaded: true
       })
@@ -181,7 +182,11 @@ describe('app-settings-store', () => {
       resetToDefaults()
 
       const { settings } = useAppSettingsStore.getState()
-      expect(settings).toEqual({ ...DEFAULT_APP_SETTINGS, terminalProfiles: [profile] })
+      expect(settings).toEqual({
+        ...DEFAULT_APP_SETTINGS,
+        terminalProfiles: [profile],
+        onboardingCompletedAt: '2026-11-20T08:00:00.000Z'
+      })
     })
   })
 

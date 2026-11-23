@@ -65,6 +65,14 @@ function termulLightChrome(): ThemeChrome {
       '--composer-shadow': S_DEFAULT,
       /** Prompt panels replace the composer, so they take the same lift. */
       '--prompt-panel-shadow': S_DEFAULT,
+      /** Secondary and outline buttons: white, a 1px ink ring at 8% and a 12% drop. */
+      '--control-fill': CONTAINER,
+      '--control-fill-hover': `color-mix(in oklab, ${CONTAINER}, ${INK} 4%)`,
+      '--shadow-control': `0 0 0 1px ${INK}14, 0 1px 2px ${INK}1f`,
+      /** Status rail: white, a 1px ink ring at 8% and a 12% drop (same recipe as the secondary button). */
+      '--rail-fill': CONTAINER,
+      '--rail-edge': `${INK}14`,
+      '--shadow-rail': `0 0 0 1px ${INK}14, 0 1px 2px ${INK}1f`,
       /** Tabs and other raised items: a white container with s-default, as in Interfere. */
       '--keycap-fill': CONTAINER,
       '--keycap-shadow': S_DEFAULT,
@@ -75,5 +83,5 @@ function termulLightChrome(): ThemeChrome {
   }
 }
 
-/** Interfere ramp for the default Termul light theme. */
+/** Interfere ramp for the default Troupe light theme. */
 export const TERMUL_LIGHT_CHROME: ThemeChrome = termulLightChrome()

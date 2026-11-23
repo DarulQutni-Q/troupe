@@ -11,13 +11,13 @@ export function PrivacyPage() {
   return (
     <LegalPage
       title="Privacy"
-      description="What the Termul website collects and loads, and what is and is not known about the Termul desktop app."
+      description="What the Troupe website collects and loads, and what is and is not known about the Troupe desktop app."
       path="/privacy/"
       lastUpdated={LEGAL_LAST_UPDATED}
     >
       <LegalSection title="Summary">
         <p>
-          Termul is a free, open-source desktop app. This website (termul.dev)
+          Troupe is a free, open-source desktop app. This website (usetroupe.dev)
           loads Google Tag Manager, may load Cloudflare Web Analytics, and
           stores testimonial submissions. We did not find analytics or crash
           reporting code in the desktop app source. Details below.
@@ -42,26 +42,23 @@ export function PrivacyPage() {
           <li>
             <strong>Cloudflare Web Analytics</strong>: the Content Security
             Policy allows the Cloudflare Insights script and endpoint. Whether
-            it is turned on for termul.dev is a dashboard setting we have not
+            it is turned on for usetroupe.dev is a dashboard setting we have not
             verified.
           </li>
           <li>
-            <strong>Google Fonts</strong> (fonts.googleapis.com and
-            fonts.gstatic.com) are loaded for the Inter and JetBrains Mono
-            fonts. Your browser sends a request, including your IP address, to
-            Google.
+            <strong>Fonts</strong> (Inter and Paper Mono) are served from
+            usetroupe.dev. The site does not load fonts from Google.
           </li>
           <li>
-            <strong>Images</strong> for contributors and testimonials may be
-            loaded from GitHub and unavatar.io. A demo video is loaded from
-            CloudFront.
+            <strong>Images</strong> for testimonials may be loaded from the
+            address the author gave, for example GitHub or unavatar.io. When a
+            testimonial has no image, the page shows the author&apos;s
+            initials. No other third-party images or videos are loaded.
           </li>
           <li>
-            <strong>DiceBear avatars</strong>: when a testimonial has no avatar
-            image, the browser computes a SHA-256 hash of the displayed name
-            and requests a generated avatar from api.dicebear.com using only
-            that hash as the seed. The raw name is not sent. If hashing is not
-            available, local initials are shown instead.
+            The homepage asks <code>/api/releases</code> on usetroupe.dev for
+            the latest Troupe versions. That endpoint reads the public GitHub
+            releases; your browser does not contact GitHub for it.
           </li>
           <li>
             The site sets the <code>Referrer-Policy: no-referrer</code>{' '}
@@ -115,7 +112,7 @@ export function PrivacyPage() {
         <LegalList>
           <li>
             In the app source (<LegalLink href={GITHUB_REPO_URL}>
-              github.com/gnoviawan/termul
+              github.com/gnoviawan/troupe
             </LegalLink>) we did not find analytics, telemetry, or crash
             reporting libraries.
           </li>
@@ -129,7 +126,7 @@ export function PrivacyPage() {
           <li>
             Your terminals, files, and projects stay on your machine. If you
             use features that connect elsewhere (AI coding agents, MCP
-            servers, SSH, a browser pane, or termul-server), the data you send
+            servers, SSH, a browser pane, or troupe-server), the data you send
             goes to the service you chose, under that service&apos;s own
             policy. We did not audit each of these integrations for this page.
           </li>

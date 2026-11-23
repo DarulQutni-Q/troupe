@@ -25,7 +25,11 @@ vi.mock('@/lib/api', () => ({
     setSessionNewTimeout: vi.fn().mockResolvedValue({ success: true }),
     setSessionReopenTimeout: vi.fn().mockResolvedValue({ success: true }),
     setAgentIdleWindow: vi.fn().mockResolvedValue(undefined),
-    getAgentIdleWindow: vi.fn().mockResolvedValue({ secs: 1800, source: 'default' })
+    getAgentIdleWindow: vi.fn().mockResolvedValue({ secs: 1800, source: 'default' }),
+    getSubagentSettings: vi
+      .fn()
+      .mockResolvedValue({ enabled: true, maxRunning: 4, maxDepth: 2, agents: [] }),
+    setSubagentSettings: vi.fn()
   },
   logApi: {
     revealLogDir: vi.fn(),
@@ -149,6 +153,16 @@ vi.mock('@/components/settings/AcpAgentsSettings', () => ({
 
 vi.mock('@/components/settings/McpServersSettings', () => ({
   McpServersSettings: () => null
+}))
+
+// Every page stays mounted (hidden), so the Accounts page would list accounts
+// over a real `/ws` on each render; its late failures land in later tests' log mock.
+vi.mock('@/components/settings/provider/ProviderSettings', () => ({
+  ProviderSettings: () => null
+}))
+
+vi.mock('@/components/settings/provider/CodexProviderSettings', () => ({
+  CodexProviderSettings: () => null
 }))
 
 vi.mock('@/components/settings/BrowserPolicySettings', () => ({

@@ -30,7 +30,11 @@ type Unbranded<T> = T extends string & { readonly __brand: string }
   : T extends (infer U)[]
     ? Unbranded<U>[]
     : T extends object
-      ? { [K in keyof T]: Unbranded<T[K]> }
+      ? {
+          [K in keyof T as K extends string & { readonly __brand: string } ? string : K]: Unbranded<
+            T[K]
+          >
+        }
       : T
 
 const runGraph: Unbranded<Graph> = {
@@ -53,7 +57,31 @@ const runGraph: Unbranded<Graph> = {
     },
     { id: 'join', label: 'Join', spec: { kind: 'merge', mode: 'any' } },
     { id: 'pause', label: 'Pause', spec: { kind: 'wait', duration_ms: 3600000 } },
-    { id: 'stop', label: 'Stop', spec: { kind: 'fail', message: '{{trigger.kind}}' } }
+    {
+      id: 'gate',
+      label: 'Ship it?',
+      spec: {
+        kind: 'approval',
+        message: 'Ship {{nodes.body.output.item}}?',
+        timeout_ms: 86400000
+      }
+    },
+    { id: 'stop', label: 'Stop', spec: { kind: 'fail', message: '{{trigger.kind}}' } },
+    {
+      id: 'triage',
+      label: 'Triage',
+      spec: {
+        kind: 'agent',
+        agent_id: 'claude',
+        model: null,
+        prompt: 'Triage',
+        output_schema: { type: 'object' },
+        timeout_ms: 60000,
+        max_attempts: 1,
+        tools: ['other'],
+        mcp_servers: ['srv-github']
+      }
+    }
   ],
   edges: [
     { from: 'trigger', port: 'out', to: 'each' },
@@ -61,7 +89,9 @@ const runGraph: Unbranded<Graph> = {
     { from: 'each', port: 'out', to: 'join' },
     { from: 'each', port: 'error', to: 'join' },
     { from: 'join', port: 'out', to: 'pause' },
-    { from: 'pause', port: 'out', to: 'stop' }
+    { from: 'pause', port: 'out', to: 'gate' },
+    { from: 'gate', port: 'out', to: 'stop' },
+    { from: 'gate', port: 'error', to: 'stop' }
   ]
 }
 
@@ -122,7 +152,8 @@ const typed: Unbranded<WireFixture> = {
             },
             timeout_ms: 120000,
             max_attempts: 2,
-            tools: ['search', 'read', 'search']
+            tools: ['search', 'read', 'search'],
+            mcp_servers: null
           }
         },
         {
@@ -206,6 +237,11 @@ const typed: Unbranded<WireFixture> = {
           to: 'post'
         }
       ]
+    },
+    layout: {
+      trigger: { x: 0, y: 40 },
+      fetch: { x: 240, y: 40.5 },
+      extract: { x: 480, y: -16 }
     },
     isolation: 'shared_in_root',
     next_run_at: 1773046800000,
@@ -349,6 +385,7 @@ const typed: Unbranded<WireFixture> = {
         nodes: [],
         edges: []
       },
+      layout: {},
       isolation: 'worktree_per_run',
       next_run_at: null,
       consecutive_errors: 0,
@@ -381,7 +418,8 @@ const typed: Unbranded<WireFixture> = {
       stop_reason: 'node post failed',
       summary: null,
       conversation_id: null,
-      worktree_id: 'wt-1'
+      worktree_id: 'wt-1',
+      parked: null
     },
     {
       id: 'run-2',
@@ -396,7 +434,24 @@ const typed: Unbranded<WireFixture> = {
       stop_reason: null,
       summary: null,
       conversation_id: null,
-      worktree_id: null
+      worktree_id: null,
+      parked: { node_id: 'pause', iteration: null, until: 1773050461000 }
+    },
+    {
+      id: 'run-3',
+      automation_id: 'auto-1',
+      revision: 1,
+      graph: runGraph,
+      trigger: 'catch_up',
+      scheduled_for: 1773046800000,
+      status: 'running',
+      started_at: 1773046800100,
+      finished_at: null,
+      stop_reason: null,
+      summary: null,
+      conversation_id: null,
+      worktree_id: null,
+      parked: { node_id: 'gate', iteration: 1, until: 1773133261000 }
     }
   ],
   steps: [
@@ -460,6 +515,28 @@ const typed: Unbranded<WireFixture> = {
       started_at: 1773046861000,
       finished_at: null,
       wait_until: 1773050461000
+    },
+    {
+      run_id: 'run-3',
+      node_id: 'gate',
+      iteration: 1,
+      status: 'waiting',
+      output: { message: 'Ship b?' },
+      error: null,
+      started_at: 1773046861000,
+      finished_at: null,
+      wait_until: 1773133261000
+    },
+    {
+      run_id: 'run-1',
+      node_id: 'gate',
+      iteration: 0,
+      status: 'failed',
+      output: { message: 'Ship a?', decision: 'rejected', decided_at: 1773046900000 },
+      error: 'rejected',
+      started_at: 1773046861000,
+      finished_at: 1773046900000,
+      wait_until: 1773133261000
     }
   ],
   run_policy: {
@@ -471,7 +548,19 @@ const typed: Unbranded<WireFixture> = {
         agent_id: 'claude',
         model: 'sonnet',
         timeout_ms: 120000,
-        tools: ['read', 'search']
+        tools: ['read', 'search'],
+        mcp_servers: []
+      },
+      {
+        node_id: 'triage',
+        agent_id: 'claude',
+        model: null,
+        timeout_ms: 60000,
+        tools: ['other'],
+        mcp_servers: [
+          { server_id: 'srv-tebar', name: 'Tebar' },
+          { server_id: 'srv-github', name: 'GitHub' }
+        ]
       }
     ],
     secrets: [

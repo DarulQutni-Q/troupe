@@ -1,34 +1,39 @@
 import { QRCodeSVG } from 'qrcode.react'
 import { useEffect, useState } from 'react'
 import { AlertCircle, Check, Copy, Monitor, ShieldAlert } from '@/components/icons'
-import { STATUS_BAR_HIT_GLYPH, STATUS_BAR_HIT_TARGET } from '@/components/status-bar-hit'
+import { ToolStrip } from '@/components/shell/tool-strip/ToolStrip'
+import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Switch } from '@/components/ui/switch'
 import { remoteServerApi } from '@/lib/api'
 import { cn } from '@/lib/utils'
-import { useAcpStore } from '@/stores/acp-store'
-import { useProjectStore } from '@/stores/project-store'
 import { useRemoteStatus, useRemoteStatusStore } from '@/stores/remote-status-store'
 
 /**
- * StatusBar popover for remote agent access.
+ * Tool strip popover for remote agent access (desktop shared-live host only).
  *
  * Enabling starts the in-process localhost web server + a built-in cloudflared
  * quick-tunnel, producing an ephemeral `https://*.trycloudflare.com` URL the
  * phone can reach on any network. That URL is rendered as a QR — scan to open.
  * No bind selector, no URL text row: the QR is the connect UI.
  *
- * Security posture (until Epic 2 ships a real token): cloudflared provides edge
- * TLS; the random ephemeral URL is the only gate. The warning below makes that
- * explicit and tells the user to toggle off to rotate.
+ * Security posture: cloudflared provides edge TLS and the shared link carries
+ * the bearer token. Remote clients are view-only unless the user turns on
+ * "Allow full control" before sharing; the level is fixed while sharing runs
+ * (toggle off and on to change it, which also rotates the link). The warning
+ * below names what the link grants.
  */
 export function RemoteAccessPopover(): React.JSX.Element {
   const remoteStatus = useRemoteStatus()
   const [remoteBusy, setRemoteBusy] = useState(false)
   const [remoteError, setRemoteError] = useState<string | null>(null)
   const [copiedUrl, setCopiedUrl] = useState(false)
+  // The access level the next start asks for. While sharing runs, the switch
+  // shows the running host's level instead (fixed until it is restarted).
+  const [allowWritesChoice, setAllowWritesChoice] = useState(false)
 
   const isRunning = remoteStatus?.running ?? false
+  const allowWrites = isRunning ? (remoteStatus?.allowWrites ?? false) : allowWritesChoice
   // The QR encodes the public tunnel URL only — never the localhost `url`.
   const tunnelUrl = remoteStatus?.tunnelUrl ?? null
   // Track whether a tunnel URL was ever seen this session so the popover can
@@ -44,19 +49,15 @@ export function RemoteAccessPopover(): React.JSX.Element {
     setRemoteBusy(true)
     setRemoteError(null)
     try {
-      const result = enable ? await remoteServerApi.start() : await remoteServerApi.stop()
+      const result = enable
+        ? await (allowWritesChoice
+            ? remoteServerApi.start({ allowWrites: true })
+            : remoteServerApi.start())
+        : await remoteServerApi.stop()
       if (result.success) {
         useRemoteStatusStore.getState().setStatus(result.data)
-        // The host registry is durable and the desktop reads it through the
-        // `projects` watch, so there is no project list to seed. Copy the
-        // desktop MCP servers to the active project's file (best-effort, interim
-        // bridge). Desktop-hosted browser history reads the durable Rust
-        // provider directly, so no renderer transcript seed is needed either.
-        if (enable) {
-          void useAcpStore
-            .getState()
-            .syncMcpRegistryToProjectFile(useProjectStore.getState().activeProjectId)
-        }
+        // Browsers read the project list, the MCP servers and chat history
+        // from the host directly, so nothing is seeded here.
       } else {
         setRemoteError(result.error)
       }
@@ -81,19 +82,16 @@ export function RemoteAccessPopover(): React.JSX.Element {
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <button
-          type="button"
-          className={STATUS_BAR_HIT_TARGET}
+        <ToolStrip.Button
+          label="Remote access"
           aria-label="Remote terminal access"
           aria-pressed={isRunning}
-        >
-          <span className={STATUS_BAR_HIT_GLYPH}>
-            <Monitor size={12} className={cn('shrink-0', isRunning && 'text-connection')} />
-          </span>
-          {isRunning && <span className="sr-only">Remote access enabled</span>}
-        </button>
+          className="data-[state=open]:bg-foreground/[0.06] data-[state=open]:text-foreground"
+          icon={<Monitor size={14} aria-hidden className={cn(isRunning && 'text-connection')} />}
+          badge={isRunning ? <span className="sr-only">Remote access enabled</span> : undefined}
+        />
       </PopoverTrigger>
-      <PopoverContent side="top" align="end" className="w-72 p-4">
+      <PopoverContent side="left" align="end" className="w-72 p-4">
         <div className="space-y-3">
           <div>
             <h4 className="font-medium text-sm text-foreground">Remote Agent Access</h4>
@@ -117,10 +115,27 @@ export function RemoteAccessPopover(): React.JSX.Element {
             />
           </div>
 
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex-1 min-w-0">
+              <div className="text-sm text-foreground">Allow full control</div>
+              <div className="text-xs text-muted-foreground mt-0.5">
+                {isRunning
+                  ? 'Turn remote access off to change this.'
+                  : 'Let remote devices prompt agents, run commands, and edit files. Off: view only.'}
+              </div>
+            </div>
+            <Switch
+              checked={allowWrites}
+              disabled={remoteBusy || isRunning}
+              onCheckedChange={setAllowWritesChoice}
+              aria-label="Allow remote devices full control"
+            />
+          </div>
+
           {remoteError && (
             <div className="flex items-start gap-2 text-sm text-destructive bg-destructive/10 border border-destructive/30 rounded-md px-3 py-2">
               <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-              <span>{remoteError}</span>
+              <span className="min-w-0 [overflow-wrap:anywhere]">{remoteError}</span>
             </div>
           )}
 
@@ -135,20 +150,23 @@ export function RemoteAccessPopover(): React.JSX.Element {
               <div className="flex items-start gap-2 text-xs text-warning bg-warning/10 border border-warning/30 rounded-md px-3 py-2">
                 <ShieldAlert className="w-4 h-4 mt-0.5 shrink-0" />
                 <span>
-                  This link carries your access token (after the #) — anyone who has it can drive
-                  your live agent, so share it only with devices you trust. The tunnel address is
-                  random and changes each time you toggle off and on.
+                  {allowWrites
+                    ? 'This link carries your access token (after the #). Anyone who has it can control this machine: prompt your agents, run commands, and edit files. Share it only with devices you trust.'
+                    : 'This link carries your access token (after the #). Anyone who has it can watch your live sessions, so share it only with devices you trust.'}{' '}
+                  The tunnel address is random and changes each time you toggle off and on.
                 </span>
               </div>
-              <button
+              <Button
                 type="button"
+                variant="secondary"
+                size="xs"
                 onClick={() => void handleCopyLink()}
-                className="w-full inline-flex items-center justify-center gap-2 text-xs bg-secondary hover:bg-secondary/80 border border-border rounded-md px-3 py-1.5 transition-colors"
+                className="w-full [&_svg]:size-3.5"
                 aria-label="Copy tunnel link"
               >
-                {copiedUrl ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                {copiedUrl ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
                 {copiedUrl ? 'Copied' : 'Copy link'}
-              </button>
+              </Button>
             </div>
           )}
 

@@ -25,6 +25,7 @@ const RESOLVER_FAILURE_PATTERN = /program not found(?: or not executable| on PAT
 // or an absent module). dash writes `sh: 1: <bin>: not found` where bash
 // writes "command not found"; both are the same corruption.
 const SH_NOT_FOUND_PATTERN = /\bsh:\s+(?:\d+:\s+)?([^\s:'"]+):\s*(?:command )?not found\b/
+const NPX_ENTRY_MANIFEST_PATTERN = /enoent[\s\S]*?_npx[\\/]+[0-9a-f]+[\\/]+package\.json/i
 const NPM_MISSING_DEP_PATTERN =
   /missing optional dependency|cannot find module|err_module_not_found|module_not_found/i
 
@@ -38,7 +39,9 @@ function npxDamagedCacheBin(message: string): string | null {
 function isNpxCacheDamage(message: string, command?: string): boolean {
   return (
     command === 'npx' &&
-    (npxDamagedCacheBin(message) !== null || NPM_MISSING_DEP_PATTERN.test(message))
+    (npxDamagedCacheBin(message) !== null ||
+      NPX_ENTRY_MANIFEST_PATTERN.test(message) ||
+      NPM_MISSING_DEP_PATTERN.test(message))
   )
 }
 
@@ -95,6 +98,9 @@ export function formatAcpSpawnError(raw: unknown, config?: Pick<AgentConfig, 'co
   // optional/platform dependency or an absent module — where the vendor's own
   // "npm install -g" advice would not repair the cache npx reuses.
   if (config?.command === 'npx') {
+    if (NPX_ENTRY_MANIFEST_PATTERN.test(message)) {
+      return `npm could not read package.json in its npx cache entry for this agent. ${NPX_CACHE_REPAIR_GUIDANCE}`
+    }
     const missingBin = npxDamagedCacheBin(message)
     if (missingBin) {
       return `npx started, but its package executable "${missingBin}" was not found. ${NPX_CACHE_REPAIR_GUIDANCE}`
@@ -142,7 +148,7 @@ export function formatAcpSpawnError(raw: unknown, config?: Pick<AgentConfig, 'co
  * problems use "Model unavailable" (handled by the launcher, not here).
  *
  * - `multi-auth`  the agent advertised more than one auth method and none is a
- *                 single unambiguous default; Termul never silently picks one.
+ *                 single unambiguous default; Troupe never silently picks one.
  * - `spawn`       the agent binary could not be launched (ENOENT-style).
  * - `transport`   the connection/stream was destroyed or refused; the process
  *                 must be evicted before any retry (it cannot be reused).
@@ -284,6 +290,28 @@ export function claudeAccountSignedOutMessage(raw: unknown): string {
 }
 
 /**
+ * The host refused because a Codex Account is not signed in: choosing it, or
+ * starting or reopening a managed Codex agent on it. `/ws` carries the
+ * `codex_account_signed_out` code; the desktop `invoke` path carries the same
+ * verdict as a message prefix.
+ */
+export const CODEX_ACCOUNT_SIGNED_OUT_PREFIX = 'ACP_CODEX_ACCOUNT_SIGNED_OUT'
+
+export function isCodexAccountSignedOutError(raw: unknown): boolean {
+  if (typeof raw === 'object' && raw !== null) {
+    if ((raw as { code?: unknown }).code === WS_ERROR_CODES.CODEX_ACCOUNT_SIGNED_OUT) return true
+  }
+  return rawErrorMessage(raw).startsWith(`${CODEX_ACCOUNT_SIGNED_OUT_PREFIX}: `)
+}
+
+/** The host's sentence for a Codex sign-in refusal, without the transport tag. */
+export function codexAccountSignedOutMessage(raw: unknown): string {
+  const message = rawErrorMessage(raw)
+  const tag = `${CODEX_ACCOUNT_SIGNED_OUT_PREFIX}: `
+  return message.startsWith(tag) ? message.slice(tag.length) : message
+}
+
+/**
  * The host rejected a spawn deterministically (AD-5): the agent binary is
  * missing / cannot start (`agent_unavailable`) or the config is unusable
  * (`invalid_agent_config`). `/ws` carries the stable code; the Tauri `invoke`
@@ -326,7 +354,7 @@ function definiteSpawnRejectionMessage(raw: unknown): string {
 
 /**
  * Thrown when an agent advertises more than one authentication method and none
- * is a single unambiguous default. Termul must never silently choose a method,
+ * is a single unambiguous default. Troupe must never silently choose a method,
  * so this surfaces as an actionable `multi-auth` failure that lists the method
  * names. Carries a stable `code` so the classifier recognizes it even after the
  * error crosses an async/String boundary.
@@ -339,7 +367,7 @@ export class AmbiguousAuthError extends Error {
     const names = methods.map((m) => m.name).join(', ')
     super(
       `This agent advertises multiple sign-in methods (${names}). ` +
-        'Termul does not choose one automatically; pick one of the methods below to sign in.'
+        'Troupe does not choose one automatically; pick one of the methods below to sign in.'
     )
     this.name = 'AmbiguousAuthError'
     this.methods = methods
@@ -426,6 +454,13 @@ export function classifySetupError(
       category: 'auth',
       label: SETUP_ERROR_LABELS.auth,
       detail: claudeAccountSignedOutMessage(raw)
+    }
+  }
+  if (isCodexAccountSignedOutError(raw)) {
+    return {
+      category: 'auth',
+      label: SETUP_ERROR_LABELS.auth,
+      detail: codexAccountSignedOutMessage(raw)
     }
   }
   // A definite host rejection (AD-5) is authoritative: it is a spawn failure

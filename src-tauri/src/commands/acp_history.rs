@@ -44,6 +44,10 @@ pub(crate) fn host_entry_to_desktop(
         worktree_branch: entry.worktree_branch,
         model_id: entry.model_id,
         model_name: entry.model_name,
+        continued_from: entry.continued_from,
+        kind: (entry.kind == crate::acp::session_persistence::SessionKind::Quick)
+            .then(|| "quick".to_string()),
+        started_by: entry.started_by,
     }
 }
 
@@ -215,11 +219,12 @@ pub async fn acp_history_delete(
     session_id: String,
     host: State<'_, HostHistoryStore>,
     ws_relay: State<'_, Arc<crate::web::WsRelaySink>>,
+    acp: State<'_, Arc<crate::acp::AcpManager>>,
 ) -> Result<IpcResult<bool>, String> {
     let log_session_id = crate::logging::redact_session_id(&session_id);
     log::info!("[acp-history] delete start session_id={}", log_session_id);
     match &host.0 {
-        Some(persistence) => match persistence.delete_session(&session_id).await {
+        Some(persistence) => match acp.delete_persisted_session(persistence, &session_id).await {
             Ok(()) => {
                 ws_relay.inner().forget_chat_activity(&session_id);
                 crate::web::watch::publish_chat_history(ws_relay.inner(), &[session_id.as_str()]);

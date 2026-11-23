@@ -4,6 +4,7 @@
 
 import type { StateCreator } from 'zustand'
 import { type AgentId, acpApi, type SessionId } from '@/lib/acp-api'
+import { getAcpTransport } from '@/lib/acp-transport'
 import { logFrontendError } from '@/lib/log-api'
 import { randomUUID } from '@/lib/uuid'
 import {
@@ -34,6 +35,8 @@ import type { AcpState } from '../types'
 type MiscSliceState = Pick<
   AcpState,
   | 'transportReconnecting'
+  | 'resyncingSessions'
+  | 'prioritizeResync'
   | 'degradedRecoverySessions'
   | 'generateCommitMessage'
   | 'assistTerminal'
@@ -42,6 +45,8 @@ type MiscSliceState = Pick<
 
 export const createMiscSlice: StateCreator<AcpState, [], [], MiscSliceState> = (set, get) => ({
   transportReconnecting: false,
+  resyncingSessions: {},
+  prioritizeResync: (sessionId) => getAcpTransport().prioritizeResubscribe?.(sessionId),
   degradedRecoverySessions: {},
 
   generateCommitMessage: async (cwd, stagedDiff) => {
@@ -464,7 +469,7 @@ export const createMiscSlice: StateCreator<AcpState, [], [], MiscSliceState> = (
       const prompt = [
         'Return exactly one JSON object and no other text:',
         '{"title":"...","body":"..."}',
-        'Draft a GitHub bug report issue for the Termul terminal application.',
+        'Draft a GitHub bug report issue for the Troupe terminal application.',
         'Write a short descriptive issue title of at most 80 characters and a markdown body with brief sections: what happened, expected behavior, and environment (taken from the diagnostics).',
         'Do not use tools, request permissions, or ask questions.',
         'The diagnostics are already redacted. Never invent credentials, tokens, paths, or details that are not present in the input.',

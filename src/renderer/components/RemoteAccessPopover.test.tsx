@@ -28,24 +28,6 @@ vi.mock('@/lib/api', () => ({
   }
 }))
 
-vi.mock('@/stores/project-store', () => ({
-  useProjectStore: { getState: () => ({ activeProjectId: 'p-active' }) }
-}))
-
-const { syncMcpRegistryToProjectFile } = vi.hoisted(() => ({
-  syncMcpRegistryToProjectFile: vi.fn(async () => {})
-}))
-vi.mock('@/stores/acp-store', () => ({
-  useAcpStore: {
-    getState: () => ({
-      loadSessionIndex: vi.fn(async () => {}),
-      sessionIndex: [],
-      messages: {},
-      syncMcpRegistryToProjectFile
-    })
-  }
-}))
-
 vi.mock('@/lib/acp-history-persistence', () => ({
   toPersistedSessionSummaries: vi.fn(() => [])
 }))
@@ -63,7 +45,8 @@ const RUNNING: RemoteStatus = {
   bindHost: '127.0.0.1',
   // The host appends the bearer token as a `#token=` fragment (the form
   // web-auth-token.ts reads); the QR and copy-link carry it verbatim.
-  tunnelUrl: 'https://foo-bar.trycloudflare.com#token=abc123'
+  tunnelUrl: 'https://foo-bar.trycloudflare.com#token=abc123',
+  allowWrites: false
 }
 
 function renderPopover(): ReturnType<typeof render> {
@@ -79,8 +62,10 @@ function renderPopover(): ReturnType<typeof render> {
 async function openPopover(): Promise<HTMLElement> {
   const trigger = screen.getByLabelText('Remote terminal access')
   await fireEvent.click(trigger)
-  return screen.findByRole('switch')
+  return screen.findByRole('switch', { name: 'Toggle remote terminal access' })
 }
+
+const FULL_CONTROL_LABEL = 'Allow remote devices full control'
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -125,7 +110,20 @@ describe('RemoteAccessPopover', () => {
     expect(screen.queryByTestId('qr')).toBeNull()
   })
 
-  it('starts remote access with no bind-mode arg on toggle on and mirrors the MCP servers', async () => {
+  it('wraps a long unbroken error path inside the popover instead of overflowing', async () => {
+    const longPath =
+      "failed to read web auth token file 'C:\\Users\\User\\AppData\\Roaming\\com.termul-manager.app\\web-auth-token'"
+    startMock.mockResolvedValueOnce({ success: false, error: longPath })
+    renderPopover()
+
+    const toggle = await openPopover()
+    await fireEvent.click(toggle)
+
+    const message = await screen.findByText(longPath)
+    expect(message).toHaveClass('min-w-0', '[overflow-wrap:anywhere]')
+  })
+
+  it('starts remote access with no bind-mode arg on toggle on', async () => {
     startMock.mockResolvedValueOnce({ success: true, data: RUNNING })
     renderPopover()
 
@@ -138,13 +136,9 @@ describe('RemoteAccessPopover', () => {
     })
     expect(startMock).toHaveBeenCalledWith()
     expect(setStatus).toHaveBeenCalledWith(RUNNING)
-    // The host registry is durable: no project list is pushed. The desktop MCP
-    // servers are mirrored to the active project's file.
-    expect(syncMcpRegistryToProjectFile).toHaveBeenCalledTimes(1)
-    expect(syncMcpRegistryToProjectFile).toHaveBeenCalledWith('p-active')
   })
 
-  it('does not mirror the MCP servers when turning remote access off', async () => {
+  it('stops remote access on toggle off', async () => {
     vi.mocked(useRemoteStatus).mockReturnValue(RUNNING)
     stopMock.mockResolvedValueOnce({ success: true, data: { ...RUNNING, running: false } })
     renderPopover()
@@ -155,6 +149,43 @@ describe('RemoteAccessPopover', () => {
     await waitFor(() => {
       expect(stopMock).toHaveBeenCalledTimes(1)
     })
-    expect(syncMcpRegistryToProjectFile).not.toHaveBeenCalled()
+    expect(setStatus).toHaveBeenCalledWith({ ...RUNNING, running: false })
+  })
+
+  it('starts with full control when the user opts in first', async () => {
+    startMock.mockResolvedValueOnce({ success: true, data: { ...RUNNING, allowWrites: true } })
+    renderPopover()
+
+    const toggle = await openPopover()
+    const fullControl = screen.getByRole('switch', { name: FULL_CONTROL_LABEL })
+    expect(fullControl.getAttribute('aria-checked')).toBe('false')
+    await fireEvent.click(fullControl)
+    expect(fullControl.getAttribute('aria-checked')).toBe('true')
+    await fireEvent.click(toggle)
+
+    await waitFor(() => {
+      expect(startMock).toHaveBeenCalledWith({ allowWrites: true })
+    })
+  })
+
+  it('locks the access level while sharing runs and shows the running level', async () => {
+    vi.mocked(useRemoteStatus).mockReturnValue({ ...RUNNING, allowWrites: true })
+    renderPopover()
+    await openPopover()
+
+    const fullControl = screen.getByRole('switch', { name: FULL_CONTROL_LABEL })
+    expect(fullControl.getAttribute('aria-checked')).toBe('true')
+    expect(fullControl).toBeDisabled()
+    expect(screen.getByText('Turn remote access off to change this.')).toBeDefined()
+    expect(screen.getByText(/Anyone who has it can control this machine/)).toBeDefined()
+  })
+
+  it('warns that a view-only link lets the holder watch, not control', async () => {
+    vi.mocked(useRemoteStatus).mockReturnValue(RUNNING)
+    renderPopover()
+    await openPopover()
+
+    expect(screen.getByText(/Anyone who has it can watch your live sessions/)).toBeDefined()
+    expect(screen.queryByText(/can control this machine/)).toBeNull()
   })
 })

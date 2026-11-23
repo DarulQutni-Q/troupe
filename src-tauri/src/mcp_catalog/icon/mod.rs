@@ -16,6 +16,7 @@ use url::Url;
 #[cfg(test)]
 pub(crate) use cache::FetchIcon;
 pub(crate) use cache::IconCache;
+pub(crate) use fetch::{guarded_resolver, is_public, sniff, system_lookup, Refused};
 pub(crate) use pick::pick;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

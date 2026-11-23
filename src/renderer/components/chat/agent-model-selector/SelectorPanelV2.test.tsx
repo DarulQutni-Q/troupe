@@ -28,8 +28,7 @@ import {
   PICKER_ROW_NAME_PULL,
   PICKER_ROW_SELECTED,
   PICKER_ROW_SELECTED_BOX,
-  PICKER_STAR_MOTION,
-  PICKER_SURFACE
+  PICKER_STAR_MOTION
 } from './selector-tokens'
 
 // jsdom omits `document.elementFromPoint`; floating-ui calls it.
@@ -165,6 +164,7 @@ function source(over: Partial<SelectorSource> = {}): SelectorSource {
     entries: [entry(CURSOR), entry(CLAUDE)],
     currentConfigId: CURSOR.id,
     armedConfigId: null,
+    emptyChat: false,
     blocked: false,
     turnBusy: false,
     installingConfigId: null,
@@ -406,21 +406,27 @@ describe('SelectorPanelV2 sizes: flyout matches the list', () => {
     const thinking = within(flyout).getByText('Thinking')
     expect(thinking.className).toBe(PICKER_LABEL)
     expect(screen.getByText('Favorites').className).toBe(PICKER_LABEL)
-    // The check is the list's 14px; the switch is the small 28x16 one.
-    expect(
-      within(flyout).getByRole('menuitemradio', { name: 'High' }).querySelector('svg')
-    ).toHaveAttribute('width', '14')
+    // No tick on a choice: the picked one has the selected row fill.
+    for (const radio of within(flyout).getAllByRole('menuitemradio')) {
+      expect(radio.querySelector('svg')).toBeNull()
+      if (radio.getAttribute('aria-checked') === 'true') {
+        expect(classes(radio)).toContain(PICKER_ROW_SELECTED)
+      } else {
+        expect(classes(radio)).not.toContain(PICKER_ROW_SELECTED)
+      }
+    }
+    // The switch is the small 28x16 one.
     const mark = within(flyout)
       .getByRole('menuitemcheckbox', { name: 'Fast mode' })
       .querySelector('[data-switch-size]')
     expect(mark).toHaveAttribute('data-switch-size', 'sm')
     expect(classes(mark)).toEqual(expect.arrayContaining(['h-4', 'w-7']))
     // The toggle sits under a full-width separator, not a bordered row.
-    expect(within(flyout).getByRole('separator')).toHaveClass('border-t', 'border-border')
+    expect(within(flyout).getByRole('separator')).toHaveClass('border-t-[0.5px]', 'border-border')
     // Same radius as the panel; hugs its content with a 180px floor.
     // (The test id sits on the positioned shell; the surface is its animated child.)
     const surface = classes(flyout.firstElementChild)
-    expect(surface).toEqual(expect.arrayContaining([PICKER_SURFACE.radius, 'min-w-45']))
+    expect(surface).toEqual(expect.arrayContaining(['rounded-[10px]', 'min-w-45']))
     expect(surface).not.toContain('w-44')
   })
 })
@@ -435,7 +441,7 @@ describe('SelectorPanelV2 no horizontal overflow', () => {
     const names = list.querySelectorAll('[data-row-name]')
     expect(names.length).toBeGreaterThan(0)
     for (const name of names) {
-      expect(classes(name)).toEqual(expect.arrayContaining(['min-w-0', 'flex-1', 'truncate']))
+      expect(classes(name)).toEqual(expect.arrayContaining(['min-w-0', 'flex-1', 'fade-end']))
     }
   })
 
@@ -467,7 +473,7 @@ describe('SelectorPanelV2 no horizontal overflow', () => {
     expect(row.lastElementChild).toBe(slot)
     expect(classes(row)).toContain('pr-0')
     const name = row.querySelector('[data-row-name]')
-    expect(classes(name)).toEqual(expect.arrayContaining(['min-w-0', 'truncate']))
+    expect(classes(name)).toEqual(expect.arrayContaining(['min-w-0', 'fade-end']))
     const edit = screen.getByTestId('selector-edit')
     expect(edit).toHaveAccessibleName(`Edit ${long}, thinking High`)
     // The Thinking level on Edit stays whole beside the truncating name.
@@ -635,7 +641,7 @@ describe('SelectorPanelV2 selected-row check', () => {
     expect(screen.getByTestId('selector-edit')).toHaveTextContent('High')
     expect(checkOf(row)).toBeNull()
     const sonnet = screen.getByRole('button', { name: 'Claude Sonnet' })
-    expect(checkOf(sonnet)?.getAttribute('class')).toContain('opacity-0')
+    expect(checkOf(sonnet)?.childElementCount).toBe(0)
   })
 
   it('the Favorites copy of the selected row shows the level on its own Edit, no check', () => {
@@ -654,13 +660,14 @@ describe('SelectorPanelV2 selected-row check', () => {
     }
   })
 
-  it('a selected row without a level on Edit keeps its visible check', () => {
+  it('a selected row without a level on Edit keeps the empty slot, no tick', () => {
     render(<Panel {...props({ thoughtLevel: null, effortValue: null })} />)
     const row = activeRow()
     expect(
       screen.queryByTestId('selector-edit')?.querySelector('[data-edit-thinking]') ?? null
     ).toBeNull()
-    expect(checkOf(row)?.getAttribute('class')).toContain('opacity-100')
+    expect(checkOf(row)).not.toBeNull()
+    expect(checkOf(row)?.childElementCount).toBe(0)
   })
 
   it('the name sits 2px closer to the agent glyph than the row gap', () => {
@@ -777,15 +784,15 @@ describe('SelectorPanelV2 selected-row fill', () => {
     }
   })
 
-  it('hover and the open flyout never replace the fill; other rows hover at 3%', async () => {
+  it('hover and the open flyout never replace the fill; other rows hover at 6%', async () => {
     render(<Panel {...props({ favoritesStore: storeOf([[CURSOR.id, 'opus']]) })} />)
     const check = (): void => {
       for (const box of marked()) {
         const names = classes(box)
         expect(names).toContain(PICKER_ROW_SELECTED)
         expect(names).toContain(`hover:${PICKER_ROW_SELECTED}`)
-        expect(names).not.toContain('bg-row-hover')
-        expect(names).not.toContain('hover:bg-row-hover')
+        expect(names).not.toContain('bg-foreground/[0.06]')
+        expect(names).not.toContain('hover:bg-foreground/[0.06]')
       }
     }
     check()
@@ -794,10 +801,10 @@ describe('SelectorPanelV2 selected-row fill', () => {
     await screen.findByTestId('selector-edit-flyout')
     expect(edit).toHaveAttribute('aria-expanded', 'true')
     check()
-    // An unselected row keeps the plain 3% hover and no fill.
+    // An unselected row keeps the plain 6% hover (the menus' highlight) and no fill.
     const sonnet = rowsNamed('Claude Sonnet')[0] as HTMLElement
     const box = sonnet.closest('.group\\/fav') as HTMLElement
-    expect(classes(box)).toContain('hover:bg-row-hover')
+    expect(classes(box)).toContain('hover:bg-foreground/[0.06]')
     expect(classes(box)).not.toContain(PICKER_ROW_SELECTED)
   })
 
@@ -850,10 +857,10 @@ describe('SelectorPanelV2 selected-row fill', () => {
     ])
     // Exactly the aria-pressed rows sit in a filled box.
     for (const row of rows) expect(boxOf(row) !== null).toBe(pressed.includes(row))
-    // Hover (unselected): the 3% wash, never the fill.
+    // Hover (unselected): the 6% wash, never the fill.
     const plain = rowsNamed('Claude Haiku')[0] as HTMLElement
     const plainBox = plain.closest('.group\\/fav') ?? plain
-    expect(classes(plainBox as HTMLElement)).toContain('hover:bg-row-hover')
+    expect(classes(plainBox as HTMLElement)).toContain('hover:bg-foreground/[0.06]')
     expect(classes(plainBox as HTMLElement)).not.toContain(PICKER_ROW_SELECTED)
     // Keyboard focus: the focus ring only, no fill, on selected and plain rows alike.
     for (const row of [plain, ...pressed]) {
@@ -1632,7 +1639,7 @@ describe('SelectorPanelV2 Edit motion on a pick', () => {
     // The old rows are the plain unselected row, check slot and all.
     for (const row of screen.getAllByRole('button', { name: 'Claude Opus' })) {
       expect(row).toHaveAttribute('aria-pressed', 'false')
-      expect(row.querySelector('[data-row-check]')?.getAttribute('class')).toContain('opacity-0')
+      expect(row.querySelector('[data-row-check]')?.childElementCount).toBe(0)
     }
     expect(pressed()).toEqual(['Claude Sonnet', 'Claude Sonnet'])
 
@@ -1990,7 +1997,7 @@ function deferred(): {
 }
 
 describe('SelectorPanelV2 with no active row', () => {
-  it('with no models, Thinking and Fast mode move into the footer', () => {
+  it('with no models, the agent is pinned as the current model and Fast mode opens from its Edit', async () => {
     const onEffort = vi.fn()
     const onToggleFast = vi.fn()
     render(
@@ -2006,25 +2013,28 @@ describe('SelectorPanelV2 with no active row', () => {
       />
     )
     expect(screen.getByText('This agent gives no model choice.')).toBeInTheDocument()
-    expect(screen.queryByTestId('selector-edit')).toBeNull()
-    const footer = screen.getByTestId('selector-options')
-    expect(within(footer).getByTestId('selector-option-thinking')).toHaveAccessibleName(
-      'Thinking: High'
-    )
-    const fast = within(footer).getByRole('switch', { name: 'Fast mode' })
-    // Under prefers-reduced-motion the thumb jumps instead of sliding.
-    expect(fast.querySelector('.switch-thumb')).toHaveClass('motion-reduce:transition-none')
-    fireEvent.click(fast)
+    const pinned = screen.getByTestId('selector-pinned-model')
+    expect(within(pinned).getByText('Current model')).toBeInTheDocument()
+    // Thinking and Fast mode never move into the footer.
+    expect(screen.queryByTestId('selector-option-thinking')).toBeNull()
+    expect(screen.queryByRole('switch', { name: 'Fast mode' })).toBeNull()
+    // The pinned row carries no star: it is not a list entry.
+    expect(within(pinned).queryByTestId('selector-favorite')).toBeNull()
+    const flyout = await openEdit()
+    fireEvent.click(within(flyout).getByRole('menuitemcheckbox', { name: 'Fast mode' }))
     expect(onToggleFast).toHaveBeenCalledTimes(1)
   })
 
-  it('with a model value outside the list, Context is in the footer', () => {
+  it('with a model value outside the list, the model is pinned and Context opens from its Edit', async () => {
     render(<Panel {...props({ modelValue: 'retired', thoughtLevel: null })} />)
-    expect(screen.queryByTestId('selector-edit')).toBeNull()
-    expect(screen.getByTestId('selector-option-context')).toHaveAccessibleName('Context: 300K')
+    expect(screen.getByTestId('selector-pinned-model')).toBeInTheDocument()
+    expect(screen.queryByTestId('selector-option-context')).toBeNull()
+    const flyout = await openEdit()
+    const context = within(flyout).getByRole('menuitemradio', { name: '300K' })
+    expect(context).toHaveAttribute('aria-checked', 'true')
   })
 
-  it('shows Default, not "undefined", for a context with no current value', async () => {
+  it('shows no picked value, not "undefined", for a context with no current value', async () => {
     const unset = { ...WIDE, currentValue: undefined } as unknown as SessionConfigOption
     const { rerender } = render(<Panel {...props({ genericOptions: [unset] })} />)
     const flyout = await openEdit()
@@ -2033,7 +2043,7 @@ describe('SelectorPanelV2 with no active row', () => {
       expect(item).toHaveAttribute('aria-checked', 'false')
     }
     rerender(<Panel {...props({ modelValue: 'retired', genericOptions: [unset] })} />)
-    expect(screen.getByTestId('selector-option-context')).toHaveAccessibleName('Context: Default')
+    expect(screen.getByTestId('selector-pinned-model')).not.toHaveTextContent('undefined')
   })
 })
 
@@ -2362,6 +2372,313 @@ describe('SelectorPanelV2 agent order and overflow', () => {
       'aria-selected',
       'true'
     )
+  })
+})
+
+describe('SelectorPanelV2 set-up agents in the track, the rest grouped behind More', () => {
+  const tabNames = (): string[] =>
+    within(screen.getByRole('tablist', { name: 'Agents' }))
+      .getAllByRole('tab')
+      .map((t) => t.getAttribute('aria-label') ?? '')
+  /** Each agent row as seen after its glyph: `name`, or `name · badge`. */
+  const rowTexts = (el: HTMLElement): string[] =>
+    within(el)
+      .getAllByRole('button')
+      .map((row) =>
+        Array.from(row.children)
+          .slice(1)
+          .map((part) => part.textContent?.trim())
+          .join(' · ')
+      )
+  const GEMINI = config('gemini', 'Gemini')
+  const AMP = config('amp', 'amp')
+  const notSetUp = (c: StoredAgentConfig): SupportedAcpAgentEntry => ({ ...entry(c), config: null })
+  const withStatus = (
+    c: StoredAgentConfig,
+    over: Partial<SupportedAcpAgentEntry>
+  ): SupportedAcpAgentEntry => ({ ...entry(c), config: null, ...over })
+  const TO_INSTALL = [
+    withStatus(config('opencode', 'OpenCode'), { status: 'install-required' }),
+    withStatus(config('aider', 'Aider'), { status: 'manual-install' }),
+    withStatus(config('kimi', 'Kimi'), { status: 'needs-runtime', runtimeLauncher: 'uvx' })
+  ]
+  const chat = (over: Partial<SelectorSource> = {}): SelectorSource =>
+    source({
+      selectAgent: null,
+      agentConfigs: [CURSOR, CLAUDE],
+      entries: [...TO_INSTALL, notSetUp(GEMINI), entry(CURSOR), notSetUp(AMP), entry(CLAUDE)],
+      ...over
+    })
+
+  it('shows only set-up agents as tabs, A to Z, with More last at the far end', () => {
+    render(<Panel {...props({ source: chat() })} />)
+    expect(tabNames()).toEqual(['Claude Agent', 'Cursor', 'More agents'])
+    const more = screen.getByRole('tab', { name: 'More agents' })
+    expect(more.className.split(' ')).toContain('ml-auto')
+    expect(screen.getByRole('tab', { name: 'Cursor' }).className.split(' ')).toContain(
+      AGENT_TRACK_CLASS.stripTab
+    )
+  })
+
+  it('puts More at the bottom end of the left rail', () => {
+    render(<Panel {...props({ agentRail: 'left', source: chat() })} />)
+    expect(tabNames()).toEqual(['Claude Agent', 'Cursor', 'More agents'])
+    expect(screen.getByRole('tab', { name: 'More agents' }).className.split(' ')).toContain(
+      'mt-auto'
+    )
+  })
+
+  it('lists Needs setup without the per-row pill, then Install with its badges', () => {
+    render(<Panel {...props({ source: chat() })} />)
+    fireEvent.click(screen.getByRole('tab', { name: 'More agents' }))
+    const panel = screen.getByRole('tabpanel', { name: 'More agents' })
+    expect(rowTexts(panel)).toEqual([
+      'amp',
+      'Gemini',
+      'Aider · Manual install',
+      'Kimi · Needs uv',
+      'OpenCode · Install'
+    ])
+    expect(rowTexts(within(panel).getByRole('group', { name: 'Needs setup' }))).toEqual([
+      'amp',
+      'Gemini'
+    ])
+    expect(rowTexts(within(panel).getByRole('group', { name: 'Install' }))).toEqual([
+      'Aider · Manual install',
+      'Kimi · Needs uv',
+      'OpenCode · Install'
+    ])
+    expect(within(panel).queryByText('Not set up')).toBeNull()
+  })
+
+  it('lists set-up agents that did not fit first, with no heading', () => {
+    const SET_UP = ['Zed Agent', 'Codex', 'Droid', 'Goose', 'Qwen Code', 'Warp', 'Kiro'].map(
+      (name) => config(name.toLowerCase().replace(/\s/g, '-'), name)
+    )
+    render(
+      <Panel
+        {...props({
+          source: chat({
+            agentConfigs: [CURSOR, CLAUDE, ...SET_UP],
+            entries: [...chat().entries, ...SET_UP.map(entry)]
+          })
+        })}
+      />
+    )
+    expect(tabNames()).toEqual([
+      'Claude Agent',
+      'Codex',
+      'Cursor',
+      'Droid',
+      'Goose',
+      'Kiro',
+      'Qwen Code',
+      'More agents'
+    ])
+    fireEvent.click(screen.getByRole('tab', { name: 'More agents' }))
+    const panel = screen.getByRole('tabpanel', { name: 'More agents' })
+    expect(rowTexts(panel)).toEqual([
+      'Warp',
+      'Zed Agent',
+      'amp',
+      'Gemini',
+      'Aider · Manual install',
+      'Kimi · Needs uv',
+      'OpenCode · Install'
+    ])
+    // Warp and Zed Agent sit above both headed groups.
+    expect(
+      within(panel)
+        .getAllByRole('group')
+        .map((group) => rowTexts(group))
+    ).toEqual([
+      ['amp', 'Gemini'],
+      ['Aider · Manual install', 'Kimi · Needs uv', 'OpenCode · Install']
+    ])
+  })
+
+  it('shows More alone when no agent is set up', () => {
+    render(
+      <Panel
+        {...props({
+          source: chat({
+            currentConfigId: null,
+            agentConfigs: [],
+            entries: [notSetUp(CURSOR), ...TO_INSTALL]
+          })
+        })}
+      />
+    )
+    expect(tabNames()).toEqual(['More agents'])
+    fireEvent.click(screen.getByRole('tab', { name: 'More agents' }))
+    const panel = screen.getByRole('tabpanel', { name: 'More agents' })
+    expect(rowTexts(within(panel).getByRole('group', { name: 'Needs setup' }))).toEqual(['Cursor'])
+  })
+
+  it('gives the current agent a tab before its config is stored', () => {
+    render(
+      <Panel
+        {...props({
+          source: chat({ agentConfigs: [], entries: [notSetUp(CURSOR), ...TO_INSTALL] })
+        })}
+      />
+    )
+    expect(tabNames()).toEqual(['Cursor', 'More agents'])
+    expect(screen.getByRole('tab', { name: 'Cursor' })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('shows the same tabs in the launcher as in chat, and sets up a Needs setup agent first', () => {
+    const selectAgent = vi.fn()
+    render(<Panel {...props({ source: chat({ selectAgent }) })} />)
+    expect(tabNames()).toEqual(['Claude Agent', 'Cursor', 'More agents'])
+    fireEvent.click(screen.getByRole('tab', { name: 'More agents' }))
+    const panel = screen.getByRole('tabpanel', { name: 'More agents' })
+    const needsSetupRows = within(panel).getByRole('group', { name: 'Needs setup' })
+    expect(rowTexts(needsSetupRows)).toEqual(['amp', 'Gemini'])
+
+    fireEvent.click(within(needsSetupRows).getByRole('button', { name: 'amp' }))
+
+    expect(screen.getByTestId('panel-agent-setup')).toBeInTheDocument()
+    expect(selectAgent).not.toHaveBeenCalled()
+  })
+
+  it('gives the launcher agent a tab before its config is stored', () => {
+    render(
+      <Panel {...props({ source: chat({ selectAgent: () => {}, currentConfigId: AMP.id }) })} />
+    )
+    expect(tabNames()).toEqual(['amp', 'Claude Agent', 'Cursor', 'More agents'])
+  })
+
+  /** Gemini as the host reports it: ready, with a derived config the chat has not stored. */
+  const withDerivedGemini = (over: Partial<SelectorSource> = {}): SelectorSource =>
+    chat({
+      entries: [...TO_INSTALL, entry(GEMINI), entry(CURSOR), notSetUp(AMP), entry(CLAUDE)],
+      ...over
+    })
+  const needsSetup = (): HTMLElement =>
+    within(screen.getByRole('tabpanel', { name: 'More agents' })).getByRole('group', {
+      name: 'Needs setup'
+    })
+  const setupView = (): HTMLElement => screen.getByTestId('panel-agent-setup')
+
+  it('opens a Needs setup agent in the panel to set it up (#1949)', () => {
+    render(<Panel {...props({ source: withDerivedGemini() })} />)
+    fireEvent.click(screen.getByRole('tab', { name: 'More agents' }))
+    const gemini = within(needsSetup()).getByRole('button', { name: 'Gemini' })
+    expect(gemini).toBeEnabled()
+
+    fireEvent.click(gemini)
+
+    expect(setupView()).toHaveAttribute('data-phase', 'confirm')
+    expect(within(setupView()).getByRole('heading', { name: 'Set up Gemini' })).toBeInTheDocument()
+    expect(within(setupView()).getByText('Runs with gemini.')).toBeInTheDocument()
+    expect(within(setupView()).getByRole('button', { name: 'Set up Gemini' })).toBeEnabled()
+    // Still under More: the setup view is one level into its list.
+    expect(screen.getByRole('tab', { name: 'More agents' })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    )
+  })
+
+  it('goes back to the More list from Back, and focus returns to the agent row', async () => {
+    render(<Panel {...props({ source: withDerivedGemini() })} />)
+    fireEvent.click(screen.getByRole('tab', { name: 'More agents' }))
+    // A browser focuses a pressed button; jsdom needs the focus itself.
+    const row = within(needsSetup()).getByRole('button', { name: 'Gemini' })
+    row.focus()
+    fireEvent.click(row)
+    const back = within(setupView()).getByRole('button', { name: 'Back to agents' })
+    back.focus()
+
+    fireEvent.click(back)
+
+    expect(screen.queryByTestId('panel-agent-setup')).toBeNull()
+    await waitFor(() =>
+      expect(within(needsSetup()).getByRole('button', { name: 'Gemini' })).toHaveFocus()
+    )
+  })
+
+  it('reaches the setup view from the keyboard, and Escape steps back before closing', async () => {
+    const escapeRef: SelectorPanelV2Props['escapeRef'] = { current: null }
+    render(<Panel {...props({ source: withDerivedGemini(), escapeRef })} />)
+    fireEvent.click(screen.getByRole('tab', { name: 'More agents' }))
+    const row = within(needsSetup()).getByRole('button', { name: 'Gemini' })
+    row.focus()
+    expect(row).toHaveFocus()
+    // A native button turns Enter into a click; jsdom needs the click itself.
+    fireEvent.keyDown(row, { key: 'Enter' })
+    fireEvent.click(row)
+
+    // The row left with the list: focus lands on the view's action, not on body.
+    await waitFor(() =>
+      expect(within(setupView()).getByRole('button', { name: 'Set up Gemini' })).toHaveFocus()
+    )
+    const back = within(setupView()).getByRole('button', { name: 'Back to agents' })
+    const search = screen.getByRole('textbox', { name: 'Search models and agents' })
+    fireEvent.keyDown(search, { key: 'ArrowDown' })
+    expect(back).toHaveFocus()
+    fireEvent.keyDown(back, { key: 'ArrowUp' })
+    expect(search).toHaveFocus()
+
+    let handled = false
+    act(() => {
+      handled = escapeRef.current?.() ?? false
+    })
+    expect(handled).toBe(true)
+    expect(screen.queryByTestId('panel-agent-setup')).toBeNull()
+    expect(screen.getByRole('tabpanel', { name: 'More agents' })).toBeInTheDocument()
+    expect(escapeRef.current?.()).toBe(false)
+  })
+
+  it('leaves the setup view for a tab, or for search', () => {
+    render(<Panel {...props({ source: withDerivedGemini() })} />)
+    fireEvent.click(screen.getByRole('tab', { name: 'More agents' }))
+    fireEvent.click(within(needsSetup()).getByRole('button', { name: 'Gemini' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Claude Agent' }))
+    expect(screen.queryByTestId('panel-agent-setup')).toBeNull()
+    expect(screen.getByRole('tabpanel', { name: 'Claude Agent' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'More agents' }))
+    fireEvent.click(within(needsSetup()).getByRole('button', { name: 'Gemini' }))
+    const search = screen.getByRole('textbox', { name: 'Search models and agents' })
+    fireEvent.change(search, { target: { value: 'gem' } })
+    expect(screen.queryByTestId('panel-agent-setup')).toBeNull()
+    fireEvent.change(search, { target: { value: '' } })
+    expect(screen.queryByTestId('panel-agent-setup')).toBeNull()
+  })
+
+  it('opens the setup view from a search result for a Needs setup agent', () => {
+    render(<Panel {...props({ source: withDerivedGemini() })} />)
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search models and agents' }), {
+      target: { value: 'gem' }
+    })
+    const result = screen.getByTestId(`selector-agent-${GEMINI.id}`)
+    expect(result).toBeEnabled()
+
+    fireEvent.click(result)
+
+    expect(screen.getByRole('textbox', { name: 'Search models and agents' })).toHaveValue('')
+    expect(within(setupView()).getByRole('heading', { name: 'Set up Gemini' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'More agents' })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    )
+  })
+
+  it('Enter in search opens the setup of a Needs setup agent that is the first result', () => {
+    render(<Panel {...props({ source: withDerivedGemini() })} />)
+    const search = screen.getByRole('textbox', { name: 'Search models and agents' })
+    search.focus()
+    fireEvent.change(search, { target: { value: 'gem' } })
+    expect(screen.getByTestId(`selector-agent-${GEMINI.id}`)).toHaveAttribute(
+      'data-search-highlight'
+    )
+
+    fireEvent.keyDown(search, { key: 'Enter' })
+
+    expect(within(setupView()).getByRole('heading', { name: 'Set up Gemini' })).toBeInTheDocument()
+    // Focus leaves search for the setup action: Enter sets up, typing does not leave.
+    expect(within(setupView()).getByRole('button', { name: 'Set up Gemini' })).toHaveFocus()
   })
 })
 

@@ -2163,13 +2163,22 @@ describe('Host-owned chat activity parity (chat list status on every surface)', 
     )
     expect(signals).toMatch(/useChatActivityStore\(/)
     for (const consumer of [
-      ['components', 'shell', 'ChatCard.tsx'],
-      ['components', 'mobile', 'MobileRecentsList.tsx'],
+      ['components', 'shell', 'use-project-chats.ts'],
       ['components', 'workspace', 'tabs', 'agent-chat-tab.tsx']
     ]) {
       expect(readFileSync(join(LIB_DIR, '..', ...consumer), 'utf-8')).toMatch(
         /useAgentChatStatusSignals\(/
       )
+    }
+    // The desktop Rail chat row and the phone drawer rows read it through
+    // `useChatLiveState` and draw the same `ChatRowTrail`, so they agree.
+    for (const consumer of [
+      ['components', 'shell', 'rail', 'RailProjectChats.tsx'],
+      ['components', 'mobile', 'MobileRecentsList.tsx']
+    ]) {
+      const source = readFileSync(join(LIB_DIR, '..', ...consumer), 'utf-8')
+      expect(source).toMatch(/useChatLiveState\(/)
+      expect(source).toMatch(/<ChatRowTrail\b/)
     }
   })
 })
@@ -2308,7 +2317,9 @@ describe('Claude Accounts parity (ADR-0004)', () => {
       'list_claude_usage',
       'set_default_claude_account',
       'set_project_claude_account',
-      'set_claude_auto_switch'
+      'set_chat_claude_account',
+      'set_claude_auto_switch',
+      'set_claude_resume'
     ]) {
       expect(wsTransport).toContain(`'${request}'`)
       expect(dispatch).toContain(`"${request}" => handle_${request}`)
@@ -2373,10 +2384,12 @@ describe('Claude Accounts parity (ADR-0004)', () => {
     )
   })
 
-  it('the spawn sends the projectId that selects the account on every carrier', () => {
+  it('the spawn sends the projectId and chat that select the account on every carrier', () => {
     // Desktop and the browser share the /ws spawn_agent handler. The host
     // command file no longer has a per-domain spawn command.
-    expect(wsTransport).toMatch(/'spawn_agent',\s*\{ config, projectId: projectId \?\? null \}/)
+    expect(wsTransport).toMatch(
+      /'spawn_agent',\s*\{ config, projectId: projectId \?\? null, sessionId: sessionId \?\? null \}/
+    )
     expect(read('web', 'ws', 'agents.rs')).toMatch(/project_id: Option<String>/)
     expect(read('acp', 'manager', 'mod.rs')).toMatch(/project_id: Option<String>/)
   })
@@ -2575,6 +2588,7 @@ describe('Browser policy parity', () => {
       set_ephemeral: 'SetEphemeral',
       set_global_profile: 'SetGlobalProfile',
       set_ask_before_password_submit: 'SetAskBeforePasswordSubmit',
+      set_ask_before_opening_sites: 'SetAskBeforeOpeningSites',
       clear_global_profile: 'ClearGlobalProfile'
     }
     for (const [name, variant] of Object.entries(variants)) {
@@ -2878,6 +2892,31 @@ describe('MCP install plan parity (spine AD-5, AD-7, AD-12)', () => {
   })
 })
 
+describe('Chat MCP install approval parity', () => {
+  const SRC_TAURI = join(LIB_DIR, '..', '..', '..', 'src-tauri', 'src')
+  const read = (...parts: string[]) => readFileSync(join(SRC_TAURI, ...parts), 'utf-8')
+
+  it('desktop answers through the main-webview command and the web through /ws', () => {
+    const api = readFileSync(join(LIB_DIR, 'acp-api.ts'), 'utf-8')
+    expect(api).toMatch(/invokeIpc<null>\('acp_answer_mcp_install'/)
+    expect(api).toMatch(/isTauriContext\(\)/)
+    expect(readFileSync(join(LIB_DIR, 'acp-transport', 'ws-transport.ts'), 'utf-8')).toMatch(
+      /this\.request\('answer_mcp_install', request\)/
+    )
+    expect(readFileSync(join(LIB_DIR, 'test-utils', 'invoke-acp-transport.ts'), 'utf-8')).toMatch(
+      /invoke\('acp_answer_mcp_install', request\)/
+    )
+    expect(read('lib.rs')).toContain('acp::commands::acp_answer_mcp_install,')
+    expect(read('web', 'ws', 'dispatch.rs')).toMatch(
+      /"answer_mcp_install" => handle_answer_mcp_install\(id, &req\.payload, env\)/
+    )
+    expect(read('acp', 'commands.rs')).toMatch(/webview\.label\(\) != "main"/)
+    expect(read('web', 'ws', 'subscribe.rs')).toMatch(
+      /remote_approver\(env, Some\(session_id\)\)\.qualifies\(\)/
+    )
+  })
+})
+
 describe('MCP catalog sync parity (spine AD-3, AD-12)', () => {
   const SRC_TAURI = join(LIB_DIR, '..', '..', '..', 'src-tauri', 'src')
   const SHARED_TYPES = join(LIB_DIR, '..', '..', 'shared', 'types')
@@ -2969,6 +3008,20 @@ describe('Automation parity (facade)', () => {
       route: '/ops`'
     },
     {
+      fn: 'previewAutomationOps',
+      method: 'previewOps',
+      command: 'automation_preview_ops',
+      http: '"/api/automations/{id}/ops/preview"',
+      route: '/ops/preview`'
+    },
+    {
+      fn: 'setAutomationLayout',
+      method: 'setLayout',
+      command: 'automation_set_layout',
+      http: '"/api/automations/{id}/layout"',
+      route: '/layout`'
+    },
+    {
       fn: 'deleteAutomation',
       method: 'remove',
       command: 'automation_delete',
@@ -3002,6 +3055,13 @@ describe('Automation parity (facade)', () => {
       command: 'automation_cancel_run',
       http: '"/api/automation-runs/{run_id}/cancel"',
       route: 'RUNS}/${seg(runId)}/cancel`'
+    },
+    {
+      fn: 'decideAutomationApproval',
+      method: 'decideApproval',
+      command: 'automation_decide_approval',
+      http: '"/api/automation-runs/{run_id}/approval"',
+      route: 'RUNS}/${seg(runId)}/approval`'
     },
     {
       fn: 'listAutomationRuns',
@@ -3484,5 +3544,159 @@ describe('Subagent stop parity', () => {
       '("stop_subagent", CommandClass::idempotent()),'
     )
     expect(read('acp', 'manager', 'command_loop.rs')).toMatch(/StopPlan::CancelSession\(child\)/)
+  })
+})
+
+// Import a chat another client created (Claude Code CLI chats the agent lists):
+// desktop (Channel carrier), shared-live, `termul-server` and the browser all
+// send the `/ws` request `import_agent_session`, which reaches the one host
+// service `acp::agent_session_import`.
+describe('Agent session import parity', () => {
+  const SRC_TAURI = join(LIB_DIR, '..', '..', '..', 'src-tauri', 'src')
+  const read = (...parts: string[]): string => readFileSync(join(SRC_TAURI, ...parts), 'utf-8')
+
+  it('the facade and the transport send one /ws request on every carrier', () => {
+    expect(readFileSync(join(LIB_DIR, 'acp-api.ts'), 'utf-8')).toMatch(
+      /getAcpTransport\(\)\.importAgentSession\(input, call\)/
+    )
+    expect(readFileSync(join(LIB_DIR, 'acp-transport', 'ws-transport.ts'), 'utf-8')).toMatch(
+      /return this\.request<PersistedSessionSummary>\('import_agent_session', input, undefined, options\)/
+    )
+    expect(
+      readFileSync(join(LIB_DIR, 'acp-transport', 'desktop-transport.ts'), 'utf-8')
+    ).not.toMatch(/importAgentSession/)
+  })
+
+  it('the host routes the request to the shared service and ledgers it as a command', () => {
+    expect(read('web', 'ws', 'dispatch.rs')).toMatch(
+      /"import_agent_session" => handle_import_agent_session\(id, &req\.payload, acp, relay\)\.await/
+    )
+    expect(read('web', 'ws', 'import_session.rs')).toMatch(/import_agent_session\(/)
+    expect(read('web', 'command_ledger', 'class.rs')).toMatch(
+      /\(\s*"import_agent_session",\s*CommandClass::command\(Replay::Payload\)/
+    )
+  })
+
+  it('the import is offered in the desktop Rail + menu and the phone drawer', () => {
+    const components = join(LIB_DIR, '..', 'components')
+    expect(readFileSync(join(components, 'sidebar', 'use-rail-import-chats.tsx'), 'utf-8')).toMatch(
+      /<ImportChatsDialog[^>]*projectId=/
+    )
+    expect(readFileSync(join(components, 'sidebar', 'add-project-menu.tsx'), 'utf-8')).toMatch(
+      /onSelect=\{onImportChats\}/
+    )
+    expect(readFileSync(join(components, 'mobile', 'MobileRecentsList.tsx'), 'utf-8')).toMatch(
+      /<ImportChatsButton[^>]*projectId=/
+    )
+  })
+})
+
+// Sidebar V2 shell (P1 to P5): the browser client at desktop width renders the
+// same Rail, tool strip, palette and Projects menu as the desktop app. Only
+// the native parts are gated, explicitly with `isTauriContext()`; the phone
+// shell mounts none of them (its own drawer, see WorkspaceLayout.mobile).
+describe('Sidebar V2 shell parity (tool strip, palette Chats, Projects menu)', () => {
+  const components = join(LIB_DIR, '..', 'components')
+  const read = (...parts: string[]): string => readFileSync(join(components, ...parts), 'utf-8')
+
+  it('the tool strip gates Remote access and the Browser button to the desktop app', () => {
+    const strip = read('shell', 'tool-strip', 'ShellToolStrip.tsx')
+    expect(strip).toMatch(/const desktop = isTauriContext\(\)/)
+    // Browser tabs are native webviews: no button on the web.
+    expect(strip).toMatch(/\{desktop && \(\s*<ToolStrip\.Button\s+label="New browser tab"/)
+    // The shared-live host is desktop only; the web shows its connection lamp.
+    expect(strip).toMatch(/\{desktop \? \(\s*<RemoteAccessPopover \/>\s*\) : \(/)
+    expect(strip).toMatch(/<ConnectionStatusIndicator \/>/)
+    // The other ways to open a browser tab are gated the same way.
+    expect(read('CommandPalette.tsx')).toMatch(/onNewBrowserTab && isTauriContext\(\)/)
+    expect(
+      readFileSync(
+        join(LIB_DIR, '..', 'layouts', 'workspace-layout', 'use-workspace-keyboard.ts'),
+        'utf-8'
+      )
+    ).toMatch(/if \(!isWorkspaceRoute \|\| !isTauriContext\(\)\) return/)
+  })
+
+  it('the palette Chats group reads the shared session index on every desktop-width surface', () => {
+    const chats = read('CommandPaletteChats.tsx')
+    // Every chat of the project (no worktree pick), from the session index.
+    expect(chats).toMatch(/useProjectChatCards\(project, null\)/)
+    expect(chats).not.toMatch(/isTauriContext/)
+    expect(read('CommandPalette.tsx')).toMatch(/<CommandPaletteChats project=\{chatsProject\}/)
+    // The phone palette has no Chats group: the drawer search covers it.
+    expect(
+      readFileSync(
+        join(LIB_DIR, '..', 'layouts', 'workspace-layout', 'WorkspaceModals.tsx'),
+        'utf-8'
+      )
+    ).toMatch(/chatsProject=\{\s*isMobileWebShell \? undefined :/)
+  })
+
+  it('the Projects + menu offers Import chats on every surface, write-gated, not Tauri-gated', () => {
+    const menu = read('sidebar', 'add-project-menu.tsx')
+    expect(menu).toMatch(/data-testid="header-import-chats"/)
+    expect(menu).toMatch(/useServerAdmitsRemoteWrites\(\)/)
+    expect(menu).not.toMatch(/isTauriContext/)
+    expect(read('sidebar', 'use-rail-import-chats.tsx')).not.toMatch(/isTauriContext/)
+  })
+})
+
+// Orchestrated sub-agents (acp-subagent-orchestrator): one host engine, one
+// settings view, every carrier. The renderer facade and the `/ws` request
+// names below are shared by the desktop Channel carrier and the browser, so
+// both reach the same engine the host installs in both binaries; the stop
+// interception and the UpsertSubagent card arm are the manager seams it owns.
+describe('Orchestrated sub-agents parity', () => {
+  const SRC_TAURI = join(LIB_DIR, '..', '..', '..', 'src-tauri', 'src')
+  const read = (...parts: string[]): string => readFileSync(join(SRC_TAURI, ...parts), 'utf-8')
+
+  it('the settings facade and the transport send the /ws requests on every carrier', () => {
+    const acpApi = readFileSync(join(LIB_DIR, 'acp-api.ts'), 'utf-8')
+    expect(acpApi).toMatch(/getAcpTransport\(\)\.getSubagentSettings\(\)/)
+    expect(acpApi).toMatch(/getAcpTransport\(\)\.setSubagentSettings\(input\)/)
+    const ws = readFileSync(join(LIB_DIR, 'acp-transport', 'ws-transport.ts'), 'utf-8')
+    expect(ws).toMatch(/this\.request<SubagentSettingsView>\('subagent_settings_get', \{\}\)/)
+    expect(ws).toMatch(/this\.request<SubagentSettingsView>\('subagent_settings_set', input\)/)
+    // The desktop Channel carrier inherits the /ws requests: no override.
+    expect(
+      readFileSync(join(LIB_DIR, 'acp-transport', 'desktop-transport.ts'), 'utf-8')
+    ).not.toMatch(/SubagentSettings/)
+  })
+
+  it('the host routes the settings requests to the engine and classes them', () => {
+    const dispatch = read('web', 'ws', 'dispatch.rs')
+    expect(dispatch).toMatch(/"subagent_settings_get" => handle_subagent_settings_get\(id\)/)
+    expect(dispatch).toMatch(
+      /"subagent_settings_set" => handle_subagent_settings_set\(id, &req\.payload\)/
+    )
+    expect(read('web', 'ws', 'subagents.rs')).toMatch(/orchestrator::installed\(\)/)
+    const classes = read('web', 'command_ledger', 'class.rs')
+    expect(classes).toContain('("subagent_settings_get", CommandClass::read()),')
+    expect(classes).toContain('("subagent_settings_set", CommandClass::idempotent()),')
+  })
+
+  it('both binaries install the one engine, and the host-mcp parent arm reaches it', () => {
+    expect(read('acp', 'orchestrator', 'mod.rs')).toMatch(/pub fn installed\(\)/)
+    expect(read('lib.rs')).toMatch(/orchestrator::install\(/)
+    expect(read('server_main.rs')).toMatch(/orchestrator::install\(/)
+    expect(read('acp', 'host_mcp', 'parent', 'subagents.rs')).toMatch(/orchestrator::installed\(\)/)
+  })
+
+  it('the manager owns the two seams: the UpsertSubagent card arm and the stop interception', () => {
+    expect(read('acp', 'manager', 'command_loop.rs')).toMatch(/AcpCommand::UpsertSubagent/)
+    expect(read('acp', 'manager', 'mod.rs')).toMatch(/stop_from_ui\(/)
+  })
+})
+
+describe('First-run onboarding parity (desktop, web, shared-live browser, phone)', () => {
+  it('WorkspaceLayout mounts the gate after the token screen and before both shells', () => {
+    const layout = readFileSync(join(LIB_DIR, '..', 'layouts', 'WorkspaceLayout.tsx'), 'utf-8')
+    expect(layout).toMatch(/const onboarding = useOnboardingGate\(\)/)
+    const tokenScreen = layout.lastIndexOf("webAuthGate.status === 'unauthorized'")
+    const onboarding = layout.indexOf('<Onboarding onClose={onboarding.close} />')
+    expect(tokenScreen).toBeGreaterThan(-1)
+    expect(onboarding).toBeGreaterThan(tokenScreen)
+    expect(onboarding).toBeLessThan(layout.indexOf('<MobileWorkspaceShell'))
+    expect(onboarding).toBeLessThan(layout.indexOf('<ShellFrame'))
   })
 })

@@ -22,8 +22,9 @@ interface SettingsRowProps extends Omit<React.HTMLAttributes<HTMLDivElement>, 'c
   /**
    * `responsive` (default) moves the control under the label when the card is
    * narrow (Select, stepper, swatches). `inline` keeps it on the right (Switch).
+   * `stacked` always puts it under the label at full width (Textarea).
    */
-  layout?: 'responsive' | 'inline'
+  layout?: 'responsive' | 'inline' | 'stacked'
   /** Indent under the row above: a setting that depends on it. */
   indent?: boolean
   /** Dims the label; the description should say why it is off. */
@@ -60,7 +61,9 @@ export const SettingsRow = forwardRef<HTMLDivElement, SettingsRowProps>(function
       className={cn(
         'flex scroll-mt-4 gap-x-6 gap-y-2.5 px-4 py-3 transition-[background-color,box-shadow] duration-150 ease-out',
         'data-[settings-target]:bg-foreground/[0.04] data-[settings-target]:shadow-[inset_2px_0_0_oklch(var(--foreground))]',
-        layout === 'inline' ? 'items-center' : 'flex-col @[35rem]:flex-row @[35rem]:items-center',
+        layout === 'inline' && 'items-center',
+        layout === 'responsive' && 'flex-col @[35rem]:flex-row @[35rem]:items-center',
+        layout === 'stacked' && 'flex-col',
         indent && 'pl-10',
         className
       )}
@@ -93,7 +96,13 @@ export const SettingsRow = forwardRef<HTMLDivElement, SettingsRowProps>(function
           </p>
         )}
       </div>
-      {children !== undefined && <div className="flex shrink-0 items-center gap-2">{children}</div>}
+      {children !== undefined && (
+        <div
+          className={cn('flex items-center gap-2', layout === 'stacked' ? 'w-full' : 'shrink-0')}
+        >
+          {children}
+        </div>
+      )}
     </div>
   )
 })

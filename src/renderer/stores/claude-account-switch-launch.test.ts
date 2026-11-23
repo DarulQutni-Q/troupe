@@ -25,8 +25,7 @@ vi.mock('@/lib/acp-history-persistence', async (orig) => ({
 vi.mock('@/lib/acp-mcp-persistence', async (orig) => ({
   ...(await orig<typeof import('@/lib/acp-mcp-persistence')>()),
   loadMcpServers: vi.fn(async () => []),
-  saveMcpServers: vi.fn(async () => {}),
-  syncMcpRegistryToProjectBestEffort: vi.fn(async () => {})
+  saveMcpServers: vi.fn(async () => {})
 }))
 vi.mock('@/stores/workspace-store', () => ({
   getAllLeafPanes: () => [],
@@ -49,7 +48,16 @@ const { host } = vi.hoisted(() => ({
   }
 }))
 vi.mock('@/lib/claude-accounts-api', () => ({
-  claudeAccountsApi: { setProjectAccount: host.setProjectAccount }
+  claudeAccountsApi: {
+    setProjectAccount: host.setProjectAccount,
+    list: async () => ({
+      accounts: [],
+      defaultAccountId: 'personal',
+      projectAccounts: { office: host.projectAccount },
+      chatAccounts: {},
+      autoSwitch: true
+    })
+  }
 }))
 
 import { invoke } from '@tauri-apps/api/core'
@@ -59,6 +67,7 @@ import {
   _setAcpTransportForTests,
   type AcpTransport
 } from '@/lib/acp-transport'
+import { CLAUDE_AGENT_CONFIG_ID } from '@/lib/agents/registry-config-id'
 import { isTauriContext } from '@/lib/tauri-runtime'
 import {
   _resetInFlightHistoryOpensForTesting,
@@ -67,7 +76,7 @@ import {
 } from '@/stores/acp-store'
 import { useAgentChatLifetimeStore } from '@/stores/agent-chat-lifetime-store'
 import { useProjectStore } from '@/stores/project-store'
-import { CLAUDE_AGENT_CONFIG_ID, switchProjectClaudeAccount } from './claude-account-switch'
+import { switchProjectClaudeAccount } from './claude-account-switch'
 
 const KEY = prepareChatKey(CLAUDE_AGENT_CONFIG_ID, '/work', undefined)
 

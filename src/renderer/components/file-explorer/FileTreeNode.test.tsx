@@ -191,7 +191,36 @@ describe('FileTreeNode redesign states', () => {
     expect(screen.getByTitle('Untracked')).toHaveTextContent('U')
 
     rerender(<FileTreeNode {...baseProps} entry={folder} selection="none" hasGitChanges />)
-    expect(screen.getByRole('img', { name: 'Contains changes' })).toHaveClass('bg-diff-modified')
+    expect(screen.getByRole('img', { name: 'Contains changes' })).toHaveClass(
+      'bg-diff-modified',
+      'size-1.5'
+    )
+  })
+
+  it('draws Material icons: a folder that opens when expanded, and a typed file', () => {
+    const iconSrc = () =>
+      (screen.getByTestId('tree-entry-icon').querySelector('img') as HTMLImageElement).src
+
+    const { rerender } = render(<FileTreeNode {...baseProps} entry={folder} selection="none" />)
+    const closedFolder = iconSrc()
+    expect(closedFolder).toMatch(/^data:image\/svg\+xml,/)
+
+    rerender(<FileTreeNode {...baseProps} entry={folder} selection="none" isExpanded />)
+    expect(iconSrc()).not.toBe(closedFolder)
+
+    rerender(<FileTreeNode {...baseProps} entry={file} selection="none" />)
+    const fileIcon = iconSrc()
+    expect(fileIcon).toMatch(/^data:image\/svg\+xml,/)
+    expect(fileIcon).not.toBe(closedFolder)
+    expect(screen.getByText('app.ts')).toHaveClass('text-secondary-foreground')
+  })
+
+  it('puts the git letter in a 14px mono lane at the row end', () => {
+    render(<FileTreeNode {...baseProps} entry={file} selection="none" gitStatus="deleted" />)
+    const letter = screen.getByTitle('Deleted')
+    expect(letter).toHaveTextContent('D')
+    expect(letter).toHaveClass('w-3.5', 'font-mono', 'text-destructive')
+    expect(letter.parentElement).toHaveClass('h-7', 'pr-1.5')
   })
 
   it('dims git-ignored names without fading the whole row', () => {

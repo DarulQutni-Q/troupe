@@ -61,6 +61,10 @@ fn host_entry_to_desktop_maps_renderer_shape() {
         model_id: None,
         model_name: None,
         log_epoch: None,
+        continued_from: None,
+        kind: crate::acp::session_persistence::SessionKind::Project,
+        quick_chat_id: None,
+        started_by: None,
     };
     let desktop = host_entry_to_desktop(entry);
     assert_eq!(desktop.id, "s-1");
@@ -99,6 +103,10 @@ fn host_entry_to_desktop_maps_renderer_shape() {
         model_id: None,
         model_name: None,
         log_epoch: None,
+        continued_from: None,
+        kind: crate::acp::session_persistence::SessionKind::Project,
+        quick_chat_id: None,
+        started_by: None,
     };
     let desktop = host_entry_to_desktop(bare);
     assert_eq!(desktop.agent_id, "");
@@ -141,6 +149,10 @@ fn host_entry_to_desktop_model_keys_match_ws_entry_serialization() {
         model_id: Some("claude-opus".to_string()),
         model_name: Some("Claude Opus".to_string()),
         log_epoch: None,
+        continued_from: None,
+        kind: crate::acp::session_persistence::SessionKind::Project,
+        quick_chat_id: None,
+        started_by: None,
     };
     let ws = serde_json::to_value(&entry).unwrap();
     let desktop = serde_json::to_value(host_entry_to_desktop(entry.clone())).unwrap();
@@ -226,7 +238,7 @@ fn resolve_rg_path_uses_dev_triple_name_when_bundle_name_is_absent() {
 }
 
 /// gh-1575: Linux packages install the bundled rg at
-/// `/usr/lib/termul-manager/rg` (not `/usr/bin/rg`, which the distro
+/// `/usr/lib/troupe/rg` (not `/usr/bin/rg`, which the distro
 /// `ripgrep` package owns). From `/usr/bin` (or `$APPDIR/usr/bin`) the app must
 /// pick that copy, even when a distro `rg` sits beside the executable.
 #[test]
@@ -263,6 +275,28 @@ fn linux_bundle_config_installs_rg_at_the_runtime_lookup_path() {
         assert!(
             files.contains_key(&expected_target),
             "bundle.linux.{package}.files must install {expected_target}"
+        );
+    }
+}
+
+/// The 0.5.0 rename turned the `termul-manager` deb/rpm into `troupe`. Without
+/// these fields dpkg and rpm install Troupe next to the old `termul-manager`
+/// package instead of replacing it.
+#[test]
+fn linux_packages_replace_the_termul_manager_package() {
+    let raw = include_str!("../../tauri.linux.conf.json");
+    let config: serde_json::Value = serde_json::from_str(raw).expect("valid linux config");
+    let linux = &config["bundle"]["linux"];
+    let old = serde_json::json!(["termul-manager"]);
+    assert_eq!(linux["deb"]["conflicts"], old);
+    assert_eq!(linux["deb"]["replaces"], old);
+    assert_eq!(linux["rpm"]["conflicts"], old);
+    assert_eq!(linux["rpm"]["obsoletes"], old);
+    for package in ["deb", "rpm"] {
+        assert_eq!(
+            linux[package]["files"]["/usr/bin/termul-manager"],
+            "linux/termul-manager",
+            "{package} must keep /usr/bin/termul-manager for the 0.4.x updater's relaunch"
         );
     }
 }

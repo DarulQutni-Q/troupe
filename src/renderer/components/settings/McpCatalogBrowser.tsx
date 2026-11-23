@@ -92,8 +92,10 @@ function PlaceholderLine({ line, bar }: { line: string; bar: string }): React.JS
 }
 
 /**
- * Line-for-line stand-in for the source card while the first status loads, so
- * the search box under it does not jump down when the card arrives.
+ * Line-for-line stand-in for the source card while the first status loads. The
+ * sync row is the real one (disabled), not a skeleton, so its description wraps
+ * to the same height at every width. The loaded card can still be taller (a
+ * sample note, a long sync error), which is why the card sits below the list.
  */
 function CatalogSourcePlaceholder(): React.JSX.Element {
   return (
@@ -103,12 +105,18 @@ function CatalogSourcePlaceholder(): React.JSX.Element {
         <PlaceholderLine line="h-4" bar="h-3 w-44" />
         <PlaceholderLine line="h-4" bar="h-3 w-24" />
       </div>
-      <div aria-hidden className="flex items-center gap-x-6 px-4 py-3">
-        <div className="min-w-0 flex-1">
-          <PlaceholderLine line="h-5" bar="h-3.5 w-48" />
-          <PlaceholderLine line="mt-0.5 h-5" bar="h-3 w-80" />
-        </div>
-        <Skeleton className="h-5 w-9 shrink-0 rounded-full" />
+      {/* Visual stand-in only: the real checked state is unknown until status
+          loads, so hide this row from assistive tech. The card is already
+          aria-busy. */}
+      <div aria-hidden>
+        <SettingsSwitchRow
+          id="mcp-catalog-sync"
+          label="Keep the catalog up to date"
+          description="The host downloads the official MCP Registry and checks it for changes."
+          checked
+          disabled
+          onToggle={() => {}}
+        />
       </div>
     </SettingsCard>
   )
@@ -119,7 +127,7 @@ function CatalogSource({ state, setSync }: McpCatalogStatusHandle): React.JSX.El
   if (state.status === 'unavailable') {
     return (
       <p className="px-1 text-xs text-muted-foreground">
-        Termul couldn't check where the catalog comes from.
+        Troupe couldn't check where the catalog comes from.
       </p>
     )
   }
@@ -362,7 +370,10 @@ export function McpCatalogBrowser(): React.JSX.Element {
       title="MCP catalog"
       footnote={block && <span id={hintId}>{MCP_INSTALL_BLOCK_TEXT[block]}</span>}
     >
-      <CatalogSource {...status} />
+      {/* The source card is not above the search box: its height depends on the
+          status, which arrives after first paint and changes while the page is
+          open (sample note, sync progress, a sync error of any length), so above
+          the box it would push the box and the list down. */}
       <div className="relative">
         <Search size={13} aria-hidden className={PANEL_FIELD_ICON_CLASS} />
         <input
@@ -396,7 +407,7 @@ export function McpCatalogBrowser(): React.JSX.Element {
             </Button>
           }
         >
-          Termul couldn't load the MCP catalog.
+          Troupe couldn't load the MCP catalog.
         </SettingsNotice>
       ) : results === null ? (
         <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-3 text-xs text-muted-foreground">
@@ -445,6 +456,7 @@ export function McpCatalogBrowser(): React.JSX.Element {
           )}
         </>
       )}
+      <CatalogSource {...status} />
       <McpCatalogInstallDialog
         install={install}
         onEnableSync={

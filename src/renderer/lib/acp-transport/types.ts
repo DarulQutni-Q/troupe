@@ -9,8 +9,15 @@ import type { AcpCatalog } from '@shared/types/acp-catalog.types'
 import type {
   ClaudeAccount,
   ClaudeAccountsSnapshot,
-  ClaudeAccountUsage
+  ClaudeAccountUsage,
+  RemovedClaudeAccount
 } from '@shared/types/claude-accounts.types'
+import type {
+  CodexAccount,
+  CodexAccountsSnapshot,
+  CodexAccountUsage,
+  RemovedCodexAccount
+} from '@shared/types/codex-accounts.types'
 import type {
   McpCatalogIconPayload,
   McpCatalogPage,
@@ -192,6 +199,48 @@ export interface AgentIdleWindowStatus {
   source: 'default' | 'setting' | 'env' | 'operator'
 }
 
+/** One launchable agent in the sub-agent orchestrator's settings view. */
+export interface SubagentSettingsAgentView {
+  agentId: string
+  name: string
+  allowed: boolean
+  /** The model a sub-agent of this agent starts with; `null` is the agent's own default. */
+  model: string | null
+  /**
+   * The user's note on what this agent is good at, which
+   * `subagent_list_agents` hands to the calling agent; `null` is no note.
+   */
+  description: string | null
+}
+
+/**
+ * The orchestrator's settings view (`subagent_settings_get` reply):
+ * `{ enabled, maxRunning, maxDepth, agents }`. `agents` lists the launchable
+ * agents with their `allowed` switch.
+ */
+export interface SubagentSettingsView {
+  enabled: boolean
+  maxRunning: number
+  maxDepth: number
+  agents: SubagentSettingsAgentView[]
+}
+
+/**
+ * A `subagent_settings_set` call: every field optional, an omitted field
+ * keeps its value. `agents` carries allow toggles, `models` default models
+ * (`null` clears) and `descriptions` notes of up to 1000 characters (`null`
+ * or blank clears), all keyed by `agentId`; an omitted agent keeps its
+ * setting. The reply is the new full view.
+ */
+export interface SubagentSettingsInput {
+  enabled?: boolean
+  maxRunning?: number
+  maxDepth?: number
+  agents?: Array<{ agentId: string; allowed: boolean }>
+  models?: Array<{ agentId: string; model: string | null }>
+  descriptions?: Array<{ agentId: string; description: string | null }>
+}
+
 export interface AcpTransport {
   installRegistryBinary(
     request: InstallAcpRegistryBinaryRequest
@@ -253,9 +302,20 @@ export interface AcpTransport {
    * `setting`, or `default`.
    */
   getAgentIdleWindow(): Promise<AgentIdleWindowStatus>
+  /**
+   * The orchestrator's sub-agent settings (`subagent_settings_get`), a read
+   * every carrier shares. Failures throw {@link AcpTransportError}
+   * (`unsupported` until the host lands the route).
+   */
+  getSubagentSettings(): Promise<SubagentSettingsView>
+  /**
+   * Change the sub-agent settings (`subagent_settings_set`, convergent): the
+   * omitted fields keep their values; the reply is the new full view.
+   */
+  setSubagentSettings(input: SubagentSettingsInput): Promise<SubagentSettingsView>
   fetchRegistrySnapshot(reason: RegistryCheckReason): Promise<AcpRegistrySnapshot>
   /**
-   * On-demand MCP client probe (Termul's own rmcp client connection — NOT the
+   * On-demand MCP client probe (Troupe's own rmcp client connection — NOT the
    * agent's). Stateless: takes the renderer-supplied wire config, opens a fresh
    * rmcp client, calls `initialize` + `tools/list`, then closes. Desktop↔web
    * parity: on web the probe runs on the termul-server host via
@@ -280,7 +340,21 @@ export interface AcpTransport {
     accountId: string | null,
     expectedAccountId?: string
   ): Promise<boolean>
+  /**
+   * The chat's own Account; `null` makes the chat follow its Project again.
+   * With `expectedAccountId` the host applies the choice only while the chat
+   * resolves to that Account (chat, then Project, then Default). Resolves
+   * whether the choice applied.
+   */
+  setChatClaudeAccount(
+    projectId: string,
+    sessionId: string,
+    accountId: string | null,
+    expectedAccountId?: string
+  ): Promise<boolean>
   setClaudeAutoSwitch(enabled: boolean): Promise<void>
+  /** The host continues the chat at `at` (epoch ms) after its limit resets; `null` cancels. */
+  setClaudeResume(sessionId: string, at: number | null): Promise<void>
   /** Add a signed-out Account; a same-id resend answers with the first one. */
   addClaudeAccount(name: string, options?: CommandCallOptions): Promise<ClaudeAccount>
   renameClaudeAccount(accountId: string, name: string): Promise<void>
@@ -288,7 +362,7 @@ export interface AcpTransport {
    * Remove an Account and resolve the ids of the Projects that moved to the
    * Default Account; `[]` when it was already gone.
    */
-  removeClaudeAccount(accountId: string): Promise<string[]>
+  removeClaudeAccount(accountId: string): Promise<RemovedClaudeAccount>
   /**
    * Start a link sign-in for one Account and resolve the Claude sign-in link.
    * A sign-in already running for the Account stops.
@@ -307,11 +381,64 @@ export interface AcpTransport {
   ): Promise<void>
   /** Stop a browser or link sign-in; `false` when none was running. */
   cancelClaudeLogin(accountId: string): Promise<boolean>
-  /** `projectId` selects the Claude Account of a managed Claude agent. */
+  /** Codex Accounts of the host; secret-free. ChatGPT logins only. */
+  listCodexAccounts(): Promise<CodexAccountsSnapshot>
+  /**
+   * Plan windows of every Codex Account. Cached 5 minutes on the host.
+   * `force` still reuses a read younger than 60 seconds.
+   */
+  listCodexUsage(force?: boolean): Promise<CodexAccountUsage[]>
+  setDefaultCodexAccount(accountId: string): Promise<void>
+  /**
+   * `null` returns the Project to the Default Account. With
+   * `expectedAccountId` the host applies the choice only while the Project
+   * still uses that Account. Resolves whether the choice applied.
+   */
+  setProjectCodexAccount(
+    projectId: string,
+    accountId: string | null,
+    expectedAccountId?: string
+  ): Promise<boolean>
+  /**
+   * `null` makes the chat follow its Project again. With `expectedAccountId`
+   * the host applies the choice only while the chat still runs on that Account.
+   */
+  setChatCodexAccount(
+    projectId: string,
+    sessionId: string,
+    accountId: string | null,
+    expectedAccountId?: string
+  ): Promise<boolean>
+  setCodexAutoSwitch(enabled: boolean): Promise<void>
+  /** Continue the chat at `at` (epoch ms), or cancel with `null`. */
+  setCodexResume(sessionId: string, at: number | null): Promise<void>
+  /** Add a signed-out Account; a same-id resend answers with the first one. */
+  addCodexAccount(name: string, options?: CommandCallOptions): Promise<CodexAccount>
+  renameCodexAccount(accountId: string, name: string): Promise<void>
+  /**
+   * Remove an Account. `movedProjectIds` are the Projects that now follow the
+   * Default Account. `movedChatIds` are the chats that had it as their own and
+   * now follow their Project. Both are empty when it was already gone.
+   */
+  removeCodexAccount(accountId: string): Promise<RemovedCodexAccount>
+  /**
+   * Spawn the Codex agent with this Account's home. The caller then
+   * authenticates it with `chat-gpt` or `chat-gpt-device-code`.
+   */
+  startCodexAccountLogin(
+    accountId: string,
+    config: AgentConfig,
+    options?: CommandCallOptions
+  ): Promise<SpawnAgentResult>
+  /**
+   * `projectId` selects the Claude Account of a managed Claude agent;
+   * `sessionId`, the existing chat the agent opens, selects that chat's own.
+   */
   spawnAgent(
     config: AgentConfig,
     options?: CommandCallOptions,
-    projectId?: string | null
+    projectId?: string | null,
+    sessionId?: string | null
   ): Promise<SpawnAgentResult>
   killAgent(agentId: AgentId): Promise<void>
   listAgents(): Promise<AgentId[]>
@@ -333,6 +460,8 @@ export interface AcpTransport {
    * the same idempotent success.
    */
   deleteSession?(sessionId: SessionId): Promise<boolean>
+  /** Quick-chat local rename. Sets the host `LocalAlias` title. */
+  renameSession?(sessionId: SessionId, title: string): Promise<{ title?: string | null }>
   newSession(
     agentId: AgentId,
     cwd: string,
@@ -351,6 +480,8 @@ export interface AcpTransport {
       worktreePath?: string
       worktreeBranch?: string
       additionalDirectories?: string[]
+      /** `quick` asks the host to mint the folder. Omit cwd in that case. */
+      kind?: 'quick'
     } & CommandCallOptions
   ): Promise<NewSessionOutcome>
   loadSession(
@@ -399,8 +530,31 @@ export interface AcpTransport {
     sessionId: SessionId,
     options?: CommandCallOptions
   ): Promise<void>
-  listSessions(agentId: AgentId, cwd?: string, cursor?: string): Promise<ListSessionsResponse>
+  listSessions(
+    agentId: AgentId,
+    cwd?: string,
+    cursor?: string,
+    projectId?: string
+  ): Promise<ListSessionsResponse>
   registerDiscoveredSession(
+    input: {
+      sessionId: SessionId
+      agentId: AgentId
+      cwd: string
+      title?: string | null
+      updatedAt?: number
+      projectId?: string
+    },
+    options?: CommandCallOptions
+  ): Promise<PersistedSessionSummary>
+  /**
+   * Copy a session another client created (for example a Claude Code chat)
+   * into the durable chat history: the host registers it, captures the
+   * history the agent replays and closes the agent session. WS:
+   * `import_agent_session`. Rejects with code `duplicate` when the session is
+   * already in the history.
+   */
+  importAgentSession(
     input: {
       sessionId: SessionId
       agentId: AgentId
@@ -478,6 +632,16 @@ export interface AcpTransport {
     values?: string[],
     options?: CommandCallOptions
   ): Promise<void>
+  /** Chat MCP install decision. `secretValues` stay off the command journal. */
+  answerMcpInstall(request: {
+    requestId: string
+    sessionId: string
+    decision: 'decline' | 'preview' | 'approve'
+    inputs?: Record<string, string>
+    secretValues?: Record<string, string>
+    planId?: string | null
+    launchDigest?: string | null
+  }): Promise<void>
   /** Stop agent browsing for a session until the user's next message. */
   stopBrowserAgent(sessionId: string): Promise<void>
   /** Agent ACP auth (methodId) — NOT the WS relay token gate. */
@@ -556,7 +720,8 @@ export interface AcpTransport {
   /**
    * Story 5.3 (AC3): register a listener for transport-level reconnect state.
    * The second argument is only meaningful when `reconnecting` is `false`:
-   * `true` = the channel genuinely recovered (open, authed, re-subscribed);
+   * `true` = the channel genuinely recovered (open, authed, priority
+   * sessions re-subscribed);
    * `false` = the cycle ended WITHOUT recovery (token-class halt), so
    * nothing may assume the host is reachable.
    * Only on the WS transport — absent on Tauri IPC (desktop). The store
@@ -609,7 +774,19 @@ export interface AcpTransport {
    * subscribing (WS only). Call before `resumeSession` so its built-in
    * re-subscribe uses the server cursor, not a dead per-instance 0. */
   seedSessionCursor?(sessionId: SessionId, cursor: SessionCursor): void
+  /**
+   * Sessions a reconnect resubscribes before it reports the channel live.
+   * Every other subscribed session resubscribes after that, in the background.
+   */
   setReconnectPriorityProvider?(provider: () => SessionId[]): void
+  /**
+   * Sessions whose stream is not resynced since the last reconnect: still
+   * queued for the background resubscribe, being resubscribed, or waiting on a
+   * per-session retry. Fired with the full sorted list whenever it changes.
+   */
+  setResyncListener?(listener: (sessionIds: readonly SessionId[]) => void): void
+  /** Resubscribe this session next if the running reconnect pass still owes it. */
+  prioritizeResubscribe?(sessionId: SessionId): void
   /**
    * Issue #1595: register the installer for the host's still-pending
    * approvals, questions and elicitations a `subscribe` / snapshot reply

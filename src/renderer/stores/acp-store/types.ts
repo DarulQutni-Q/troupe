@@ -24,6 +24,8 @@ import type {
   AuthMethod,
   AvailableCommand,
   acpApi,
+  BackgroundCommandList,
+  BackgroundCommandsEvent,
   BrowserAgentTabEvent,
   BrowserOpenRequestEvent,
   BrowserStopChangedEvent,
@@ -70,6 +72,12 @@ import type { PrepareChatError } from '@/lib/agents/acp-spawn-errors'
 import type { BrowserConsentOptionId, BrowserConsentTicket } from '@/lib/browser-consent-api'
 import type { CommandState } from '@/lib/command-engine'
 import type { LogPoint } from '@/lib/log-point'
+import type {
+  McpInstallDecisionName,
+  McpInstallRequestEvent,
+  McpInstallResolvedEvent,
+  PendingMcpInstall
+} from '@/lib/mcp-install-request'
 import type { QueuedPrompt } from '../prompt-queue-orchestration'
 
 /** A prompt command's state while the chat waits to confirm it (AD-6). */
@@ -179,13 +187,18 @@ export interface OpenHistoryOptions {
    * list. When omitted (idle-stop auto-resume, manual Resume chat, a
    * history-row open) it defaults to
    * `selectMcpServersForAgent(state.mcpServers, capabilities).servers` so the
-   * host `termul` server and the user's configured MCP servers survive the
+   * host `troupe` server and the user's configured MCP servers survive the
    * reopen (#1420). An explicit `[]` still asks the host to attach only the
    * plan server.
    */
   mcpServers?: McpServer[]
   /** Skip adopting the process that already owns this session. */
   forceNewAgent?: boolean
+}
+
+/** A session's background commands as the agent that reported them listed them. */
+export interface HeldBackgroundCommands extends BackgroundCommandList {
+  agentId: AgentId
 }
 
 export interface AcpSession {
@@ -214,6 +227,12 @@ export interface AcpSession {
    * The chat shows busy and queues what the user sends. Ephemeral.
    */
   agentWorking?: boolean
+  /**
+   * The commands the agent left running (the host's `background_commands`
+   * event), stamped with the agent that reported them: a list from an agent
+   * the chat no longer runs on is stale. Ephemeral.
+   */
+  backgroundCommands?: HeldBackgroundCommands
   /** Project-scoped MCP attachments active for this session when known. */
   mcpServerCount?: number
   /**
@@ -258,6 +277,11 @@ export interface AcpSession {
   worktreePath?: string
   worktreeBranch?: string
   /**
+   * `quick` for a chat with no project. Copied onto the live record so a
+   * later index projection cannot drop it. Absent on project chats.
+   */
+  kind?: 'quick'
+  /**
    * Correlation id into `useWorktreeProgressStore` for the in-timeline
    * worktree-creation progress card. Set on the launch placeholder before the
    * worktree create call and carried across the placeholder→real-session
@@ -269,8 +293,8 @@ export interface AcpSession {
    * `session/list` chats). Carried on the live record so `persistSession`
    * preserves it even when no `sessionIndex` entry exists yet (the
    * disconnect/close path would otherwise default a discovered session to
-   * `discovered: false` and leak it into the Termul-only Chats tab).
-   * Absent/`false` for sessions Termul created via `createSession`.
+   * `discovered: false` and leak it into the Troupe-only Chats tab).
+   * Absent/`false` for sessions Troupe created via `createSession`.
    */
   discovered?: boolean
   /**
@@ -294,6 +318,14 @@ export interface AcpSession {
     modeId?: string
     configValues: Record<string, string>
   } | null
+  /**
+   * The first turn a failed chat launch was starting with (`finalizeChatLaunch`
+   * catch, same lifetime as `launchConfigId`). `retryFailedLaunch` re-sends it
+   * when the transcript has no optimistic first message to resend: a GitHub
+   * hand-off (Fix CI / Resolve comments) builds its first turn after the
+   * placeholder opens and never paints it (gh-1741).
+   */
+  launchFirstTurnBlocks?: ContentBlock[] | null
   /**
    * Option values the agent advertised at session creation — the `session/new`
    * result (recorded by `createSession`) or the `session_created` payload when
@@ -397,6 +429,21 @@ export interface BugReportDraftInput {
   userDescription: string
   /** Host-collected diagnostics; `logTail` is already secret-masked. */
   diagnostics: BugReportContext
+}
+
+/**
+ * A web MCP OAuth flow waiting on its sign-in (spec-mcp-oauth-web-paste-back).
+ * Set once the host returns the sign-in link; the paste dialog reads it to
+ * offer Open/Copy and to take the loopback redirect address back. Cleared when
+ * the flow ends (token stored, failed, cancelled). Desktop never sets it.
+ */
+export interface McpOAuthPasteBack {
+  projectId: string
+  serverUrl: string
+  serverName: string
+  authUrl: string
+  /** The loopback redirect the host registered (`http://127.0.0.1:{port}/oauth/callback`). */
+  redirectUri: string
 }
 
 /** How an option set reaches the agent's saved composer record. */
@@ -529,15 +576,14 @@ export interface AcpState {
 
   // Global MCP server registry (persisted)
   mcpServers: StoredMcpServer[]
-  // True once `loadMcpServers` has resolved at least once. Guards
-  // `syncMcpRegistryToProjectFile` against syncing the initial empty state
-  // (which would overwrite a project's `.termul/mcp-servers.json` with `[]`
-  // before the app-store registry is loaded — CAP-7 race guard).
+  // True once `loadMcpServers` has resolved at least once.
   mcpServersLoaded: boolean
+  /** Chat approval cards for `mcp_install`, keyed by request id. No secret values. */
+  pendingMcpInstalls: Record<string, PendingMcpInstall>
 
   // MCP probe state — on-demand only (no persistent always-on connections).
-  // `mcpProbeStatus` reflects Termul's own rmcp client connection, NOT the
-  // agent's; the dot answers "can Termul reach this server and list its tools?".
+  // `mcpProbeStatus` reflects Troupe's own rmcp client connection, NOT the
+  // agent's; the dot answers "can Troupe reach this server and list its tools?".
   // `mcpTools` is the cached `tools/list` output; `mcpToolsLoaded` gates the
   // auto-probe on first expand; `mcpProbing` dedupes concurrent probes.
   mcpProbeStatus: Record<string, ProbeStatus>
@@ -556,6 +602,8 @@ export interface AcpState {
   mcpOAuthConnecting: Record<string, boolean>
   /** Per-server OAuth connected state (true when a stored token exists). */
   mcpOAuthConnected: Record<string, boolean>
+  /** Per-server web OAuth flow awaiting sign-in (drives the paste-back dialog). */
+  mcpOAuthPasteBack: Record<string, McpOAuthPasteBack>
 
   // Sessions
   sessions: Record<SessionId, AcpSession>
@@ -609,14 +657,26 @@ export interface AcpState {
    * (which fires when `openHistorySession` is in flight — both can show).
    */
   transportReconnecting: boolean
+  /**
+   * Sessions the last reconnect has not resubscribed yet (queued for the
+   * background pass, in flight, or retrying). Their panels keep the
+   * "Reconnecting…" overlay after `transportReconnecting` clears.
+   */
+  resyncingSessions: Readonly<Record<SessionId, true>>
+  /** Resubscribe this chat next if the running reconnect still owes it (a chat that came on screen). */
+  prioritizeResync: (sessionId: SessionId) => void
   /** Sessions whose stream could not be fully re-synced: recovered live-only (no server snapshot exists) or resubscribe retries ran out. */
   degradedRecoverySessions: Record<SessionId, true>
 
   // Actions — lifecycle
-  /** `projectId` selects the Claude Account of a managed Claude agent. */
+  /**
+   * `projectId` selects the Claude Account of a managed Claude agent;
+   * `sessionId`, the existing chat the agent opens, selects that chat's own.
+   */
   spawnAgent: (
     config: Parameters<typeof acpApi.spawnAgent>[0],
-    projectId?: string | null
+    projectId?: string | null,
+    sessionId?: string | null
   ) => Promise<AgentId>
   killAgent: (agentId: AgentId) => Promise<void>
   /**
@@ -669,6 +729,8 @@ export interface AcpState {
       /** Worktree path + branch (CAP-3) — persisted onto the durable record. */
       worktreePath?: string
       worktreeBranch?: string
+      /** Host mints the folder. The client does not send a cwd. */
+      kind?: 'quick'
     }
   ) => Promise<SessionId>
   closeSession: (sessionId: SessionId) => Promise<void>
@@ -720,6 +782,11 @@ export interface AcpState {
     opts?: { worktreePath?: string; worktreeBranch?: string }
   ) => Promise<SessionId>
   /**
+   * Start a quick chat. No project env is applied. The host creates the folder
+   * and the Codex Accounts account stays in effect.
+   */
+  startQuickChat: (configId: string) => Promise<SessionId>
+  /**
    * Take ownership of a prepared session so launcher unmount cleanup cannot
    * reap it after the chat tab is already open. Promotes ephemeral pooled
    * sessions into persisted history.
@@ -744,6 +811,8 @@ export interface AcpState {
     worktreeBranch?: string
     /** Links the in-timeline worktree-creation progress card to this chat. */
     worktreeProgressId?: string
+    /** A chat with no project. The host owns the folder. */
+    kind?: 'quick'
   }) => SessionId
   /** Drop a launch placeholder that will not be remapped (e.g. after fatal error). */
   discardLaunchPlaceholder: (sessionId: SessionId) => void
@@ -803,6 +872,32 @@ export interface AcpState {
   setSelectedAgentConfigId: (configId: string | null) => void
   /** Drain stale pooled sessions for `cwd` (other agents) and seed `configId`'s pool. */
   retargetWarmPool: (configId: string, cwd: string, projectId: string) => void
+  /**
+   * Sessions the agent of `configId` lists for `cwd` that are not yet in the
+   * chat history. Reuses the live agent of that config and folder, else
+   * spawns one. `unsupported` when the agent cannot list and load sessions.
+   */
+  listImportableSessions: (
+    configId: string,
+    cwd: string,
+    projectId: string
+  ) => Promise<ImportableSessions>
+  /**
+   * Import `sessions` one by one through the host, then refresh the chat
+   * history index. One session's failure never stops the rest; `shouldStop`
+   * returning true does: the session in flight finishes and the rest are not
+   * started (they get no outcome).
+   */
+  importAgentSessions: (input: {
+    agentId: AgentId
+    cwd: string
+    projectId: string
+    sessions: SessionInfo[]
+    /** Called after each session finished, with the number done so far and its outcome. */
+    onProgress?: (done: number, outcome: ImportSessionOutcome) => void
+    /** Asked before each session; true leaves the remaining sessions unstarted. */
+    shouldStop?: () => boolean
+  }) => Promise<ImportSessionOutcome[]>
   /** Generate a commit message in a hidden, non-persisted one-shot ACP session. */
   generateCommitMessage: (cwd: string, stagedDiff: string) => Promise<GeneratedCommitMessage>
   /** Inline terminal AI assist (#259): explain selected output or suggest a
@@ -883,23 +978,25 @@ export interface AcpState {
    * writes, no partial prefix left behind to duplicate on retry.
    */
   importMcpServers: (servers: StoredMcpServer[]) => Promise<void>
-  saveCatalogInstall: (
-    result: McpInstallCommitResult,
-    projectId: string
-  ) => Promise<StoredMcpServer>
+  saveCatalogInstall: (result: McpInstallCommitResult) => Promise<StoredMcpServer>
   setMcpServerEnabled: (id: string, enabled: boolean) => Promise<void>
   deleteMcpServer: (id: string) => Promise<void>
-  /**
-   * CAP-7: mirror the app-store MCP registry to the named project's
-   * `.termul/mcp-servers.json` (best-effort, non-fatal). Called when the host
-   * project list lands and when shared-live starts, so the web route reads the
-   * desktop's app-store registry for that project.
-   */
-  syncMcpRegistryToProjectFile: (projectId: string) => Promise<void>
+  answerMcpInstall: (
+    requestId: string,
+    decision: McpInstallDecisionName,
+    inputs?: Record<string, string>,
+    secretValues?: Record<string, string>,
+    planId?: string | null,
+    launchDigest?: string | null
+  ) => Promise<void>
+  dismissMcpInstall: (requestId: string) => void
+  _onMcpInstallRequest: (event: McpInstallRequestEvent) => void
+  _onMcpInstallResolved: (event: McpInstallResolvedEvent) => void
+  _onMcpRegistryChanged: () => void
 
   // Actions — MCP probe (on-demand, read-only). State slices above.
   /**
-   * Probe a registered MCP server by id (Termul's own rmcp client — NOT the
+   * Probe a registered MCP server by id (Troupe's own rmcp client — NOT the
    * agent's). Updates `mcpProbeStatus[id]` + `mcpTools[id]` +
    * `mcpToolsLoaded[id]=true`, and `mcpProbeError[id]` with the redacted
    * `ProbeResult.error` on a disconnected result (cleared on connected and on
@@ -915,8 +1012,19 @@ export interface AcpState {
   /** Start the OAuth flow for an HTTP/SSE MCP server that returned `authRequired`,
    * on behalf of `projectId` (the web host authorizes the URL against that
    * project's MCP list). Opens the system browser, waits for the callback,
-   * stores the token. */
-  connectMcpOAuth: (projectId: string, id: string) => Promise<void>
+   * stores the token. On web it also publishes `mcpOAuthPasteBack[id]` while
+   * the sign-in is pending. Resolves `true` once a token is stored, `false`
+   * when the flow was cancelled ({@link AcpState.cancelMcpOAuth}) or the
+   * server went away; throws on failure. */
+  connectMcpOAuth: (projectId: string, id: string) => Promise<boolean>
+  /** Web only: finish server `id`'s pending flow with the pasted loopback
+   * redirect address. Clears `mcpOAuthPasteBack[id]` on success (the running
+   * `connectMcpOAuth` then sees the token and marks the server connected).
+   * Throws an `McpOAuthError` with the host's code on failure. */
+  completeMcpOAuthPaste: (id: string, callbackUrl: string) => Promise<void>
+  /** Stop server `id`'s pending web OAuth flow: polling stops, the
+   * connecting spinner and the paste-back entry clear. No-op when none runs. */
+  cancelMcpOAuth: (id: string) => void
   /** Check whether a stored OAuth token exists and update `mcpOAuthConnected`. */
   checkMcpOAuthStatus: (projectId: string, id: string) => Promise<void>
   /** Delete the stored OAuth token (the "Disconnect" action). */
@@ -943,6 +1051,10 @@ export interface AcpState {
    */
   recheckPromptCommand: (sessionId: SessionId) => void
   removeQueuedPrompt: (sessionId: SessionId, queueId: string) => void
+  /** Move a queued prompt to `toIndex` in its queue (the queue sends in order). */
+  moveQueuedPrompt: (sessionId: SessionId, queueId: string, toIndex: number) => void
+  /** Drop every queued prompt of the session. */
+  clearQueuedPrompts: (sessionId: SessionId) => void
   /** Cancel the active turn if needed, then send a queued prompt immediately. */
   sendQueuedPromptNow: (sessionId: SessionId, queueId: string) => Promise<void>
   /**
@@ -976,6 +1088,7 @@ export interface AcpState {
    * ORIGINAL session stays live and usable (`lastError` banner; never
    * `status:'error'` on a live session). Throws only on unexpected internal
    * errors — failure classification lands in `lastError`.
+   * Resolves the new session id, or `null` when no new session was created.
    */
   switchAgent: (
     sessionId: SessionId,
@@ -984,8 +1097,13 @@ export interface AcpState {
       pendingText?: string
       wireBlocks?: ContentBlock[]
       displayBlocks?: ContentBlock[]
+      /**
+       * Spawn the new agent for this chat, so the host starts it with the
+       * chat's own Claude Account (a Claude chat continuing in a new session).
+       */
+      accountChatId?: SessionId
     }
-  ) => Promise<void>
+  ) => Promise<SessionId | null>
 
   // Actions — config
   setConfigOption: (
@@ -1042,6 +1160,8 @@ export interface AcpState {
   _onPromptComplete: (e: PromptCompleteEvent, eventSeq?: number) => void
   /** The agent started or stopped working outside a prompt turn. */
   _onAgentWorking: (e: AgentWorkingEvent) => void
+  /** The commands the agent left running in a session changed. */
+  _onBackgroundCommands: (e: BackgroundCommandsEvent) => void
   _onAgentError: (e: AgentErrorEvent) => void
   /** Story 1.9 FR26: typed crash event → `status: 'error'` + manual restart. */
   _onAgentCrashed: (e: AgentCrashedEvent) => void
@@ -1125,6 +1245,17 @@ export class ChatLaunchCancelledError extends Error {
  * the local transcript in place.
  */
 export type ReopenControlBaseline = Pick<AcpSession, 'modes' | 'models' | 'configOptions'>
+
+export type ImportableSessions =
+  | { status: 'ready'; agentId: AgentId; sessions: SessionInfo[] }
+  | { status: 'unsupported' }
+  | { status: 'unavailable' }
+
+export interface ImportSessionOutcome {
+  sessionId: SessionId
+  status: 'imported' | 'duplicate' | 'failed'
+  message?: string
+}
 
 export interface AgentIdentity {
   /** Human-friendly agent name (e.g. "Cursor"), or null when unresolved. */

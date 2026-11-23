@@ -1,14 +1,18 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MotionConfig } from 'framer-motion'
 import { useEffect } from 'react'
 import { createHashRouter, RouterProvider } from 'react-router-dom'
 import { BrowserAuthDialogHost } from '@/components/agents/BrowserAuthDialog'
 import { BrowserConsentCardHost } from '@/components/agents/BrowserConsentCardHost'
 import { CodexCliAuthSync } from '@/components/agents/CodexCliAuthSync'
 import { ChatRoute } from '@/components/ChatRoute'
-import { useClaudeAutoSwitch } from '@/components/chat/claude-account/auto-switch'
+import { useClaudeLimitActions } from '@/components/chat/claude-account/limit-actions'
+import { useCodexAutoSwitch } from '@/components/chat/codex-account/auto-switch'
+import { useCodexLimitActions } from '@/components/chat/codex-account/limit-actions'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { ExternalLinkConfirmHost } from '@/components/external-link/ExternalLinkConfirm'
 import { GlobalContextMenu } from '@/components/GlobalContextMenu'
+import { McpOAuthPasteDialogHost } from '@/components/settings/McpOAuthPasteDialog'
 import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useAcpUpdateChecks } from '@/hooks/use-acp-update-checks'
@@ -30,7 +34,6 @@ import { useAgentChatNotification } from './hooks/use-agent-chat-notification'
 import { useAppSettingsLoader } from './hooks/use-app-settings'
 import { useChatNotifications } from './hooks/use-chat-notifications'
 import { useAppliedColorThemeSync } from './hooks/use-color-theme'
-import { useContextBarSettings } from './hooks/use-context-bar-settings'
 import { useCrashRecovery } from './hooks/use-crash-recovery'
 import { useCwd } from './hooks/use-cwd'
 import { useExitCode } from './hooks/use-exit-code'
@@ -45,6 +48,7 @@ import { useProjectGitBranch } from './hooks/use-project-git-branch'
 import { useProjectIcon } from './hooks/use-project-icon'
 import { useProjectRegistry } from './hooks/use-project-registry'
 import { useRemoteProjects } from './hooks/use-remote-projects'
+import { useRenameNotice } from './hooks/use-rename-notice'
 import { useShellLayoutHydration } from './hooks/use-shell-layout-hydration'
 import { useSmoothWheelScroll } from './hooks/use-smooth-wheel-scroll'
 import { useSSHSessionEvents } from './hooks/use-ssh-session-events'
@@ -52,6 +56,7 @@ import { useTerminalDetachedOutput } from './hooks/use-terminal-detached-output'
 import { useTerminalExitNotification } from './hooks/use-terminal-exit-notification'
 import { useTerminalIdleNotification } from './hooks/use-terminal-idle-notification'
 import { useTerminalRestore } from './hooks/use-terminal-restore'
+import { useTranslucentRailSync } from './hooks/use-translucent-rail'
 import { useAppliedUiZoomSync } from './hooks/use-ui-zoom'
 import { useUpdateCheck } from './hooks/use-updater'
 import { useVisibilityState } from './hooks/use-visibility-state'
@@ -90,16 +95,17 @@ function AppEffects(): null {
   useProjectIcon()
   useGitStatus()
   useExitCode()
-  useContextBarSettings()
   useAppSettingsLoader()
   useAppliedColorThemeSync()
   useAppliedUiZoomSync()
+  useTranslucentRailSync()
   useKeyboardShortcutsLoader()
   useProjectRegistry()
   useShellLayoutHydration()
   useMenuUpdaterListener()
   useUpdateCheck()
   useUpdateToast()
+  useRenameNotice()
   useVisibilityState()
   useTerminalExitNotification()
   useTerminalIdleNotification()
@@ -117,7 +123,11 @@ function AppEffects(): null {
   useChatNotifications()
   // A Claude chat at its account's limit continues on another account, even
   // off screen. Mounted on both renderer roots for parity.
-  useClaudeAutoSwitch()
+  useClaudeLimitActions()
+  // A Codex chat at its account's limit continues on another account, even
+  // off screen. Mounted on both renderer roots for parity.
+  useCodexLimitActions()
+  useCodexAutoSwitch()
   // A chat agent's proposed automation opens for review. Both roots.
   useAutomationProposals()
   useAcpMcp()
@@ -201,32 +211,39 @@ export default function TauriApp(): React.JSX.Element {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <GlobalContextMenu>
-          <ErrorBoundary context="App Root">
-            <AppEffects />
-            <Toaster />
-            <ExternalLinkConfirmHost />
-            {/* Headless ACP auth: global host for the browser-open paste-back
+      {/* framer-motion follows the OS "reduce motion" setting app-wide:
+          transform and layout animations are skipped, opacity stays. */}
+      <MotionConfig reducedMotion="user">
+        <TooltipProvider>
+          <GlobalContextMenu>
+            <ErrorBoundary context="App Root">
+              <AppEffects />
+              <Toaster />
+              <ExternalLinkConfirmHost />
+              {/* Headless ACP auth: global host for the browser-open paste-back
                 dialog (spec-acp-terminal-auth) — auth can be triggered from a
                 chat panel or warm pool, not just the launcher. */}
-            <BrowserAuthDialogHost />
-            <CodexCliAuthSync />
-            {/* Agent browser-automation consent fallback (CAP-5): corner card
+              <BrowserAuthDialogHost />
+              {/* MCP OAuth paste-back: only the web flow sets its state, so this
+                renders nothing on desktop. Mounted on both roots for parity. */}
+              <McpOAuthPasteDialogHost />
+              <CodexCliAuthSync />
+              {/* Agent browser-automation consent fallback (CAP-5): corner card
                 for pending consents no visible chat-panel card hosts; the
                 in-pane strip and in-chat card own the prompt otherwise. */}
-            <BrowserConsentCardHost />
-            <RouterProvider router={router} future={{ v7_startTransition: true }} />
-            <WhatsNewModal
-              isOpen={whatsNew.isOpen}
-              version={whatsNew.version}
-              notes={whatsNew.notes}
-              htmlUrl={whatsNew.htmlUrl}
-              onClose={whatsNew.close}
-            />
-          </ErrorBoundary>
-        </GlobalContextMenu>
-      </TooltipProvider>
+              <BrowserConsentCardHost />
+              <RouterProvider router={router} future={{ v7_startTransition: true }} />
+              <WhatsNewModal
+                isOpen={whatsNew.isOpen}
+                version={whatsNew.version}
+                notes={whatsNew.notes}
+                htmlUrl={whatsNew.htmlUrl}
+                onClose={whatsNew.close}
+              />
+            </ErrorBoundary>
+          </GlobalContextMenu>
+        </TooltipProvider>
+      </MotionConfig>
     </QueryClientProvider>
   )
 }

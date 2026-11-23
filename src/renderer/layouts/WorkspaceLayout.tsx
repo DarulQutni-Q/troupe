@@ -1,12 +1,17 @@
-import { useCallback, useEffect, useState } from 'react'
+import type { ShellInfo } from '@shared/types/ipc.types'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { CanvasMountLayer } from '@/components/canvas/CanvasMountLayer'
+import { Onboarding } from '@/components/onboarding/Onboarding'
+import { useOnboardingGate } from '@/components/onboarding/onboarding-gate'
 import { ShellFrame } from '@/components/shell/ShellFrame'
 import { WebTokenGateScreen } from '@/components/WebTokenGateScreen'
+import { type NewTabActions, NewTabActionsProvider } from '@/components/workspace/new-tab-actions'
 import { useEditorPersistence } from '@/hooks/use-editor-persistence'
 import { useFileWatcher } from '@/hooks/use-file-watcher'
 import { useMobileWebShell } from '@/hooks/use-mobile-web-shell'
 import { useProjectSwitch } from '@/hooks/use-project-switch'
+import { useQuickChatRouteSync } from '@/hooks/use-quick-chat-route-sync'
 import { useShellUnreadTracker } from '@/hooks/use-shell-unread-tracker'
 import { useWorktreeShortcuts } from '@/hooks/use-worktree-shortcuts'
 import { useWorkspaceOverlayBackStack } from '@/layouts/use-workspace-overlay-back-stack'
@@ -63,6 +68,7 @@ export default function WorkspaceLayout(): React.JSX.Element {
   const isLoaded = useProjectsLoaded()
 
   const webAuthGate = useWebAuthGate()
+  const onboarding = useOnboardingGate()
 
   const projects = useProjects()
   const activeProject = useActiveProject()
@@ -158,10 +164,23 @@ export default function WorkspaceLayout(): React.JSX.Element {
     gitSheetProjectId,
     closeGitSheet
   })
-  const { handleNewBrowserTab } = tabOpeners
+  const { handleNewBrowserTab, handleAddTerminal } = tabOpeners
+  // Tool strip: a new terminal tab in the active pane.
+  const handleNewTerminal = useCallback(
+    (shell?: ShellInfo) => handleAddTerminal(undefined, shell),
+    [handleAddTerminal]
+  )
+  // Tab bar `+` menu: a new terminal or browser tab in that bar's pane.
+  const newTabActions = useMemo<NewTabActions>(
+    () => ({ addTerminal: handleAddTerminal, addBrowserTab: handleNewBrowserTab }),
+    [handleAddTerminal, handleNewBrowserTab]
+  )
 
   // Determine if we should show the terminal area (only on workspace dashboard)
   const isWorkspaceRoute = isWorkspaceRoutePath(location.pathname)
+  // Back/Forward, a typed URL or a routed page (Snapshots) while a quick
+  // chat is open: the quick view follows the route.
+  useQuickChatRouteSync(location.pathname)
 
   useWorkspaceKeyboard({
     activeTab,
@@ -199,20 +218,19 @@ export default function WorkspaceLayout(): React.JSX.Element {
   }
 
   const workspaceMain = (
-    <WorkspaceMain
-      isMobileWebShell={isMobileWebShell}
-      isWorkspaceRoute={isWorkspaceRoute}
-      projects={projects}
-      activeProject={activeProject}
-      ssh={ssh}
-      setIsNewProjectModalOpen={setIsNewProjectModalOpen}
-      handleAddTerminal={tabOpeners.handleAddTerminal}
-      handleNewBrowserTab={handleNewBrowserTab}
-      handleCloseTerminal={terminalClose.handleCloseTerminal}
-      handleCloseEditorTab={editorTabClose.handleCloseEditorTab}
-      handleCloseTabs={bulkTabClose.handleCloseTabs}
-      closingTerminalIds={terminalClose.closingTerminalIds}
-    />
+    <NewTabActionsProvider value={newTabActions}>
+      <WorkspaceMain
+        isMobileWebShell={isMobileWebShell}
+        isWorkspaceRoute={isWorkspaceRoute}
+        projects={projects}
+        ssh={ssh}
+        setIsNewProjectModalOpen={setIsNewProjectModalOpen}
+        handleCloseTerminal={terminalClose.handleCloseTerminal}
+        handleCloseEditorTab={editorTabClose.handleCloseEditorTab}
+        handleCloseTabs={bulkTabClose.handleCloseTabs}
+        closingTerminalIds={terminalClose.closingTerminalIds}
+      />
+    </NewTabActionsProvider>
   )
 
   const appModals = (
@@ -268,6 +286,16 @@ export default function WorkspaceLayout(): React.JSX.Element {
     )
   }
 
+  // First run replaces the shell on every surface, after the token screen and
+  // before the phone branch. It mounts no canvas layer: with no projects
+  // there is no canvas to keep alive.
+  if (onboarding.state === 'pending') {
+    return <WorkspaceLoadingScreen isMobileWebShell={isMobileWebShell} />
+  }
+  if (onboarding.state === 'show') {
+    return <Onboarding onClose={onboarding.close} />
+  }
+
   if (isMobileWebShell) {
     return (
       <>
@@ -311,8 +339,9 @@ export default function WorkspaceLayout(): React.JSX.Element {
         handleAddGitTab={tabOpeners.handleAddGitTab}
         handleAddGitHistoryTab={tabOpeners.handleAddGitHistoryTab}
         handleToggleThemePicker={handleToggleThemePicker}
-        handleOpenAgentChat={tabOpeners.handleOpenAgentChat}
         handleOpenCanvas={tabOpeners.handleOpenCanvas}
+        handleNewTerminal={handleNewTerminal}
+        handleNewBrowserTab={handleNewBrowserTab}
         workspaceMain={workspaceMain}
         appModals={appModals}
       />

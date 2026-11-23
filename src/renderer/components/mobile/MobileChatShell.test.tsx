@@ -1,5 +1,5 @@
 import type { GithubItemDetail } from '@shared/types/github.types'
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ComponentProps } from 'react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -396,7 +396,11 @@ describe('MobileChatShell', () => {
     stubNarrowViewport(false)
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    // A sheet left open fires its onCloseAutoFocus in a setTimeout(0) after unmount. Run it
+    // here, or it consumes the opener the next test records.
+    cleanup()
+    await new Promise((resolve) => setTimeout(resolve, 0))
     window.matchMedia = originalMatchMedia
   })
 
@@ -597,11 +601,11 @@ describe('MobileChatShell', () => {
         expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Agent Chat')
       })
 
-      it('is "Termul" with no active tab', () => {
+      it('is "Troupe" with no active tab', () => {
         seedTabs([], null)
         renderShell()
 
-        expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Termul')
+        expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Troupe')
       })
     })
 
@@ -617,7 +621,7 @@ describe('MobileChatShell', () => {
         }
       })
 
-      it('worktree chat: project · worktree branch · Worktree', () => {
+      it('worktree chat: project · worktree folder', () => {
         sessionsRef.current = {
           s1: {
             title: 'Hello chat',
@@ -628,17 +632,19 @@ describe('MobileChatShell', () => {
         }
         renderShell()
 
-        const subtitle = screen.getByRole('button', { name: 'termul · chat/ab12, switch project' })
-        expect(subtitle).toHaveTextContent('termul · chat/ab12 · Worktree')
+        const subtitle = screen.getByRole('button', {
+          name: 'termul · ab12, branch chat/ab12, switch project'
+        })
+        expect(subtitle).toHaveTextContent('termul · ab12')
       })
 
-      it('local chat: the project branch and Local', () => {
+      it('local chat: the project branch', () => {
         sessionsRef.current = { s1: { title: 'Hello chat', projectId: 'p1' } }
         renderShell()
 
         expect(
           screen.getByRole('button', { name: 'termul · main, switch project' })
-        ).toHaveTextContent('termul · main · Local')
+        ).toHaveTextContent('termul · main')
       })
 
       it('a session that is not loaded uses the active project and no worktree', () => {
@@ -647,7 +653,7 @@ describe('MobileChatShell', () => {
 
         expect(
           screen.getByRole('button', { name: 'termul · main, switch project' })
-        ).toHaveTextContent('termul · main · Local')
+        ).toHaveTextContent('termul · main')
       })
 
       it("a chat from another project shows that project's name and branch, not the active one's", () => {
@@ -659,7 +665,7 @@ describe('MobileChatShell', () => {
 
         expect(
           screen.getByRole('button', { name: 'other · dev, switch project' })
-        ).toHaveTextContent('other · dev · Local')
+        ).toHaveTextContent('other · dev')
       })
 
       it.each([
@@ -681,20 +687,20 @@ describe('MobileChatShell', () => {
 
         expect(
           screen.getByRole('button', { name: 'termul · main, switch project' })
-        ).toHaveTextContent('termul · main · Local')
+        ).toHaveTextContent('termul · main')
       })
 
-      it('detached HEAD: project · Detached HEAD · Local', () => {
+      it('detached HEAD: project · Detached HEAD', () => {
         projectRef.current = { id: 'p1', name: 'termul', path: '/work', isGitRepo: true }
         seedTabs([], null)
         renderShell()
 
         expect(
           screen.getByRole('button', { name: 'termul · Detached HEAD, switch project' })
-        ).toHaveTextContent('termul · Detached HEAD · Local')
+        ).toHaveTextContent('termul · Detached HEAD')
       })
 
-      it('worktree with an unknown branch: project · Worktree', () => {
+      it('worktree with an unknown branch: project · worktree folder', () => {
         projectRef.current = { id: 'p1', name: 'termul', path: '/work' }
         sessionsRef.current = {
           s1: {
@@ -705,9 +711,9 @@ describe('MobileChatShell', () => {
         }
         renderShell()
 
-        expect(screen.getByRole('button', { name: 'termul, switch project' })).toHaveTextContent(
-          'termul · Worktree'
-        )
+        expect(
+          screen.getByRole('button', { name: 'termul · ab12, switch project' })
+        ).toHaveTextContent('termul · ab12')
       })
 
       it('non-git project: the name only', () => {
@@ -733,7 +739,7 @@ describe('MobileChatShell', () => {
         tauriRef.current = true
         renderShell()
 
-        expect(screen.getByText('termul · main · Local')).toBeInTheDocument()
+        expect(screen.getByText('termul · main')).toBeInTheDocument()
         expect(screen.queryByRole('button', { name: /switch project/ })).not.toBeInTheDocument()
       })
     })
@@ -848,7 +854,13 @@ describe('MobileChatShell', () => {
     function sheetRows(): string[] {
       const sheet = document.getElementById('mobile-header-more-sheet')
       return Array.from(sheet?.querySelectorAll('button') ?? [])
-        .map((button) => button.textContent?.trim() ?? '')
+        .map((button) => {
+          // A disabled row shows its reason as visible text under the label;
+          // the row's name is the label alone.
+          const reasonId = button.getAttribute('aria-describedby')
+          const reason = reasonId ? (document.getElementById(reasonId)?.textContent ?? '') : ''
+          return (button.textContent ?? '').replace(reason, '').trim()
+        })
         .filter((text) => text.length > 0 && text !== 'Close')
     }
 
@@ -864,7 +876,7 @@ describe('MobileChatShell', () => {
 
       expect(dialog.id).toBe('mobile-header-more-sheet')
       expect(dialog).toHaveAccessibleName('Hello chat')
-      expect(dialog).toHaveAccessibleDescription('termul · main · Local')
+      expect(dialog).toHaveAccessibleDescription('termul · main')
       expect(more).toHaveAttribute('aria-expanded', 'true')
       expect(more).toHaveAttribute('aria-controls', 'mobile-header-more-sheet')
     })
@@ -981,6 +993,11 @@ describe('MobileChatShell', () => {
       await openHeaderSheet()
 
       expect(sheetRows()).toEqual(['Files', 'Reload this chat', 'Close chat'])
+      // Disabled here: the reason shows as text a touch can read, not a tooltip.
+      const reload = screen.getByRole('button', { name: 'Reload this chat' })
+      expect(reload).toBeDisabled()
+      expect(reload).not.toHaveAttribute('title')
+      expect(reload).toHaveAccessibleDescription('This chat is not ready to reload.')
     })
 
     it('omits Close chat for a non-chat tab', async () => {

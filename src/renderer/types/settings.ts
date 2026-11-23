@@ -1,24 +1,5 @@
 ﻿import { MONO_STACK } from '@/lib/font-stacks'
 
-// Context bar visibility settings
-export interface ContextBarSettings {
-  showProjectName: boolean
-  showGitBranch: boolean
-  showGitStatus: boolean
-  showWorkingDirectory: boolean
-  showExitCode: boolean
-}
-
-// Default settings for users with no saved blob: project name and file counts
-// (`showGitStatus`) are hidden; branch, directory and exit code are shown.
-export const DEFAULT_CONTEXT_BAR_SETTINGS: ContextBarSettings = {
-  showProjectName: false,
-  showGitBranch: true,
-  showGitStatus: false,
-  showWorkingDirectory: true,
-  showExitCode: true
-}
-
 // Table of contents panel settings
 export interface TocSettings {
   isVisible: boolean
@@ -81,6 +62,8 @@ export interface AppSettings {
   appearanceMode: 'light' | 'dark'
   /** Whole-UI zoom factor (1.0 = 100%). Scales the entire window like VS Code's window zoom. */
   uiZoomLevel: number
+  /** macOS desktop only: the Rail shows the native sidebar material (off by default). */
+  translucentRail: boolean
   /** ACP turn hard-cap timeout in seconds, or null = use the env var / Rust
    * default (unlimited by default). Set via App Preferences; pushed to the
    * Rust core. */
@@ -133,6 +116,12 @@ export interface AppSettings {
   notifyOnAgentChatNeedsYou: boolean
   /** Saved shell + args + folder + env combinations, opened from the command palette. */
   terminalProfiles: TerminalProfile[]
+  /**
+   * When this host finished first-run onboarding (ISO 8601), or null. One
+   * value per host: the desktop, its shared-live browsers and phones agree.
+   * Reset Settings keeps it.
+   */
+  onboardingCompletedAt: string | null
 }
 
 /** Whole-UI zoom bounds â€” match the native View menu semantics (0.5xâ€“3.0x, 10% steps). */
@@ -173,7 +162,7 @@ export const TERMINAL_URL_OPEN_MODE_OPTIONS: Array<{
   label: string
 }> = [
   { value: 'system', label: 'System Default Browser' },
-  { value: 'termul', label: 'Termul Browser' }
+  { value: 'termul', label: 'Troupe Browser' }
 ]
 
 export const REMOTE_BIND_MODE_OPTIONS: Array<{
@@ -293,6 +282,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   colorTheme: 'termul',
   appearanceMode: 'dark',
   uiZoomLevel: UI_ZOOM_DEFAULT,
+  translucentRail: false,
   acpTurnTimeoutSecs: null,
   editorAutoSave: false,
   editorAutoSaveDelayMs: 1000,
@@ -308,7 +298,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   notifyOnTerminalIdle: true,
   notifyOnAgentChatTurnFinished: true,
   notifyOnAgentChatNeedsYou: true,
-  terminalProfiles: []
+  terminalProfiles: [],
+  onboardingCompletedAt: null
 }
 
 // Keyboard shortcut definition
@@ -400,8 +391,8 @@ export const DEFAULT_KEYBOARD_SHORTCUTS: KeyboardShortcutsConfig = {
   sidebarToggle: {
     id: 'sidebarToggle',
     label: 'Toggle Projects',
-    description: 'Expand or collapse projects',
-    defaultKey: 'ctrl+shift+b'
+    description: 'Expand or collapse the projects sidebar',
+    defaultKey: 'ctrl+b'
   },
   closeTab: {
     id: 'closeTab',
@@ -418,8 +409,8 @@ export const DEFAULT_KEYBOARD_SHORTCUTS: KeyboardShortcutsConfig = {
   toggleFileExplorer: {
     id: 'toggleFileExplorer',
     label: 'Toggle Side Panel',
-    description: 'Show or hide side panel',
-    defaultKey: 'ctrl+b'
+    description: 'Show or hide the side panel at the right edge',
+    defaultKey: 'ctrl+alt+b'
   },
   fileExplorerRename: {
     id: 'fileExplorerRename',

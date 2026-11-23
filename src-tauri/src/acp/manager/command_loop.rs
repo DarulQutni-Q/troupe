@@ -2,10 +2,14 @@ use super::*;
 
 use std::collections::BTreeMap;
 
+use super::import_steps::finish_history_import;
+
 use crate::acp::legacy_models::{
     advertises_model_config_option, resolve_models, send_with_legacy_models,
     LEGACY_MODEL_SWITCH_UNSUPPORTED,
 };
+use agent_client_protocol::schema::v1::PromptResponse;
+
 use crate::acp::session::PendingElicitation;
 
 /// The agent driver's main loop: complete `initialize`, then service commands
@@ -31,7 +35,7 @@ pub(super) async fn run_command_loop(
     // kills the child via the SDK's `ChildGuard`.
     let init_request = InitializeRequest::new(ProtocolVersion::V1)
         .client_capabilities(client::client_capabilities(allow_terminal))
-        .client_info(Implementation::new("termul", env!("CARGO_PKG_VERSION")).title("Termul"));
+        .client_info(Implementation::new("troupe", env!("CARGO_PKG_VERSION")).title("Troupe"));
     if profile.native_subagents {
         log::info!("[acp] agent {agent_id}: advertising native subagent sessions");
     }
@@ -56,7 +60,7 @@ pub(super) async fn run_command_loop(
             };
             if response.protocol_version != ProtocolVersion::V1 {
                 let message = format!(
-                    "This agent requires ACP protocol version {:?}. Termul supports version 1.",
+                    "This agent requires ACP protocol version {:?}. Troupe supports version 1.",
                     response.protocol_version
                 );
                 log::warn!("[acp] agent {agent_id} {message}");
@@ -146,11 +150,14 @@ pub(super) async fn run_command_loop(
                 runtime_agent_id,
                 project_id,
                 ephemeral,
+                child_origin,
                 worktree_path,
                 worktree_branch,
                 additional_directories,
                 command_id,
                 tool_allowlist,
+                quick_chat_id,
+                started_by,
                 reply,
             } => {
                 let slot = reply_slot(reply);
@@ -213,15 +220,27 @@ pub(super) async fn run_command_loop(
                                 worktree_branch,
                                 worktree_created,
                                 command_id,
+                                started_by,
                                 model: resolved.models.as_ref().map(
                                     crate::acp::session_persistence::snapshot_from_model_state,
                                 ),
                             };
                             if !ephemeral {
                                 if let Some(persistence) = req_persistence {
-                                    if let Err(error) =
-                                        persistence.register_session(registration.clone()).await
-                                    {
+                                    let registered = match quick_chat_id.clone() {
+                                        Some(chat_id) => {
+                                            persistence
+                                                .register_quick_session(
+                                                    registration.clone(),
+                                                    chat_id,
+                                                )
+                                                .await
+                                        }
+                                        None => {
+                                            persistence.register_session(registration.clone()).await
+                                        }
+                                    };
+                                    if let Err(error) = registered {
                                         let _ = close_cx
                                             .send_request(CloseSessionRequest::new(&session_id))
                                             .block_task()
@@ -258,6 +277,13 @@ pub(super) async fn run_command_loop(
                                         registration,
                                     );
                                 }
+                                // Seed an orchestrated child's route the
+                                // moment the session id is known, before any
+                                // child event can be dispatched: the engine
+                                // supplies every id, so no parent walk.
+                                if let Some(origin) = &child_origin {
+                                    state.seed_child_route(origin, &session_id.0);
+                                }
                             }
 
                             // Cache the agent-advertised Model-selector configId so
@@ -293,6 +319,7 @@ pub(super) async fn run_command_loop(
                                     modes: response.modes,
                                     models: resolved.models,
                                     config_options: response.config_options,
+                                    cwd: quick_chat_id.map(|_| cwd),
                                 }),
                             );
                         }
@@ -316,6 +343,7 @@ pub(super) async fn run_command_loop(
                 cwd,
                 additional_directories,
                 mcp_servers,
+                import_history,
                 reply,
             } => {
                 let slot = reply_slot(reply);
@@ -323,6 +351,8 @@ pub(super) async fn run_command_loop(
                 let req_cx = cx.clone();
                 let req_state = driver_state.clone();
                 let req_persistence = persistence.clone();
+                let req_sinks = sinks.clone();
+                let req_agent_id = agent_id.clone();
                 // Story 3 replay contract: admit the reopen by reserving the
                 // session HERE — synchronously in the command loop, before the
                 // request task is spawned — so admission follows
@@ -387,11 +417,17 @@ pub(super) async fn run_command_loop(
                     // outcome (success, agent error, timeout). The reservation
                     // above guarantees no turn is active, so this admission
                     // cannot fail; keep the check total anyway.
-                    let Some(_replay_guard) =
+                    let replay_guard = if import_history {
+                        ReplayWindowGuard::try_new_importing(
+                            req_state.clone(),
+                            session_id.0.to_string(),
+                        )
+                    } else {
                         ReplayWindowGuard::try_new(req_state.clone(), session_id.0.to_string())
-                    else {
+                    };
+                    let Some(_replay_guard) = replay_guard else {
                         log::warn!(
-                            "[acp] session {} load rejected: prompt turn active (ACP_REOPEN_TURN_ACTIVE)",
+                            "[acp] session {} load rejected: prompt turn active or history import open (ACP_REOPEN_TURN_ACTIVE)",
                             crate::logging::redact_session_id(&session_id.0)
                         );
                         send_reply(
@@ -411,7 +447,7 @@ pub(super) async fn run_command_loop(
                     if profile.summarize_thinking {
                         request = request.meta(summarized_thinking_meta());
                     }
-                    let result = run_session_reopen(
+                    let mut result = run_session_reopen(
                         "session/load",
                         &session_id.0,
                         &cwd,
@@ -419,6 +455,16 @@ pub(super) async fn run_command_loop(
                         send_with_legacy_models(&req_cx, request),
                     )
                     .await;
+                    if import_history && result.is_ok() {
+                        if let Err(error) = finish_history_import(
+                            &req_state,
+                            &req_sinks,
+                            &req_agent_id,
+                            &session_id.0,
+                        ) {
+                            result = Err(error);
+                        }
+                    }
                     if let (Ok(outcome), Some(persistence)) = (&result, &req_persistence) {
                         persistence
                             .record_session_model(&session_id.0, outcome.models.as_ref())
@@ -580,7 +626,7 @@ pub(super) async fn run_command_loop(
                         // `session/close` is sent; the session is dropped
                         // locally and the caller learns the close was not
                         // clean.
-                        let was_ephemeral =
+                        let (was_ephemeral, cleared_commands) =
                             close_session_locally(&req_state, &req_plan_server, &session_id.0);
                         if let Err(finalize_error) = finalize_closed_session_if_durable(
                             req_persistence.as_ref(),
@@ -594,7 +640,12 @@ pub(super) async fn run_command_loop(
                                 crate::logging::redact_session_id(&session_id.0)
                             );
                         }
-                        announce_session_closed(&req_sinks, &req_agent_id, &session_id);
+                        announce_session_closed(
+                            &req_sinks,
+                            &req_agent_id,
+                            &session_id,
+                            cleared_commands,
+                        );
                         send_reply(&task_slot, Err(error));
                         return;
                     }
@@ -609,13 +660,13 @@ pub(super) async fn run_command_loop(
                     // sessions skip history finalization below (there is no
                     // durable record to finalize, so closing one must not
                     // surface a spurious "history finalization failed").
-                    let mut was_ephemeral = false;
+                    let (mut was_ephemeral, mut cleared_commands) = (false, None);
                     if result.is_ok() {
                         // Forget the workspace root, resolve any pending
                         // tickets for the now-closed session, and evict
                         // host-plan auth only after the agent confirmed the
                         // close.
-                        was_ephemeral =
+                        (was_ephemeral, cleared_commands) =
                             close_session_locally(&req_state, &req_plan_server, &session_id.0);
                     }
                     let mut result = result;
@@ -626,7 +677,12 @@ pub(super) async fn run_command_loop(
                             was_ephemeral,
                         )
                         .await;
-                        announce_session_closed(&req_sinks, &req_agent_id, &session_id);
+                        announce_session_closed(
+                            &req_sinks,
+                            &req_agent_id,
+                            &session_id,
+                            cleared_commands,
+                        );
                     }
                     send_reply(&task_slot, result);
                 });
@@ -690,6 +746,19 @@ pub(super) async fn run_command_loop(
                 if driver_state.lock().unprompted().end(&session_id.0) {
                     crate::acp::events::emit_agent_working(&sinks, &agent_id, &session_id.0, false);
                 }
+                // A new prompt clears the commands that ended since the last.
+                let background_commands = driver_state
+                    .lock()
+                    .background_commands()
+                    .begin_turn(&session_id.0);
+                if let Some(commands) = background_commands {
+                    crate::acp::events::emit_background_commands(
+                        &sinks,
+                        &agent_id,
+                        &session_id.0,
+                        commands,
+                    );
+                }
                 // Sequence + fan out the carrier's `user_prompt` NOW — the
                 // driver has accepted the prompt and nothing of its turn has
                 // been emitted yet, so the record can never trail one of its
@@ -735,12 +804,14 @@ pub(super) async fn run_command_loop(
                     let cancel_cx = turn_cx.clone();
                     let outcome: Result<StopReason, events::AcpErrorDetail> = race_turn(
                         async {
-                            turn_cx
+                            match turn_cx
                                 .send_request(PromptRequest::new(&session_id, content))
                                 .block_task()
                                 .await
-                                .map(|r| r.stop_reason)
-                                .map_err(events::AcpErrorDetail::from)
+                            {
+                                Ok(response) => codex_plan_limit_outcome(&response),
+                                Err(error) => Err(events::AcpErrorDetail::from(error)),
+                            }
                         },
                         cancel_rx,
                         &mut idle_rx,
@@ -790,6 +861,20 @@ pub(super) async fn run_command_loop(
                         let _ = permission.responder.respond(RequestPermissionResponse::new(
                             RequestPermissionOutcome::Cancelled,
                         ));
+                    }
+                    // Listed before the turn's terminator so no client sees the
+                    // chat finished with its command still running.
+                    let background_commands = turn_state.lock().end_turn_background_commands(
+                        &session_id.0,
+                        crate::acp::session::TurnEnd::of(&outcome),
+                    );
+                    if let Some(commands) = background_commands {
+                        crate::acp::events::emit_background_commands(
+                            &turn_sinks,
+                            &turn_agent_id,
+                            &session_id.0,
+                            commands,
+                        );
                     }
                     // Issue #411: model-abandoned questions are first-class
                     // outcomes — a turn that ends without the user answering
@@ -904,6 +989,10 @@ pub(super) async fn run_command_loop(
                 let _ = reply.send(Ok(driver_state.lock().unprompted().session_ids()));
             }
 
+            AcpCommand::BackgroundCommands { reply } => {
+                let _ = reply.send(Ok(driver_state.lock().background_commands().snapshot()));
+            }
+
             AcpCommand::SessionRoots { reply } => {
                 let _ = reply.send(Ok(driver_state.lock().session_roots_snapshot()));
             }
@@ -1007,6 +1096,8 @@ pub(super) async fn run_command_loop(
                 let task_slot = slot.clone();
                 let dispose_state = driver_state.clone();
                 let dispose_plan_server = host_plan_server.clone();
+                let dispose_sinks = sinks.clone();
+                let dispose_agent_id = agent_id.clone();
                 let close_cx = cx.clone();
                 spawn_request(&cx, slot, async move {
                     if let Some(waiter) = waiter {
@@ -1073,7 +1164,7 @@ pub(super) async fn run_command_loop(
                         }
                     }
 
-                    let (permissions, questions, elicitations) = {
+                    let disposed = {
                         let mut state = dispose_state.lock();
                         if state.is_turn_active(&session_id.0) {
                             send_reply(
@@ -1089,18 +1180,26 @@ pub(super) async fn run_command_loop(
                         }
                         state.dispose_session(&session_id.0)
                     };
-                    for permission in permissions {
+                    if let Some(cleared) = disposed.cleared_commands {
+                        crate::acp::events::emit_background_commands(
+                            &dispose_sinks,
+                            &dispose_agent_id,
+                            &session_id.0,
+                            cleared,
+                        );
+                    }
+                    for permission in disposed.permissions {
                         let _ = permission.responder.respond(RequestPermissionResponse::new(
                             RequestPermissionOutcome::Cancelled,
                         ));
                     }
-                    for question in questions {
+                    for question in disposed.questions {
                         let _ = question.responder.respond(serde_json::json!({
                             "questionId": question.question_id,
                             "cancelled": true,
                         }));
                     }
-                    for elicitation in elicitations {
+                    for elicitation in disposed.elicitations {
                         cancel_elicitation(elicitation);
                     }
                     // A promotable warm-pool session carries the injected plan
@@ -1187,6 +1286,41 @@ pub(super) async fn run_command_loop(
                     Err(refusal) => Err(refusal),
                 };
                 let _ = reply.send(result);
+            }
+
+            AcpCommand::UpsertSubagent {
+                record,
+                content,
+                reply,
+            } => {
+                let slot = reply_slot(reply);
+                let task_slot = slot.clone();
+                let req_state = driver_state.clone();
+                let req_persistence = persistence.clone();
+                let req_sinks = sinks.clone();
+                let req_agent_id = agent_id.clone();
+                spawn_request(&cx, slot, async move {
+                    let now = crate::acp::session_persistence::now_millis();
+                    let updates = {
+                        let mut state = req_state.lock();
+                        super::native_subagents::orchestrated_updates(
+                            &mut state,
+                            record,
+                            content.as_deref(),
+                            now,
+                        )
+                    };
+                    let result = super::native_subagents::deliver_routed(
+                        &req_state,
+                        req_persistence.as_ref(),
+                        &req_sinks,
+                        &req_agent_id,
+                        updates,
+                    )
+                    .await
+                    .map_err(|e| e.to_string());
+                    send_reply(&task_slot, result);
+                });
             }
 
             AcpCommand::SetMode {
@@ -1378,7 +1512,20 @@ pub(super) async fn run_command_loop(
                 outcome,
                 reply,
             } => {
-                let pending = driver_state.lock().take_permission(&request_id);
+                let pending = {
+                    let mut state = driver_state.lock();
+                    let pending = state.take_permission(&request_id);
+                    // A cancelled permission's call never runs.
+                    if let Some(permission) = pending
+                        .as_ref()
+                        .filter(|_| matches!(outcome, RequestPermissionOutcome::Cancelled))
+                    {
+                        state
+                            .background_commands()
+                            .permission_cancelled(&permission.session_id, &permission.tool_call_id);
+                    }
+                    pending
+                };
                 match pending {
                     Some(permission) => {
                         let result = permission
@@ -1528,13 +1675,12 @@ pub(super) async fn run_command_loop(
                         .block_task()
                         .await;
                     if result.is_ok() {
-                        let (pending, stopped_working) = {
+                        let (closing, stopped_working) = {
                             let mut state = req_state.lock();
                             // No `session_closed` follows a delete, so clients
                             // hear the end of the agent's own work here.
                             let stopped_working = state.unprompted().end(&session_id.0);
-                            let (_ephemeral, pending) = state.begin_close_session(&session_id.0);
-                            (pending, stopped_working)
+                            (state.begin_close_session(&session_id.0), stopped_working)
                         };
                         if stopped_working {
                             crate::acp::events::emit_agent_working(
@@ -1544,7 +1690,15 @@ pub(super) async fn run_command_loop(
                                 false,
                             );
                         }
-                        for permission in pending {
+                        if let Some(cleared) = closing.cleared_commands {
+                            crate::acp::events::emit_background_commands(
+                                &req_sinks,
+                                &req_agent_id,
+                                &session_id.0,
+                                cleared,
+                            );
+                        }
+                        for permission in closing.pending {
                             let _ = permission.responder.respond(RequestPermissionResponse::new(
                                 RequestPermissionOutcome::Cancelled,
                             ));
@@ -1678,6 +1832,22 @@ pub(super) fn initialize_message(
         auth.insert("gateway".to_string(), serde_json::json!({}));
     }
     UntypedMessage::new("initialize", &value).map_err(|error| error.to_string())
+}
+
+/// A Codex plan-limit on the prompt result becomes a turn error, so the
+/// renderer can switch accounts. Any other result keeps its stop reason.
+fn codex_plan_limit_outcome(
+    response: &PromptResponse,
+) -> Result<StopReason, events::AcpErrorDetail> {
+    let kind = response.meta.as_ref().and_then(|meta| {
+        crate::acp::codex_accounts::usage::codex_plan_limit_kind(&serde_json::Value::Object(
+            meta.clone(),
+        ))
+    });
+    if let Some(kind) = kind {
+        return Err(events::AcpErrorDetail::codex_plan_limit(kind));
+    }
+    Ok(response.stop_reason)
 }
 
 fn api_key_auth_meta(shape: ApiKeyShape, key: &ApiKey) -> Meta {

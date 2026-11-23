@@ -2,20 +2,20 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { findVisibleQuestionFocusTarget } from '@/components/chat/use-approval-dock'
 import {
+  CalendarClock,
   Camera,
   ChevronDown,
   FileCode,
+  Folder2,
   FolderGit2,
-  FolderTree,
   Github,
   History,
   MessageSquare,
   Plus,
   Search,
   Settings,
-  TerminalSquare,
-  type TermulIcon,
-  Workflow
+  Terminal,
+  type TermulIcon
 } from '@/components/icons'
 import { ProjectIcon } from '@/components/ProjectIcon'
 import { TermulMark } from '@/components/TermulMark'
@@ -88,7 +88,7 @@ const SECTION_NAV: ReadonlyArray<{
   Icon: TermulIcon
 }> = [
   { section: 'chats', label: 'Chats', Icon: MessageSquare },
-  { section: 'terminals', label: 'Terminals', Icon: TerminalSquare },
+  { section: 'terminals', label: 'Terminals', Icon: Terminal },
   { section: 'editors', label: 'Editors', Icon: FileCode },
   { section: 'github', label: 'GitHub', Icon: Github }
 ]
@@ -97,13 +97,13 @@ const SECTION_NAV: ReadonlyArray<{
 const FOOTER_ICON_CLASS = 'h-11 min-w-11 flex-1 rounded-lg'
 
 /**
- * The footer's primary pill (New chat / New terminal / Browse files): a
- * compact 36px pill at the row's end, its ::after hit-slop keeping the
+ * The footer's primary button (New chat / New terminal / Browse files): a
+ * compact 36px button at the row's end, its ::after hit-slop keeping the
  * tappable area at 44px. On a narrow drawer (or enlarged text) it is what
  * gives way: it shrinks and truncates its label, the icons keep 44px.
  */
-const FOOTER_PILL_CLASS =
-  "relative ml-1 min-w-0 gap-1.5 rounded-full px-3.5 text-sm after:absolute after:-inset-1 after:content-['']"
+const FOOTER_PRIMARY_CLASS =
+  "relative ml-1 min-w-0 gap-1.5 px-3.5 text-sm after:absolute after:-inset-1 after:content-['']"
 
 /** The list's accessible name per section; on screen the selected section tab marks the list. */
 const SECTION_HEADINGS: Record<MobileSection, string> = {
@@ -324,7 +324,7 @@ export function MobileShellDrawer({
         : listSection === 'editors'
           ? {
               label: 'Browse files',
-              Icon: FolderTree,
+              Icon: Folder2,
               disabled: !onOpenFiles,
               onClick: () => {
                 closeForHandoff()
@@ -339,7 +339,8 @@ export function MobileShellDrawer({
         ref={contentRef}
         side="left"
         id="mobile-shell-drawer"
-        className="flex w-full max-w-none flex-col gap-0 border-r-0 p-0 pt-[env(safe-area-inset-top)] sm:max-w-none [&>button:last-child]:mt-[env(safe-area-inset-top)]"
+        // The side insets keep rows clear of the notch on a landscape phone.
+        className="flex w-full max-w-none flex-col gap-0 border-r-0 p-0 pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)] sm:max-w-none [&>button:last-child]:mt-[env(safe-area-inset-top)]"
         onEscapeKeyDown={(event) => {
           // Radix hears Escape on the document before the rename field does and
           // would dismiss the drawer. Inside a row's rename field the key only
@@ -371,13 +372,13 @@ export function MobileShellDrawer({
               <>
                 <TermulMark size={20} className="ml-2 shrink-0" />
                 <SheetTitle ref={titleRef} tabIndex={-1} className="text-base font-semibold">
-                  Termul
+                  Troupe
                 </SheetTitle>
               </>
             ) : (
               <>
                 <SheetTitle ref={titleRef} tabIndex={-1} className="sr-only">
-                  Termul
+                  Troupe
                 </SheetTitle>
                 <div className="min-w-0 flex-1">
                   <DrawerProjectRow
@@ -416,7 +417,7 @@ export function MobileShellDrawer({
                     'flex min-h-11 min-w-0 flex-1 items-center justify-center rounded-full outline-none transition-colors duration-150 ease-out focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus-ring',
                     isCurrent
                       ? 'bg-background text-foreground shadow-sm'
-                      : 'text-muted-foreground hover:text-foreground'
+                      : 'text-muted-foreground hover:text-foreground active:bg-foreground/[0.06] active:text-foreground'
                   )}
                 >
                   <span className="relative flex">
@@ -547,14 +548,14 @@ export function MobileShellDrawer({
                   onOpenAutomations()
                 }}
               >
-                <Workflow size={18} />
+                <CalendarClock size={18} />
               </Button>
             )}
             {primaryAction && (
               <Button
                 type="button"
                 size="sm"
-                className={FOOTER_PILL_CLASS}
+                className={FOOTER_PRIMARY_CLASS}
                 disabled={primaryAction.disabled}
                 onClick={primaryAction.onClick}
               >

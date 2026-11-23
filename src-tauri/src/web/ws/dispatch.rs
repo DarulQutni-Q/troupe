@@ -63,7 +63,10 @@ pub(super) async fn route_request(req: WsRequest, env: &HandlerEnv) -> WsReply {
         // CAP-11: host-owned session delete (desktop parity with the
         // `acp_history_delete` Tauri command) — removes the persisted record
         // and tells every `chat_history` watcher the index changed.
-        "delete_session" => handle_delete_session(id, &req.payload, relay, history_mode).await,
+        "delete_session" => {
+            handle_delete_session(id, &req.payload, relay, acp, history_mode).await
+        }
+        "rename_session" => handle_rename_session(id, &req.payload, relay, history_mode).await,
         "open_persisted_session" => {
             handle_open_persisted_session(
                 id,
@@ -125,6 +128,7 @@ pub(super) async fn route_request(req: WsRequest, env: &HandlerEnv) -> WsReply {
             relay.refresh_pending_chat_activity();
             reply
         }
+        "answer_mcp_install" => handle_answer_mcp_install(id, &req.payload, env),
         // Story 1.8: ACP command forwarding → `AcpManager`. The streaming events
         // (`message_chunk`, `tool_call`, `prompt_complete`, `session_created`,
         // `config_options_update`, …) flow back automatically through the
@@ -138,13 +142,14 @@ pub(super) async fn route_request(req: WsRequest, env: &HandlerEnv) -> WsReply {
         "dispose_ephemeral_session" => {
             handle_dispose_ephemeral_session(id, &req.payload, acp, relay, subscribed_clients).await
         }
-        "list_sessions" => handle_list_sessions(id, &req.payload, acp).await,
+        "list_sessions" => handle_list_sessions(id, &req.payload, env).await,
         // Story 8: promote a backend-ephemeral warm-pool session to durable
         // (register persistence metadata + clear the ephemeral mark).
         "promote_session" => handle_promote_session(id, &req.payload, acp).await,
         "register_discovered_session" => {
             handle_register_discovered_session(id, &req.payload, acp, relay).await
         }
+        "import_agent_session" => handle_import_agent_session(id, &req.payload, acp, relay).await,
         // Watches (projects, chat-history index, agent roster, project file
         // changes, store keys, project terminal set): the full state now,
         // deltas under a contiguous revision after. A project's file watcher
@@ -174,13 +179,29 @@ pub(super) async fn route_request(req: WsRequest, env: &HandlerEnv) -> WsReply {
         "list_claude_usage" => handle_list_claude_usage(id, &req.payload, acp).await,
         "set_default_claude_account" => handle_set_default_claude_account(id, &req.payload, acp).await,
         "set_project_claude_account" => handle_set_project_claude_account(id, &req.payload, acp).await,
+        "set_chat_claude_account" => handle_set_chat_claude_account(id, &req.payload, acp).await,
         "set_claude_auto_switch" => handle_set_claude_auto_switch(id, &req.payload, acp).await,
+        "set_claude_resume" => handle_set_claude_resume(id, &req.payload, acp).await,
         "add_claude_account" => handle_add_claude_account(id, &req.payload, acp).await,
         "rename_claude_account" => handle_rename_claude_account(id, &req.payload, acp).await,
         "remove_claude_account" => handle_remove_claude_account(id, &req.payload, acp).await,
         "start_claude_link_login" => handle_start_claude_link_login(id, &req.payload, acp).await,
         "finish_claude_link_login" => handle_finish_claude_link_login(id, &req.payload, acp).await,
         "cancel_claude_login" => handle_cancel_claude_login(id, &req.payload, acp).await,
+        // Codex Accounts. New names; the Claude handlers above are unchanged.
+        "list_codex_accounts" => handle_list_codex_accounts(id, acp).await,
+        "list_codex_usage" => handle_list_codex_usage(id, &req.payload, acp).await,
+        "set_default_codex_account" => handle_set_default_codex_account(id, &req.payload, acp).await,
+        "set_project_codex_account" => handle_set_project_codex_account(id, &req.payload, acp).await,
+        "set_chat_codex_account" => handle_set_chat_codex_account(id, &req.payload, acp).await,
+        "set_codex_auto_switch" => handle_set_codex_auto_switch(id, &req.payload, acp).await,
+        "set_codex_resume" => handle_set_codex_resume(id, &req.payload, acp).await,
+        "add_codex_account" => handle_add_codex_account(id, &req.payload, acp).await,
+        "rename_codex_account" => handle_rename_codex_account(id, &req.payload, acp).await,
+        "remove_codex_account" => handle_remove_codex_account(id, &req.payload, acp).await,
+        "start_codex_account_login" => {
+            handle_start_codex_account_login(id, &req.payload, acp, req.command_id.clone()).await
+        }
         // CAP-6 / Story 8: host-owned ACP catalog resolution. The catalog
         // carries the host's OS/arch/runtime availability + per-agent
         // resolved `SupportedAcpAgentStatus`. The web client never probes
@@ -270,6 +291,8 @@ pub(super) async fn route_request(req: WsRequest, env: &HandlerEnv) -> WsReply {
         }
         "cancel_prompt" => handle_cancel_prompt(id, &req.payload, acp).await,
         "stop_subagent" => handle_stop_subagent(id, &req.payload, acp).await,
+        "subagent_settings_get" => handle_subagent_settings_get(id),
+        "subagent_settings_set" => handle_subagent_settings_set(id, &req.payload),
         "set_mode" => handle_set_mode(id, &req.payload, acp).await,
         "set_model" => handle_set_model(id, &req.payload, acp).await,
         "set_config_option" => handle_set_config_option(id, &req.payload, acp).await,

@@ -54,7 +54,7 @@ function renderHeader(overrides: Partial<HeaderProps> = {}) {
   }
   const props: HeaderProps = {
     title: 'Fix auth redirect loop',
-    subtitleText: 'termul · main · Local',
+    subtitleText: 'termul · main',
     subtitleLabel: 'termul · main, switch project',
     drawerOpen: false,
     onOpenDrawer: vi.fn(),
@@ -113,7 +113,9 @@ describe('MobileShellHeader', () => {
       expect(heading.id).toBe('mobile-shell-title')
       expect(heading).toHaveAttribute('tabindex', '-1')
       expect(heading.className).toContain('pointer-events-none')
-      expect(heading.className).toContain('truncate')
+      // Paper 2.6b: 15/20, a long title fades at the end (full-width, left aligned).
+      expect(heading).toHaveClass('fade-end', 'w-full', 'text-left', 'text-[15px]', 'leading-5')
+      expect(heading.className).not.toContain('truncate')
       expect(refs.title.current).toBe(heading)
 
       const block = container.querySelector('[data-mobile-header-title]')
@@ -172,7 +174,7 @@ describe('MobileShellHeader', () => {
       renderHeader()
 
       const subtitle = screen.getByRole('button', { name: 'termul · main, switch project' })
-      expect(subtitle).toHaveTextContent('termul · main · Local')
+      expect(subtitle).toHaveTextContent('termul · main')
       expect(subtitle.querySelector('svg')).toHaveAttribute('aria-hidden', 'true')
       expect(subtitle).toHaveAttribute('aria-haspopup', 'dialog')
       expect(subtitle).toHaveAttribute('aria-expanded', 'false')
@@ -199,7 +201,7 @@ describe('MobileShellHeader', () => {
       tauriRef.current = true
       renderHeader()
 
-      expect(screen.getByText('termul · main · Local')).toBeInTheDocument()
+      expect(screen.getByText('termul · main')).toBeInTheDocument()
       expect(
         screen.queryByRole('button', { name: 'termul · main, switch project' })
       ).not.toBeInTheDocument()
@@ -230,7 +232,10 @@ describe('MobileShellHeader', () => {
       expect(pill.className).toContain('bg-warning/20')
       expect(pill.className).toContain('text-warning')
       expect(pill.className).toContain('tabular-nums')
-      expect(pill.className).toContain("after:absolute after:-inset-2 after:content-['']")
+      // 44px tall hit area; the side slop stays clear of the neighbours.
+      expect(pill.className).toContain(
+        "after:absolute after:-inset-x-1.5 after:-inset-y-2 after:content-['']"
+      )
       const dot = pill.querySelector('span[aria-hidden="true"]')
       expect(dot?.className).toContain('size-2')
       expect(dot?.className).toContain('bg-warning')

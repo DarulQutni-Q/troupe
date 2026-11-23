@@ -87,7 +87,7 @@ fn automation_json(id: &str, revision: u64, approved: Option<u64>, graph: Value)
         "id": id, "project_id": "p1", "name": "Digest",
         "revision": revision, "approved_revision": approved, "enabled": true,
         "trigger": { "kind": "manual" }, "graph": graph,
-        "isolation": "shared_in_root", "next_run_at": null,
+        "layout": {}, "isolation": "shared_in_root", "next_run_at": null,
         "consecutive_errors": 0, "schedule_error_count": 0, "unseen_failures": 0,
         "last_run": null, "created_at": 1000, "updated_at": 1000, "deleted_at": null
     })
@@ -209,7 +209,7 @@ async fn an_automation_is_built_approved_and_run_over_its_routes() {
             "id": run_id, "automation_id": id, "revision": 2, "graph": shaped_graph(),
             "trigger": "manual", "scheduled_for": 1000, "status": status,
             "started_at": 1000, "finished_at": finished_at, "stop_reason": null,
-            "summary": null, "conversation_id": null, "worktree_id": null
+            "summary": null, "conversation_id": null, "worktree_id": null, "parked": null
         })
     };
     assert_eq!((status, run), ok(run_json("running", Value::Null)));
@@ -286,6 +286,88 @@ async fn an_automation_is_built_approved_and_run_over_its_routes() {
         )
         .await,
         ok(json!([]))
+    );
+}
+
+#[tokio::test]
+async fn a_parked_approval_is_decided_over_its_route() {
+    let service = service();
+    let app = router(&service);
+    let id = create(&app).await;
+    let gated = json!([
+        { "op": "add_node", "node": { "id": "gate", "label": "Ship?",
+          "spec": { "kind": "approval", "message": "Ship it?", "timeout_ms": 60000 } } },
+        { "op": "connect", "edge": { "from": "trigger", "port": "out", "to": "gate" } }
+    ]);
+    for (uri, body) in [
+        (
+            format!("/api/automations/{id}/ops"),
+            json!({ "base_revision": 1, "ops": gated }),
+        ),
+        (
+            format!("/api/automations/{id}/approve"),
+            json!({ "revision": 2 }),
+        ),
+    ] {
+        assert_eq!(send(app.clone(), Method::POST, &uri, Some(body)).await.0, 200);
+    }
+    let (_, run) = send(
+        app.clone(),
+        Method::POST,
+        &format!("/api/automations/{id}/run"),
+        Some(json!({})),
+    )
+    .await;
+    let run_id = run["data"]["id"].as_str().unwrap().to_string();
+    let runs_uri = format!("/api/automations/{id}/runs?limit=5");
+    let automation_id = crate::automation::model::AutomationId::from(id.clone());
+    let mut parked = Value::Null;
+    for _ in 0..300 {
+        let (_, body) = send(app.clone(), Method::GET, &runs_uri, None).await;
+        if !body["data"][0]["parked"].is_null() && !service.engine().is_executing(&automation_id)
+        {
+            parked = body["data"][0].clone();
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        (parked["status"].clone(), parked["parked"].clone()),
+        (
+            json!("running"),
+            json!({ "node_id": "gate", "iteration": null, "until": 61000 })
+        )
+    );
+
+    let approval = format!("/api/automation-runs/{run_id}/approval");
+    let decide =
+        |node_id: &str, approved: bool| Some(json!({ "node_id": node_id, "approved": approved }));
+    let (status, body) = send(app.clone(), Method::POST, &approval, decide("Gate", true)).await;
+    assert_eq!((status, body["code"].clone()), (422, json!("invalid_input")));
+    let (status, body) = send(
+        app.clone(),
+        Method::POST,
+        "/api/automation-runs/nope/approval",
+        decide("gate", true),
+    )
+    .await;
+    assert_eq!((status, body["code"].clone()), (404, json!("not_found")));
+    let lan = router_for(Some(service.clone()), false, LAN, OPEN);
+    let (status, _) = send(lan, Method::POST, &approval, decide("gate", true)).await;
+    assert_eq!(status, 403, "deciding is a write");
+
+    assert_eq!(
+        send(app.clone(), Method::POST, &approval, decide("gate", true)).await,
+        ok(json!(true))
+    );
+    assert_eq!(
+        send(app.clone(), Method::POST, &approval, decide("gate", false)).await,
+        ok(json!(false)),
+        "the run no longer waits"
+    );
+    assert_eq!(
+        wait_settled(&app, &id).await["data"][0]["status"],
+        json!("succeeded")
     );
 }
 
@@ -759,5 +841,210 @@ async fn answering_a_suggestion_is_a_write_and_matching_is_a_read() {
             .await
             .unwrap();
         assert_eq!(status(answered), 403, "{path}");
+    }
+}
+
+fn lan_post(path: &str, body: Value) -> Request<Body> {
+    let mut request = Request::builder()
+        .method(Method::POST)
+        .uri(path)
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    request.extensions_mut().insert(BearerVerified);
+    request
+}
+
+#[tokio::test]
+async fn a_layout_is_saved_over_its_route_without_a_new_revision() {
+    let service = service();
+    let app = router(&service);
+    let id = create(&app).await;
+    send(
+        app.clone(),
+        Method::POST,
+        &format!("/api/automations/{id}/ops"),
+        Some(json!({ "base_revision": 1, "ops": transform_graph() })),
+    )
+    .await;
+    send(
+        app.clone(),
+        Method::POST,
+        &format!("/api/automations/{id}/approve"),
+        Some(json!({ "revision": 2 })),
+    )
+    .await;
+
+    let (status, saved) = send(
+        app.clone(),
+        Method::POST,
+        &format!("/api/automations/{id}/layout"),
+        Some(json!({ "layout": {
+            "trigger": { "x": 0, "y": 0 },
+            "shape": { "x": 240.5, "y": -8 },
+            "ghost": { "x": 1, "y": 1 }
+        } })),
+    )
+    .await;
+
+    let mut expected = automation_json(&id, 2, Some(2), shaped_graph());
+    expected["layout"] =
+        json!({ "trigger": { "x": 0.0, "y": 0.0 }, "shape": { "x": 240.5, "y": -8.0 } });
+    assert_eq!((status, saved), ok(expected.clone()));
+    assert_eq!(
+        send(app, Method::GET, &format!("/api/automations/{id}"), None)
+            .await
+            .1["data"]["automation"],
+        expected
+    );
+}
+
+#[tokio::test]
+async fn a_malformed_layout_is_invalid_input_and_a_missing_automation_is_not_found() {
+    let service = service();
+    let app = router(&service);
+    let id = create(&app).await;
+    let uri = format!("/api/automations/{id}/layout");
+    for body in [
+        json!({ "layout": { "trigger": { "x": "left", "y": 0 } } }),
+        json!({ "layout": [] }),
+    ] {
+        let (status, refused) = send(app.clone(), Method::POST, &uri, Some(body.clone())).await;
+        assert_eq!(
+            (status, &refused["code"]),
+            (422, &json!("invalid_input")),
+            "{body}"
+        );
+    }
+    // A `Value` cannot hold 1e999, so this body goes over the wire as text.
+    let overflow = Request::builder()
+        .method(Method::POST)
+        .uri(&uri)
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"layout":{"trigger":{"x":1e999,"y":0}}}"#))
+        .unwrap();
+    let response = app.clone().oneshot(overflow).await.unwrap();
+    let status = response.status().as_u16();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let refused: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!((status, &refused["code"]), (422, &json!("invalid_input")));
+    let (status, no_body) = send(app.clone(), Method::POST, &uri, None).await;
+    assert_eq!((status, &no_body["code"]), (422, &json!("invalid_input")));
+    let (status, missing) = send(
+        app,
+        Method::POST,
+        "/api/automations/missing/layout",
+        Some(json!({ "layout": {} })),
+    )
+    .await;
+    assert_eq!((status, &missing["code"]), (404, &json!("not_found")));
+}
+
+#[tokio::test]
+async fn a_dry_run_answers_over_its_route_and_changes_nothing() {
+    let service = service();
+    let app = router(&service);
+    let id = create(&app).await;
+    let mut changes = service.subscribe();
+    let uri = format!("/api/automations/{id}/ops/preview");
+
+    let (status, previewed) = send(
+        app.clone(),
+        Method::POST,
+        &uri,
+        Some(json!({ "base_revision": 1, "ops": transform_graph() })),
+    )
+    .await;
+
+    assert_eq!(status, 200);
+    assert_eq!(
+        previewed["data"]["automation"],
+        automation_json(&id, 2, None, shaped_graph()),
+        "what a save would store, at the revision it would assign"
+    );
+    assert_eq!(previewed["data"]["issues"], json!([]));
+    assert_eq!(
+        previewed["data"]["policy"]["trigger_summary"],
+        "manual only"
+    );
+    assert_eq!(
+        send(
+            app.clone(),
+            Method::GET,
+            &format!("/api/automations/{id}"),
+            None
+        )
+        .await
+        .1["data"]["automation"],
+        automation_json(&id, 1, None, json!({ "nodes": [], "edges": [] })),
+        "the stored automation is as it was"
+    );
+    assert!(changes.try_recv().is_err(), "nothing is announced");
+
+    let (status, stale) = send(
+        app.clone(),
+        Method::POST,
+        &uri,
+        Some(json!({ "base_revision": 7, "ops": transform_graph() })),
+    )
+    .await;
+    assert_eq!(
+        (status, stale),
+        (
+            409,
+            json!({
+                "success": false, "code": "revision_conflict", "current_revision": 1,
+                "error": "revision conflict: the automation is at revision 1"
+            })
+        )
+    );
+    let (status, malformed) = send(
+        app,
+        Method::POST,
+        &uri,
+        Some(json!({ "base_revision": 1, "ops": [{ "op": "explode" }] })),
+    )
+    .await;
+    assert_eq!((status, &malformed["code"]), (422, &json!("invalid_input")));
+}
+
+#[tokio::test]
+async fn saving_a_layout_is_a_write_and_a_dry_run_is_a_read() {
+    let service = service();
+    let created = service.create("p1", "Digest").unwrap();
+    let id = created.id.to_string();
+    let lan = router_for(Some(service.clone()), true, LAN, OPEN);
+    let shared_live = router_for(
+        Some(service.clone()),
+        true,
+        LOOPBACK,
+        WriteFlags {
+            allow_remote_writes: false,
+            shared_live_writes_denied: true,
+        },
+    );
+    let layout = (
+        format!("/api/automations/{id}/layout"),
+        json!({ "layout": {} }),
+    );
+    let preview = (
+        format!("/api/automations/{id}/ops/preview"),
+        json!({ "base_revision": 1, "ops": transform_graph() }),
+    );
+    for (app, (path, body), expected) in [
+        (lan.clone(), layout.clone(), 403),
+        (shared_live.clone(), layout, 403),
+        (lan, preview.clone(), 200),
+        (shared_live, preview, 200),
+    ] {
+        let status = app
+            .oneshot(lan_post(&path, body))
+            .await
+            .unwrap()
+            .status()
+            .as_u16();
+        assert_eq!(status, expected, "{path}");
     }
 }

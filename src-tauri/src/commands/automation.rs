@@ -16,7 +16,7 @@ use tauri::Webview;
 use super::IpcResult;
 use crate::automation::agents::KnownAgent;
 use crate::automation::model::{
-    ApplyOpsResult, Automation, AutomationId, Op, Run, RunId, Schedule, Step,
+    ApplyOpsResult, Automation, AutomationId, Layout, NodeId, Op, Run, RunId, Schedule, Step,
 };
 use crate::automation::service::{
     self, AutomationDetail, AutomationService, ServiceError, ServiceResult,
@@ -38,6 +38,20 @@ pub struct SchedulePreview {
 
 pub(crate) fn parse_ops(ops: Value) -> ServiceResult<Vec<Op>> {
     serde_json::from_value(ops).map_err(|e| ServiceError::InvalidInput(format!("ops: {e}")))
+}
+
+pub(crate) fn decide_approval(
+    service: &AutomationService,
+    run_id: String,
+    node_id: String,
+    approved: bool,
+) -> ServiceResult<bool> {
+    let node_id = NodeId::parse(node_id).map_err(|e| ServiceError::InvalidInput(e.to_string()))?;
+    service.decide_approval(&RunId::from(run_id), &node_id, approved)
+}
+
+pub(crate) fn parse_layout(layout: Value) -> ServiceResult<Layout> {
+    serde_json::from_value(layout).map_err(|e| ServiceError::InvalidInput(format!("layout: {e}")))
 }
 
 pub(crate) fn preview_schedule(service: &AutomationService, schedule: Value) -> SchedulePreview {
@@ -165,6 +179,29 @@ pub async fn automation_apply_ops(
 }
 
 #[tauri::command]
+pub async fn automation_preview_ops(
+    id: String,
+    base_revision: u64,
+    ops: Value,
+    webview: Webview,
+) -> IpcResult<AutomationDetail> {
+    call(&webview, |s| {
+        s.preview_ops(&AutomationId::from(id), base_revision, &parse_ops(ops)?)
+    })
+}
+
+#[tauri::command]
+pub async fn automation_set_layout(
+    id: String,
+    layout: Value,
+    webview: Webview,
+) -> IpcResult<Automation> {
+    call(&webview, |s| {
+        s.set_layout(&AutomationId::from(id), parse_layout(layout)?)
+    })
+}
+
+#[tauri::command]
 pub async fn automation_delete(id: String, webview: Webview) -> IpcResult<()> {
     call(&webview, |s| s.delete(&AutomationId::from(id)))
 }
@@ -197,6 +234,16 @@ pub async fn automation_run_now(id: String, webview: Webview) -> IpcResult<Run> 
 #[tauri::command]
 pub async fn automation_cancel_run(run_id: String, webview: Webview) -> IpcResult<bool> {
     call(&webview, |s| s.cancel_run(&RunId::from(run_id)))
+}
+
+#[tauri::command]
+pub async fn automation_decide_approval(
+    run_id: String,
+    node_id: String,
+    approved: bool,
+    webview: Webview,
+) -> IpcResult<bool> {
+    call(&webview, |s| decide_approval(s, run_id, node_id, approved))
 }
 
 #[tauri::command]

@@ -15,6 +15,7 @@ import { Popover, PopoverTrigger } from '@/components/ui/popover'
 import { Sheet, SheetTrigger } from '@/components/ui/sheet'
 import { useMobileWebShell } from '@/hooks/use-mobile-web-shell'
 import type { SessionConfigOption, SessionModeState, SessionUsage } from '@/lib/acp-api'
+import { canonicalAgentDisplayName } from '@/lib/agents/acp-registry'
 import { isModelPickerV2Enabled } from '@/lib/model-picker-flag'
 import { cn } from '@/lib/utils'
 import { useAcpStore } from '@/stores/acp-store'
@@ -41,8 +42,6 @@ import { SelectorPanel } from './SelectorPanel'
 import { SelectorPanelV2, type SelectorPanelV2Props } from './SelectorPanelV2'
 import { type SelectorSource, useSessionSelectorSource } from './selector-source'
 import { useCurrentAgentConfigId } from './use-agent-switch'
-
-const PRESS = 'duration-150 ease-out enabled:active:scale-[0.96] motion-reduce:active:scale-100'
 
 const NO_MESSAGES: ReadonlyArray<{ role: string }> = []
 
@@ -108,10 +107,14 @@ function useComposerAgentLabel(sessionId: string): {
   const currentConfigId = useCurrentAgentConfigId(sessionId)
   const armedName = useAcpStore((s) => {
     const to = s.sessions?.[sessionId]?.switching?.toConfigId
-    return to ? (s.agentConfigs?.find((config) => config.id === to)?.name ?? to) : null
+    const config = to ? s.agentConfigs?.find((item) => item.id === to) : undefined
+    return config ? canonicalAgentDisplayName(config.id, config.name) : (to ?? null)
   })
   const sessionAgentId = useAcpStore((s) => s.sessions?.[sessionId]?.agentId ?? '')
-  const currentName = agentConfigs?.find((config) => config.id === currentConfigId)?.name
+  const currentConfig = agentConfigs?.find((config) => config.id === currentConfigId)
+  const currentName = currentConfig
+    ? canonicalAgentDisplayName(currentConfig.id, currentConfig.name)
+    : undefined
   const present = Boolean(sessionAgentId || currentConfigId)
   const aria = armedName
     ? `Switch to ${armedName} on next send. Cancel to keep ${currentName ?? 'the current agent'}`
@@ -296,10 +299,9 @@ export function AgentModelSelector({
       disabled={disabled}
       pending={pending || Boolean(modelStatus?.loading)}
       chevron={!armed}
-      chevronDirection="up"
       aria-label={pillAria}
       data-testid="agent-model-selector-trigger"
-      className={cn('max-w-[240px]', PRESS)}
+      className="max-w-[240px]"
     >
       <AgentGlyph
         templateId={agentTemplateId}
@@ -319,7 +321,7 @@ export function AgentModelSelector({
       aria-label="Cancel agent switch"
       title="Cancel the armed switch — the next send stays with the current agent"
       data-testid="agent-switch-cancel"
-      className="relative inline-flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-[background-color,color] duration-150 ease-out before:absolute before:-inset-2.5 before:content-[''] hover:bg-foreground/10 hover:text-foreground focus-visible:bg-foreground/10 focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus-ring disabled:cursor-not-allowed disabled:opacity-60"
+      className="relative inline-flex size-5.5 shrink-0 items-center justify-center rounded text-muted-foreground transition-[background-color,color] duration-150 ease-out before:absolute before:-inset-2.5 before:content-[''] hover:bg-foreground/10 hover:text-foreground focus-visible:bg-foreground/10 focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus-ring disabled:cursor-not-allowed disabled:opacity-60"
       onClick={() => cancelAgentSwitch(sessionId)}
     >
       <X size={10} aria-hidden="true" />
@@ -395,7 +397,8 @@ export function AgentModelSelector({
         contentClassName="z-[100] max-w-[calc(100vw-1rem)]"
         // Radix writes the room above or below the trigger onto the popper. The
         // panel shrinks its list to fit; the surface scrolls only if that is not enough.
-        className="flex max-h-[var(--radix-popper-available-height,70vh)] flex-col overflow-y-auto overscroll-contain rounded-xl border-border p-0"
+        surface="panel"
+        className="flex max-h-[var(--radix-popper-available-height,70vh)] flex-col overflow-y-auto overscroll-contain p-0"
       >
         {panel}
       </AnimatedMenuContent>

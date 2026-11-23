@@ -15,21 +15,23 @@ use crate::web::{EventStream, StreamItem, WsRelaySink};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-const MOCK_AGENT: &str = r#"
-import json, os, subprocess, sys, time
+pub(crate) const MOCK_AGENT: &str = r#"
+import json, os, subprocess, sys, time, uuid
 
 def send(obj):
     sys.stdout.write(json.dumps(obj) + "\n")
     sys.stdout.flush()
 
-def chunk(text):
+def chunk(text, sid="mock-1"):
     send({"jsonrpc": "2.0", "method": "session/update", "params": {
-        "sessionId": "mock-1",
+        "sessionId": sid,
         "update": {"sessionUpdate": "agent_message_chunk",
                    "content": {"type": "text", "text": text}}}})
 
 hung = None
 auth = None
+sessions = 0
+elicit_prompt = None
 for line in sys.stdin:
     line = line.strip()
     if not line:
@@ -47,6 +49,10 @@ for line in sys.stdin:
             send({"jsonrpc": "2.0", "id": auth, "error": {
                 "code": -32800, "message": "device code sign-in was cancelled"}})
         auth = None
+    elif method is None and rid == 960:
+        chunk("elicitation " + str(msg.get("result", {}).get("action")))
+        send({"jsonrpc": "2.0", "id": elicit_prompt, "result": {"stopReason": "end_turn"}})
+        elicit_prompt = None
     elif method == "authenticate":
         auth = rid
         send({"jsonrpc": "2.0", "id": 950, "method": "elicitation/create", "params": {
@@ -60,7 +66,11 @@ for line in sys.stdin:
                                   "sessionCapabilities": {"close": {}, "resume": {}}},
             "authMethods": []}})
     elif method == "session/new":
-        send({"jsonrpc": "2.0", "id": rid, "result": {"sessionId": "mock-1"}})
+        time.sleep(float(os.environ.get("MOCK_SESSION_NEW_DELAY", "0")))
+        sessions += 1
+        ids = os.environ.get("MOCK_SESSION_IDS")
+        sid = str(uuid.uuid4()) if ids == "unique" else "mock-%d" % sessions if ids == "1" else "mock-1"
+        send({"jsonrpc": "2.0", "id": rid, "result": {"sessionId": sid}})
     elif method == "session/prompt":
         text = msg["params"]["prompt"][0].get("text", "")
         if text == "ok":
@@ -71,9 +81,56 @@ for line in sys.stdin:
             send({"jsonrpc": "2.0", "id": rid, "result": {"stopReason": "end_turn"}})
             time.sleep(0.3)
             chunk("on my own")
+        elif text == "background":
+            # Claude Code's run_in_background: the call completes without
+            # terminal_exit, which arrives after the turn ended.
+            def tool(update):
+                send({"jsonrpc": "2.0", "method": "session/update", "params": {
+                    "sessionId": "mock-1", "update": dict(update, toolCallId="bg-1")}})
+            tool({"sessionUpdate": "tool_call", "status": "pending", "title": "Terminal",
+                  "kind": "execute", "_meta": {"terminal_info": {"terminal_id": "bg-1"}}})
+            tool({"sessionUpdate": "tool_call_update",
+                  "rawInput": {"command": "sleep 1", "description": "Wait a second"}})
+            tool({"sessionUpdate": "tool_call_update", "status": "completed"})
+            send({"jsonrpc": "2.0", "id": rid, "result": {"stopReason": "end_turn"}})
+            time.sleep(0.3)
+            tool({"sessionUpdate": "tool_call_update", "_meta": {"terminal_exit": {
+                "terminal_id": "bg-1", "exit_code": None, "signal": None}}})
+        elif text in ("shell-hang", "ask-shell", "leave-open"):
+            # A terminal call open when the turn ends: a Codex shell already
+            # running, or a Claude Bash call waiting on its permission.
+            status = "pending" if text == "ask-shell" else "in_progress"
+            send({"jsonrpc": "2.0", "method": "session/update", "params": {
+                "sessionId": "mock-1", "update": {
+                    "sessionUpdate": "tool_call", "toolCallId": "sh-1", "status": status,
+                    "title": "npm run watch", "kind": "execute",
+                    "rawInput": {"command": "npm run watch"},
+                    "_meta": {"terminal_info": {"terminal_id": "sh-1"}}}}})
+            if text == "ask-shell":
+                send({"jsonrpc": "2.0", "id": 901, "method": "session/request_permission",
+                      "params": {"sessionId": "mock-1",
+                                 "toolCall": {"toolCallId": "sh-1", "title": "npm run watch"},
+                                 "options": [{"optionId": "allow", "name": "Allow",
+                                              "kind": "allow_once"}]}})
+            if text == "leave-open":
+                send({"jsonrpc": "2.0", "id": rid, "result": {"stopReason": "end_turn"}})
+            else:
+                hung = rid
+        elif text == "stray":
+            # Ends the turn, then opens a call of its own outside any turn.
+            send({"jsonrpc": "2.0", "id": rid, "result": {"stopReason": "end_turn"}})
+            time.sleep(0.3)
+            send({"jsonrpc": "2.0", "method": "session/update", "params": {
+                "sessionId": "mock-1", "update": {
+                    "sessionUpdate": "tool_call", "toolCallId": "stray-1",
+                    "status": "in_progress", "title": "Read notes", "kind": "read"}}})
         elif text == "rpcfail":
             send({"jsonrpc": "2.0", "id": rid,
                   "error": {"code": -32000, "message": "mock failure"}})
+        elif text == "leaky":
+            send({"jsonrpc": "2.0", "id": rid,
+                  "error": {"code": -32603, "message": "Internal error",
+                            "data": {"headers": {"authorization": "Bearer sk-test"}}}})
         elif text == "providerlimit":
             send({"jsonrpc": "2.0", "id": rid,
                   "error": {"code": -32603,
@@ -83,6 +140,38 @@ for line in sys.stdin:
             send({"jsonrpc": "2.0", "id": rid,
                   "error": {"code": -32603, "message": "Internal error",
                             "data": {"status": 400}}})
+        elif text.startswith("codexlimit"):
+            send({"jsonrpc": "2.0", "id": rid, "error": {
+                "code": -32603, "message": "Codex reached its usage limit",
+                "data": {"errorKind": "rate_limited"}}})
+        elif text.startswith("Troupe moved this chat from Codex") or (
+            text.startswith("Troupe continued this chat because the") and "Codex account" in text):
+            chunk("codex_home=" + os.environ.get("CODEX_HOME", ""), msg["params"]["sessionId"])
+            if os.environ.get("MOCK_NOTICE_HANG") == "1":
+                hung = rid
+            else:
+                send({"jsonrpc": "2.0", "id": rid, "result": {"stopReason": "end_turn"}})
+        elif text.startswith("limit:"):
+            # Claude Code at its plan limit: a usage update says the window is
+            # rejected, and the turn stays open until it is cancelled.
+            hung = rid
+            send({"jsonrpc": "2.0", "method": "session/update", "params": {
+                "sessionId": msg["params"]["sessionId"], "update": {
+                    "sessionUpdate": "usage_update", "used": 10, "size": 100,
+                    "_meta": {"_claude/rateLimit": {
+                        "status": "rejected", "resetsAt": int(text[len("limit:"):]),
+                        "rateLimitType": "five_hour", "utilization": 1.0}}}}})
+        elif text.startswith("Troupe "):
+            chunk("config_dir=" + os.environ.get("CLAUDE_CONFIG_DIR", ""), msg["params"]["sessionId"])
+            if os.environ.get("MOCK_NOTICE_HANG") == "1":
+                hung = rid
+            else:
+                send({"jsonrpc": "2.0", "id": rid, "result": {"stopReason": "end_turn"}})
+        elif text.startswith("elicit-url:"):
+            elicit_prompt = rid
+            send({"jsonrpc": "2.0", "id": 960, "method": "elicitation/create", "params": {
+                "sessionId": "mock-1", "mode": "url", "elicitationId": "e-1",
+                "url": text[len("elicit-url:"):], "message": "Open this link"}})
         elif text == "browser":
             subprocess.run([os.environ["BROWSER"], "https://auth.example.com/login?state=mock"],
                            check=True)
@@ -90,6 +179,9 @@ for line in sys.stdin:
         elif text == "crash":
             chunk("partial")
             sys.exit(3)
+        elif text == "pid":
+            chunk("pid=%d" % os.getpid(), msg["params"]["sessionId"])
+            send({"jsonrpc": "2.0", "id": rid, "result": {"stopReason": "end_turn"}})
         elif text == "hang":
             hung = rid  # answered only by session/cancel
         elif text == "ask":
@@ -105,6 +197,9 @@ for line in sys.stdin:
             send({"jsonrpc": "2.0", "id": hung, "result": {"stopReason": "cancelled"}})
             hung = None
     elif method == "session/close":
+        send({"jsonrpc": "2.0", "id": rid, "result": {}})
+    elif method == "session/resume" and os.environ.get("MOCK_RESUME_OK") == "1":
+        time.sleep(float(os.environ.get("MOCK_RESUME_DELAY", "0")))
         send({"jsonrpc": "2.0", "id": rid, "result": {}})
     elif method in ("session/load", "session/resume"):
         send({"jsonrpc": "2.0", "id": rid,
@@ -157,11 +252,15 @@ impl Drop for IdleTimeoutGuard {
 /// They take precedence over the in-process override the idle-timeout test
 /// sets, so a developer/CI environment that configures one would change every
 /// real-loop turn's deadlines.
-const TURN_TIMEOUT_ENV_VARS: [&str; 4] = [
+const TURN_TIMEOUT_ENV_VARS: [&str; 8] = [
     "TERMUL_ACP_TURN_IDLE_TIMEOUT_SECS",
     "TERMUL_ACP_TURN_TIMEOUT_SECS",
     "TERMUL_ACP_SESSION_NEW_TIMEOUT_SECS",
     "TERMUL_ACP_SESSION_REOPEN_TIMEOUT_SECS",
+    "TROUPE_ACP_TURN_IDLE_TIMEOUT_SECS",
+    "TROUPE_ACP_TURN_TIMEOUT_SECS",
+    "TROUPE_ACP_SESSION_NEW_TIMEOUT_SECS",
+    "TROUPE_ACP_SESSION_REOPEN_TIMEOUT_SECS",
 ];
 
 /// Clears the ambient turn-timeout env vars for the harness lifetime (the
@@ -530,6 +629,18 @@ async fn rpc_error_turn_emits_one_error_terminator_and_releases_the_claim() {
     assert_eq!(terminators(&events)[0]["turnId"], "t1");
 
     assert_eq!(h.run("ok", "t2").await.unwrap(), StopReason::EndTurn);
+    h.finish().await;
+}
+
+/// The raw JSON-RPC `data` of a failed prompt (here a bearer token) never
+/// reaches the client that sent the prompt.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_prompt_reply_omits_the_error_data() {
+    let Some(h) = Harness::start().await else {
+        return;
+    };
+    let error = h.run("leaky", "t1").await.unwrap_err();
+    assert_eq!(error, "Internal error");
     h.finish().await;
 }
 
@@ -1266,6 +1377,208 @@ async fn stop_without_a_turn_ends_the_agents_own_work() {
     h.finish().await;
 }
 
+/// The `state` of each command in every `background_commands` event in `log`.
+fn background_command_events(log: &EventLog) -> Vec<Vec<String>> {
+    log.0
+        .lock()
+        .iter()
+        .filter(|(type_, _)| type_ == crate::acp::events::EVENT_BACKGROUND_COMMANDS)
+        .map(|(_, payload)| {
+            payload["commands"]
+                .as_array()
+                .expect("command list")
+                .iter()
+                .map(|command| command["state"].as_str().expect("state").to_string())
+                .collect()
+        })
+        .collect()
+}
+
+/// The `revision` of every `background_commands` event in `log`.
+fn background_command_revisions(log: &EventLog) -> Vec<u64> {
+    log.0
+        .lock()
+        .iter()
+        .filter(|(type_, _)| type_ == crate::acp::events::EVENT_BACKGROUND_COMMANDS)
+        .map(|(_, payload)| payload["revision"].as_u64().expect("revision"))
+        .collect()
+}
+
+async fn wait_for_background_command_events(log: &EventLog, expected: &[&[&str]]) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while background_command_events(log) != expected {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "background_commands events {:?}, want {expected:?}",
+            background_command_events(log)
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// A command the agent sends to the background runs past its turn: every
+/// sink hears it start and end, the agent listing keeps the ended row for a
+/// client that opens the chat later, and the next prompt clears it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_backgrounded_command_is_listed_until_the_prompt_after_it_ended() {
+    let Some(h) = Harness::start().await else {
+        return;
+    };
+    let first = spawn_turn(&h, "background", "t1").await;
+    tokio::time::timeout(RUN_TIMEOUT, first)
+        .await
+        .expect("the turn ends")
+        .expect("turn task")
+        .expect("turn ok");
+    for log in &h.logs {
+        wait_for_background_command_events(log, &[&["running"], &["ended"]]).await;
+    }
+    let summaries = h.acp.list_agent_summaries_with_ownership().await;
+    let summary = summaries
+        .iter()
+        .find(|summary| summary.id == h.agent_id)
+        .expect("the agent is listed");
+    let listed = serde_json::to_value(&summary.background_commands.sessions[&h.session_id.0])
+        .expect("serializable");
+    assert_eq!(
+        summary.background_commands.revision,
+        *background_command_revisions(&h.logs[0]).last().unwrap(),
+        "the listing is as new as the last event"
+    );
+    assert_eq!(listed[0]["toolCallId"], "bg-1");
+    assert_eq!(listed[0]["title"], "Wait a second");
+    assert_eq!(listed[0]["command"], "sleep 1");
+    assert_eq!(listed[0]["state"], "ended");
+    wait_for_activity(&h, |activity| activity.running_background_commands == 0).await;
+
+    let second = spawn_turn(&h, "ok", "t2").await;
+    let _ = tokio::time::timeout(RUN_TIMEOUT, second).await;
+    for log in &h.logs {
+        wait_for_background_command_events(log, &[&["running"], &["ended"], &[]]).await;
+    }
+    h.finish().await;
+}
+
+/// Run `text` to its terminator, cancelling it once `cancel_when` holds.
+async fn run_turn_to_end(
+    h: &Harness,
+    text: &str,
+    turn_id: &str,
+    cancel_when: Option<fn(&crate::acp::AgentActivity) -> bool>,
+) {
+    let turn = spawn_turn(h, text, turn_id).await;
+    if let Some(ready) = cancel_when {
+        wait_for_activity(h, ready).await;
+        h.acp
+            .cancel_prompt(&h.agent_id, h.session_id.clone())
+            .await
+            .expect("cancel");
+    }
+    let _ = tokio::time::timeout(RUN_TIMEOUT, turn)
+        .await
+        .expect("the turn ends");
+}
+
+/// A Bash call waiting on its permission when the user cancels never runs:
+/// it is not listed and does not keep the agent from the reaper.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_call_whose_permission_the_cancel_withdrew_is_not_a_background_command() {
+    let Some(h) = Harness::start().await else {
+        return;
+    };
+    run_turn_to_end(&h, "ask-shell", "t1", Some(|a| a.pending_permissions == 1)).await;
+    settle().await;
+    for log in &h.logs {
+        assert_eq!(background_command_events(log), Vec::<Vec<String>>::new());
+    }
+    wait_for_activity(&h, |a| !a.has_evidence()).await;
+    h.finish().await;
+}
+
+/// A shell already running when the user cancels keeps running (Codex).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_shell_running_when_the_turn_is_cancelled_is_listed() {
+    let Some(h) = Harness::start().await else {
+        return;
+    };
+    run_turn_to_end(&h, "shell-hang", "t1", Some(|a| a.active_turns == 1)).await;
+    for log in &h.logs {
+        wait_for_background_command_events(log, &[&["running"]]).await;
+    }
+    wait_for_activity(&h, |a| a.running_background_commands == 1).await;
+    h.finish().await;
+}
+
+/// A turn that hits its idle timeout says nothing about what still runs: an
+/// agent that stopped answering lists no command and can be reaped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_timed_out_turn_lists_no_command() {
+    let Some(mut h) = Harness::start().await else {
+        return;
+    };
+    h.set_idle_timeout(1);
+    run_turn_to_end(&h, "shell-hang", "t1", None).await;
+    settle().await;
+    for log in &h.logs {
+        assert_eq!(background_command_events(log), Vec::<Vec<String>>::new());
+    }
+    wait_for_activity(&h, |a| !a.has_evidence()).await;
+    h.finish().await;
+}
+
+/// Closing a chat clears its rows on every client, after the list that
+/// named them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn closing_a_session_clears_its_commands_on_every_client() {
+    let Some(h) = Harness::start().await else {
+        return;
+    };
+    run_turn_to_end(&h, "leave-open", "t1", None).await;
+    for log in &h.logs {
+        wait_for_background_command_events(log, &[&["running"]]).await;
+    }
+    h.acp
+        .close_session(&h.agent_id, h.session_id.clone())
+        .await
+        .expect("close ok");
+    for log in &h.logs {
+        wait_for_background_command_events(log, &[&["running"], &[]]).await;
+        let revisions = background_command_revisions(log);
+        assert!(revisions[0] < revisions[1], "{revisions:?}");
+    }
+    wait_for_activity(&h, |a| a.running_background_commands == 0).await;
+    h.finish().await;
+}
+
+/// A call the agent opened between turns belongs to neither: the next
+/// turn's end does not list it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_call_opened_between_turns_is_not_listed_when_the_next_turn_ends() {
+    let Some(h) = Harness::start().await else {
+        return;
+    };
+    run_turn_to_end(&h, "stray", "t1", None).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while !h.logs[0]
+        .0
+        .lock()
+        .iter()
+        .any(|(type_, _)| type_ == crate::acp::events::EVENT_AGENT_WORKING)
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the stray call never arrived"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    run_turn_to_end(&h, "ok", "t2", None).await;
+    settle().await;
+    for log in &h.logs {
+        assert_eq!(background_command_events(log), Vec::<Vec<String>>::new());
+    }
+    h.finish().await;
+}
+
 /// CPU time, in clock ticks, of the thread of this process whose `comm` is
 /// `name` (`utime + stime` from `/proc/self/task/<tid>/stat`).
 #[cfg(target_os = "linux")]
@@ -1338,3 +1651,6 @@ async fn idle_agent_driver_thread_stays_parked() {
 
 #[path = "real_loop_sign_in_tests.rs"]
 mod sign_in;
+
+#[path = "real_loop_elicitation_tests.rs"]
+mod elicitation;

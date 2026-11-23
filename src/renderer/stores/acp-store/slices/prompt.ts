@@ -5,6 +5,7 @@
 import { WS_ERROR_CODES } from '@shared/types/web-protocol.types'
 import { toast } from 'sonner'
 import type { StateCreator } from 'zustand'
+import { newerBackgroundCommands } from '@/components/chat/background-commands'
 import {
   alignSessionModelProjection,
   isUsableConfigOption,
@@ -27,16 +28,20 @@ import { bumpTurnEndNotice } from '@/lib/agent-chat-notify'
 import { parseBrowserConsentTicket } from '@/lib/browser-consent-api'
 import { COMMAND_RESEND_DELAYS_MS, settleCommand } from '@/lib/command-engine'
 import { logFrontendError } from '@/lib/log-api'
+import { settleRunningPlan } from '@/lib/plan-session'
 import { randomUUID } from '@/lib/uuid'
+import { isCodexAccountRestarting } from '@/stores/codex-account-restart'
 import { readOnlyGuardOfSession } from '@/stores/github-chat-links-store'
 import {
   appendQueuedPrompt,
   isAgentDeadError,
   isPromptTurnInProgressError,
   type QueuedPrompt,
+  reorderQueuedPrompt,
   sessionTurnBusy,
   waitForTurnClear
 } from '../../prompt-queue-orchestration'
+import { dropAgentPromptsInSession } from '../child-approvals'
 import {
   latestModelPick,
   modelValuesPatch,
@@ -51,9 +56,6 @@ import {
   cacheOptionsFromSession,
   configIdForAgentId,
   currentSessionModel,
-  dropElicitationsForSession,
-  dropPermissionsForSession,
-  dropQuestionsForSession,
   dropRecordKey,
   finalizeStreaming,
   isAuthRetriableSessionError,
@@ -68,6 +70,7 @@ import {
   waitForReadvertisedOptions,
   writeAgentOptionsCache
 } from '../helpers'
+import { latestHostReport, recordHostReport } from '../host-session-reports'
 import { useAcpStore } from '../index'
 import { forgetAnswering, noteAnswering } from '../pending-permission-sync'
 import { withoutRejectedRateLimit } from '../rate-limit'
@@ -98,38 +101,6 @@ import {
   recheckPendingPrompt
 } from './prompt-reconcile'
 import { clampLiveToolCallFields, flushCoalescedSync } from './transcript'
-
-/**
- * The newest `agent_working` report per session and agent. A reopen reads the
- * agent listing over a round trip; a report from the adopted owner that
- * arrives meanwhile is newer and wins. Keyed by agent too, so a late report of
- * a former owner never hides the current owner's.
- */
-const latestAgentWorking = new Map<string, { working: boolean; seq: number }>()
-let agentWorkingSeq = 0
-
-const agentWorkingKey = (sessionId: SessionId, agentId: AgentId): string =>
-  `${sessionId}\u0000${agentId}`
-
-/** The sequence number of the newest `agent_working` report seen so far. */
-export function agentWorkingReportSeq(): number {
-  return agentWorkingSeq
-}
-
-export function latestAgentWorkingReport(
-  sessionId: SessionId,
-  agentId: AgentId
-): { working: boolean; seq: number } | undefined {
-  return latestAgentWorking.get(agentWorkingKey(sessionId, agentId))
-}
-
-/** Forget a deleted chat's reports. */
-export function forgetAgentWorkingReports(sessionId: SessionId): void {
-  const prefix = `${sessionId}\u0000`
-  for (const key of latestAgentWorking.keys()) {
-    if (key.startsWith(prefix)) latestAgentWorking.delete(key)
-  }
-}
 
 /** Send the next queued prompt after the current turn closes. */
 export function flushNextQueuedPrompt(set: TurnEndSetter, sessionId: SessionId): void {
@@ -832,6 +803,8 @@ type PromptSliceState = Pick<
   | 'cancelPrompt'
   | 'recheckPromptCommand'
   | 'removeQueuedPrompt'
+  | 'moveQueuedPrompt'
+  | 'clearQueuedPrompts'
   | 'sendQueuedPromptNow'
   | 'setConfigOption'
   | 'setMode'
@@ -846,10 +819,23 @@ type PromptSliceState = Pick<
   | '_onElicitationRequest'
   | '_onPromptComplete'
   | '_onAgentWorking'
+  | '_onBackgroundCommands'
 >
 
 /** The host's stable `already_resolved` reply: the approval/question ticket was
  *  answered by another connection or released when its turn, session or agent ended. */
+function rejectOlderChat(get: () => AcpState, sessionId: SessionId): Promise<never> | null {
+  const state = get()
+  const session = state.sessions[sessionId]
+  const entry = state.sessionIndex.find((item) => item.id === sessionId)
+  const projectId = session?.projectId ?? entry?.projectId
+  const kind = session?.kind ?? entry?.kind
+  if (projectId === '__unassigned__' && kind !== 'quick') {
+    return Promise.reject(new Error('This older chat is read-only'))
+  }
+  return null
+}
+
 function isAlreadyResolved(err: unknown): boolean {
   return err instanceof AcpTransportError && err.code === WS_ERROR_CODES.ALREADY_RESOLVED
 }
@@ -864,16 +850,23 @@ export const createPromptSlice: StateCreator<AcpState, [], [], PromptSliceState>
   promptCommandStates: {},
 
   sendPrompt: (sessionId, text) => {
+    if (isCodexAccountRestarting(sessionId)) {
+      return Promise.reject(new Error('This chat is switching Codex accounts'))
+    }
+    const older = rejectOlderChat(get, sessionId)
+    if (older) return older
     // Staged switch-on-send (CAP-1/CAP-4): an armed switch intercepts the
     // NEXT send — the composer's text becomes the pending draft carried into
     // the handoff instead of a normal turn on the old agent.
     const armed = get().sessions[sessionId]?.switching
     if (armed) {
-      return get().switchAgent(sessionId, armed.toConfigId, {
-        pendingText: text,
-        wireBlocks: [{ type: 'text', text }],
-        displayBlocks: [{ type: 'text', text }]
-      })
+      return get()
+        .switchAgent(sessionId, armed.toConfigId, {
+          pendingText: text,
+          wireBlocks: [{ type: 'text', text }],
+          displayBlocks: [{ type: 'text', text }]
+        })
+        .then(() => undefined)
     }
     return runPromptTurn(set, get, sessionId, [{ type: 'text', text }], (session, turnId) =>
       acpApi.sendPrompt(session.agentId, sessionId, text, turnId)
@@ -881,15 +874,22 @@ export const createPromptSlice: StateCreator<AcpState, [], [], PromptSliceState>
   },
 
   sendPromptBlocks: (sessionId, blocks, options) => {
+    if (isCodexAccountRestarting(sessionId)) {
+      return Promise.reject(new Error('This chat is switching Codex accounts'))
+    }
+    const older = rejectOlderChat(get, sessionId)
+    if (older) return older
     // Staged switch-on-send (CAP-1/CAP-4): the composer already built the
     // wire/display pair — route them straight into the armed switch rather
     // than re-deriving the pending draft from the wire text.
     const armed = get().sessions[sessionId]?.switching
     if (armed) {
-      return get().switchAgent(sessionId, armed.toConfigId, {
-        wireBlocks: blocks,
-        displayBlocks: options?.displayBlocks ?? blocks
-      })
+      return get()
+        .switchAgent(sessionId, armed.toConfigId, {
+          wireBlocks: blocks,
+          displayBlocks: options?.displayBlocks ?? blocks
+        })
+        .then(() => undefined)
     }
     return runPromptTurn(
       set,
@@ -957,6 +957,30 @@ export const createPromptSlice: StateCreator<AcpState, [], [], PromptSliceState>
     if ((get().promptQueues[sessionId] ?? []).length === 0) {
       clearBusyQueueRetry(sessionId)
     }
+  },
+
+  moveQueuedPrompt: (sessionId, queueId, toIndex) => {
+    const before = get().promptQueues
+    const after = reorderQueuedPrompt(before, sessionId, queueId, toIndex)
+    if (after === before) return
+    set({ promptQueues: after })
+    void logFrontendError({
+      level: 'info',
+      message: `Chat ${sessionId} moved a queued prompt to place ${toIndex + 1}`,
+      source: 'acp-store:prompt-queue'
+    })
+  },
+
+  clearQueuedPrompts: (sessionId) => {
+    const count = (get().promptQueues[sessionId] ?? []).length
+    if (count === 0) return
+    set((s) => ({ promptQueues: { ...s.promptQueues, [sessionId]: [] } }))
+    clearBusyQueueRetry(sessionId)
+    void logFrontendError({
+      level: 'info',
+      message: `Chat ${sessionId} cleared ${count} queued prompt${count === 1 ? '' : 's'}`,
+      source: 'acp-store:prompt-queue'
+    })
   },
 
   sendQueuedPromptNow: async (sessionId, queueId) => {
@@ -1427,11 +1451,7 @@ export const createPromptSlice: StateCreator<AcpState, [], [], PromptSliceState>
   },
 
   _onAgentWorking: (e) => {
-    agentWorkingSeq += 1
-    latestAgentWorking.set(agentWorkingKey(e.sessionId, e.agentId), {
-      working: e.working,
-      seq: agentWorkingSeq
-    })
+    recordHostReport(e.sessionId, e.agentId, 'working', e.working)
     // Only the agent the chat runs on speaks for it: a stopped process can
     // still report after the chat moved to a new one.
     const session = get().sessions[e.sessionId]
@@ -1449,6 +1469,27 @@ export const createPromptSlice: StateCreator<AcpState, [], [], PromptSliceState>
     })
     // A message sent meanwhile waited in the queue; it goes out now.
     if (!e.working) flushNextQueuedPrompt(set, e.sessionId)
+  },
+
+  _onBackgroundCommands: (e) => {
+    // One agent's lists can arrive out of order: one older than a list it
+    // already sent is stale wherever the chat stands.
+    const reported = latestHostReport(e.sessionId, e.agentId, 'backgroundCommands')
+    if (reported && e.revision <= reported.value.revision) return
+    const list = { revision: e.revision, commands: e.commands }
+    recordHostReport(e.sessionId, e.agentId, 'backgroundCommands', list)
+    // Only the agent the chat runs on speaks for it, like `_onAgentWorking`.
+    if (get().sessions[e.sessionId]?.agentId !== e.agentId) return
+    set((s) => {
+      const current = s.sessions[e.sessionId]
+      if (!current) return {}
+      const backgroundCommands = newerBackgroundCommands(current.backgroundCommands, {
+        agentId: e.agentId,
+        ...list
+      })
+      if (backgroundCommands === current.backgroundCommands) return {}
+      return { sessions: { ...s.sessions, [e.sessionId]: { ...current, backgroundCommands } } }
+    })
   },
 
   _onPromptComplete: (e, eventSeq) => {
@@ -1491,14 +1532,30 @@ export const createPromptSlice: StateCreator<AcpState, [], [], PromptSliceState>
     // consistent before the turn status flips.
     flushCoalescedSync()
     set((s) => {
+      // The turn is over, so nothing is still running. Settle before the
+      // snapshot so a reload restores pending items, not a spinner.
+      const livePlan = s.plans[e.sessionId]
+      const settledPlan = settleRunningPlan(livePlan)
+      if (settledPlan !== livePlan) {
+        const stopped = (livePlan ?? []).filter((entry) => entry.status === 'in_progress').length
+        void logFrontendError({
+          level: 'info',
+          source: 'planSession',
+          message: `Turn ended (${e.stopReason}) for session ${e.sessionId}; ${stopped} in-progress plan item(s) returned to pending`
+        })
+      }
+      const plans =
+        settledPlan && settledPlan !== livePlan
+          ? { ...s.plans, [e.sessionId]: settledPlan }
+          : s.plans
       // Snapshot the live plan onto the just-finished assistant message's
-      // `blocks` BEFORE `finalizeStreaming` so historical turns retain their
-      // plan-of-record (the fence is the rehydrate source of truth). The
-      // append is a pure data op; `finalizeStreaming` only flips the
-      // `streaming` flag, so the fence survives the finalize pass.
+      // `blocks` BEFORE `finalizeStreaming` so a reopened chat can restore the
+      // panel. The fence is not rendered. The append is a pure data op;
+      // `finalizeStreaming` only flips the `streaming` flag, so the fence
+      // survives the finalize pass.
       let withSnapshot = s.messages
       try {
-        withSnapshot = appendPlanSnapshot(s.messages, e.sessionId, s.plans[e.sessionId])
+        withSnapshot = appendPlanSnapshot(s.messages, e.sessionId, settledPlan)
       } catch (error) {
         // Impossible in practice (pure JS over a PlanEntry[]), but a bad
         // entry could throw inside JSON.stringify. Log + continue turn-end
@@ -1511,17 +1568,27 @@ export const createPromptSlice: StateCreator<AcpState, [], [], PromptSliceState>
       }
       const messages = finalizeStreaming(withSnapshot, e.sessionId)
       const session = s.sessions[e.sessionId]
-      // A finished turn abandons any unanswered permission for this session;
-      // the backend resolves it 'cancelled', so clear the stale store entry too.
-      const pendingPermissions = dropPermissionsForSession(s.pendingPermissions, e.sessionId)
-      const pendingQuestions = dropQuestionsForSession(s.pendingQuestions, e.sessionId)
-      const pendingElicitations = dropElicitationsForSession(
-        s.pendingElicitations ?? {},
-        e.sessionId
+      // A finished turn abandons any unanswered prompt its agent raised in
+      // this session; the backend resolves it 'cancelled', so clear the stale
+      // store entry too. An orchestrated subagent's prompts are its own
+      // agent's and wait on its run (see child-approvals.ts).
+      const pendingPermissions = dropAgentPromptsInSession(
+        s.pendingPermissions,
+        e.sessionId,
+        e.agentId
       )
-      if (!session) return { messages, pendingPermissions, pendingQuestions, pendingElicitations }
+      const pendingQuestions = dropAgentPromptsInSession(s.pendingQuestions, e.sessionId, e.agentId)
+      const pendingElicitations = dropAgentPromptsInSession(
+        s.pendingElicitations ?? {},
+        e.sessionId,
+        e.agentId
+      )
+      if (!session) {
+        return { messages, plans, pendingPermissions, pendingQuestions, pendingElicitations }
+      }
       return {
         messages,
+        plans,
         pendingPermissions,
         pendingQuestions,
         pendingElicitations,

@@ -20,6 +20,10 @@ use tauri::State;
 /// required on HTTP, `/ws` and `/terminal/ws`, and the URL in the status
 /// (QR / copy link) carries it in the `#token=` fragment. The desktop's single
 /// web store (`shared_live_data`) is reused across stop/start cycles.
+///
+/// `allow_writes` (default `false`) chooses the remote access level: view-only,
+/// or full control (remote clients may prompt agents, run terminals and edit
+/// files). It is fixed for the life of the server.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn remote_server_start(
@@ -32,7 +36,11 @@ pub async fn remote_server_start(
     acp_install_store: State<'_, HostAcpInstallStore>,
     shared_live_data: State<'_, remote::SharedLiveData>,
     bind_mode: Option<String>,
+    allow_writes: Option<bool>,
 ) -> Result<IpcResult<remote::RemoteStatus>, String> {
+    // Omitted → view-only. Full control is an explicit desktop-user opt-in.
+    let access = remote::RemoteAccess::from_allow_writes(allow_writes.unwrap_or(false));
+    log::info!("remote_server_start: access={}", access.as_str());
     // Default to localhost only when the caller omits the bind mode; an
     // explicit-but-unrecognized value (e.g. a typo of "all") is an error — do
     // not silently downgrade to localhost (the phone would silently fail to
@@ -54,7 +62,7 @@ pub async fn remote_server_start(
     // `ACP_INSTALL_UNAVAILABLE`.
     let acp_install = acp_install_store.store().map(Arc::clone);
     let started = remote_state
-        .start(
+        .start_with_access(
             acp_manager.inner().clone(),
             pty_manager.inner().clone(),
             ws_relay.inner().clone(),
@@ -67,6 +75,7 @@ pub async fn remote_server_start(
             shared_live_data.inner(),
             acp_catalog,
             acp_install,
+            access,
         )
         .await;
     match started {
@@ -219,108 +228,4 @@ pub async fn remote_sync_chat_history(
     let _ = payload;
     crate::web::watch::publish_chat_history(ws_relay.inner(), &[]);
     Ok(IpcResult::success(()))
-}
-
-/// Mirror the desktop app-store MCP registry to the named project's
-/// `.termul/mcp-servers.json` (CAP-7 — registry sync gap).
-///
-/// Desktop MCP servers live in the host store key `shared/lww/acp/mcp-servers`
-/// (the desktop renderer's channel connection), while the web `GET /mcp-servers?projectId=`
-/// route reads `{project_root}/.termul/mcp-servers.json`. Without this bridge the web
-/// route never sees desktop-configured servers, so `McpBadge` stays hidden on
-/// web/mobile. Called best-effort after every desktop MCP save and when the
-/// host default project changes — a sync failure is logged but never blocks the app-store save.
-///
-/// The caller names the project (`projectId`); its canonical root comes from the
-/// durable registry (`canonical_root`), exactly like the web route — an unknown,
-/// archived or pathless project is refused `NOT_FOUND`, never redirected to a
-/// default or to the home directory. The write reuses
-/// `mcp_servers_api::registry_path` + `atomic_file::replace` so the sync writes
-/// the exact file the web route reads.
-#[tauri::command]
-pub async fn remote_sync_mcp_registry(
-    project_id: String,
-    registry: serde_json::Value,
-    project_registry: State<'_, Arc<crate::web::ProjectRegistry>>,
-) -> Result<IpcResult<()>, String> {
-    Ok(sync_mcp_registry_to_project_file(project_registry.inner(), &project_id, registry).await)
-}
-
-/// Testable core of `remote_sync_mcp_registry`: writes `registry` to
-/// `{project_root}/.termul/mcp-servers.json` via `atomic_file::replace`.
-/// Extracted so a Rust unit test can exercise the write path without a Tauri
-/// `AppHandle` (CAP-7 regression guard).
-pub(crate) async fn sync_mcp_registry_to_project_file(
-    project_registry: &crate::web::ProjectRegistry,
-    project_id: &str,
-    registry: serde_json::Value,
-) -> IpcResult<()> {
-    log::info!("remote_sync_mcp_registry: start");
-
-    // Validate the payload is an array (mirrors `mcp_servers_api::put`).
-    if !registry.is_array() {
-        log::warn!("remote_sync_mcp_registry: rejected non-array payload");
-        return IpcResult::error("MCP registry must be a JSON array", "MCP_REGISTRY_INVALID");
-    }
-
-    // Serialize + enforce the 1 MiB ceiling (mirrors `mcp_servers_api::put`).
-    let bytes = match serde_json::to_vec(&registry) {
-        Ok(bytes) if bytes.len() <= crate::web::mcp_servers_api::MAX_REGISTRY_BYTES => bytes,
-        Ok(_) => {
-            log::warn!("remote_sync_mcp_registry: rejected payload over 1 MiB");
-            return IpcResult::error(
-                "MCP registry exceeds the 1 MiB limit",
-                "MCP_REGISTRY_TOO_LARGE",
-            );
-        }
-        Err(_) => {
-            log::warn!("remote_sync_mcp_registry: payload not serializable");
-            return IpcResult::error("MCP registry is not serializable", "MCP_REGISTRY_INVALID");
-        }
-    };
-
-    let Some(project_root) = crate::web::mcp_servers_api::project_root(project_registry, project_id)
-    else {
-        log::warn!(
-            "remote_sync_mcp_registry: project '{project_id}' is unknown, archived or has no \
-             usable path"
-        );
-        return IpcResult::error(
-            crate::web::mcp_servers_api::PROJECT_NOT_FOUND_MESSAGE,
-            crate::web::mcp_servers_api::PROJECT_NOT_FOUND_CODE,
-        );
-    };
-
-    let path = crate::web::mcp_servers_api::registry_path(&project_root);
-    let write_path = path.clone();
-    let bytes_len = bytes.len();
-    let write_result =
-        tokio::task::spawn_blocking(move || crate::acp::atomic_file::replace(&write_path, &bytes))
-            .await;
-    match write_result {
-        Ok(Ok(())) => {
-            log::info!(
-                "remote_sync_mcp_registry: success ({} bytes → {})",
-                bytes_len,
-                path.display()
-            );
-            IpcResult::success(())
-        }
-        Ok(Err(error)) => {
-            log::error!(
-                "remote_sync_mcp_registry: atomic write failed for {}: {}",
-                path.display(),
-                error
-            );
-            IpcResult::error("Failed to persist MCP registry", "MCP_REGISTRY_WRITE_ERROR")
-        }
-        Err(error) => {
-            log::error!(
-                "remote_sync_mcp_registry: write task panicked for {}: {}",
-                path.display(),
-                error
-            );
-            IpcResult::error("Failed to persist MCP registry", "MCP_REGISTRY_WRITE_ERROR")
-        }
-    }
 }

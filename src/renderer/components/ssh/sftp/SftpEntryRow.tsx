@@ -3,11 +3,11 @@ import {
   ChevronDown,
   ChevronRight,
   Download,
+  Edit,
   File,
   FileText,
   Folder,
   Link2,
-  Pencil,
   Trash2
 } from '@/components/icons'
 import { FOCUS_RING_CLASS, QUIET_ICON_BUTTON_CLASS } from '@/components/ui/panel-styles'
@@ -95,8 +95,6 @@ export function SftpEntryRow({
         onFocus={onFocus}
         aria-expanded={isDir ? expanded : undefined}
         title={isDir ? entry.path : `Open ${entry.name}`}
-        // A full-width row shrinking on press reads as the layout jumping.
-        data-press-feedback="off"
       >
         <span className="flex w-3.5 shrink-0 justify-center" aria-hidden="true">
           {isDir &&
@@ -140,7 +138,7 @@ export function SftpEntryRow({
           aria-label={`Rename ${entry.name}`}
           title="Rename"
         >
-          <Pencil size={12} />
+          <Edit size={12} />
         </button>
         <button
           type="button"

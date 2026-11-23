@@ -14,9 +14,13 @@ Sometimes the agent you started with is not the right one any more. Another agen
 
 ![The model panel in a chat with a second agent's tab selected. It lists that agent's two models and says that the chat switches to it on the next send.](/screenshots/agents-switch-picker.png)
 
-When you send, Termul starts the new agent in the same folder. The new agent receives a summary of the conversation, followed by your message. Your message is all that shows in your chat bubble. The summary travels with it.
+When you send, Troupe starts the new agent in the same folder. The new agent receives a summary of the conversation, followed by your message. Your message is all that shows in your chat bubble. The summary travels with it.
 
 To change your mind before you send, click **Cancel agent switch** (the **X** next to the model button). You can also pick a model on the current agent's tab. The next message then goes to the current agent.
+
+## Switch an empty chat
+
+If the chat has no messages yet, there is nothing to hand off. The agent's models show the line "Starts this chat on _agent_". Click a model, and the chat moves to that agent at once, in the same tab. The model button shows the new agent and model, with no arrow. No summary is sent, and no switch row appears.
 
 ## Install an agent while you switch
 
@@ -33,7 +37,11 @@ An agent marked **Manual install**, **Needs Node**, **Needs uv**, or **Unavailab
 - The summary the new agent received sits under that row. Click the row to collapse or expand the summary. It is open again each time you reopen the chat.
 - Your message and the new agent's replies follow.
 
-The chat's card in the **Chats** list shows the icons of the agents in order. With more than three agents, the card shows the first and the last, and a count such as **+2** for the rest. When you reopen the chat later, it continues with the last agent you switched to. You can switch more than once.
+The switch does not add a new chat. The sidebar keeps one row for the whole conversation, and so do the chat list on a phone and the chats you can @-mention. When you reopen the chat later, you see the whole conversation, from before and after each switch, and it continues with the last agent you switched to. If that agent cannot reload an old conversation, you can read the chat but not continue it, as described in [Find and reopen chats](/docs/agents/chat-history). You can switch more than once.
+
+When you @-mention a chat that switched agents, the agent you mention it to gets the turns from before and after each switch. Very long chats are still cut to their most recent part, and chats that do not fit in the combined limit for mentioned chats are sent without their text, as described in [Mention a file or another chat](/docs/agents/write-a-prompt#mention-a-file-or-another-chat).
+
+Deleting the chat deletes the whole conversation, with every agent's part.
 
 ## Switch while the agent is busy
 
@@ -50,4 +58,4 @@ If the new agent cannot start, the chat stays with the original agent and shows 
 
 If the new agent starts but does not receive your message, the switch still happens, and no reply comes. Send your message again.
 
-The old agent does not stop at once. Termul closes it after it sits idle, like any idle chat.
+The old agent does not stop at once. Troupe closes it after it sits idle, like any idle chat.

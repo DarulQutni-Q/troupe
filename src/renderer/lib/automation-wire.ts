@@ -6,13 +6,17 @@
  */
 
 import type {
+  AgentMcpServer,
   AgentPolicy,
   AgentTool,
   ApplyOpsResult,
+  ApprovalDecision,
+  ApprovalStepOutput,
   Automation,
   AutomationChanged,
   AutomationDetail,
   AutomationId,
+  AutomationLayout,
   AutomationNode,
   AutomationRun,
   AutomationStep,
@@ -27,6 +31,7 @@ import type {
   McpToolPolicy,
   NodeId,
   NodeSpec,
+  Parked,
   RunId,
   RunPolicy,
   RunStatus,
@@ -83,6 +88,7 @@ function oneOf<T extends string>(value: unknown, path: string, allowed: readonly
 
 const RUN_STATUSES = ['running', 'succeeded', 'failed', 'cancelled', 'skipped'] as const
 const STEP_STATUSES = ['running', 'succeeded', 'failed', 'skipped', 'waiting'] as const
+const APPROVAL_DECISIONS = ['approved', 'rejected', 'timed_out'] as const
 const RUN_TRIGGERS = ['scheduled', 'catch_up', 'manual'] as const
 const PORTS = ['out', 'error', 'true', 'false', 'item'] as const
 const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const
@@ -156,7 +162,8 @@ function nodeSpec(v: unknown, p: string): NodeSpec {
         output_schema: obj(o.output_schema, `${p}.output_schema`) as JsonSchemaSubset,
         timeout_ms: num(o.timeout_ms, `${p}.timeout_ms`),
         max_attempts: num(o.max_attempts, `${p}.max_attempts`),
-        tools: agentTools(o.tools, `${p}.tools`)
+        tools: agentTools(o.tools, `${p}.tools`),
+        mcp_servers: nullable(o.mcp_servers, `${p}.mcp_servers`, (v, q) => arr(v, q, str))
       }
     case 'transform':
       return { kind: 'transform', fields: arr(o.fields, `${p}.fields`, namedTemplate) }
@@ -187,8 +194,17 @@ function nodeSpec(v: unknown, p: string): NodeSpec {
       return { kind: 'merge', mode: oneOf(o.mode, `${p}.mode`, MERGE_MODES) }
     case 'wait':
       return { kind: 'wait', duration_ms: num(o.duration_ms, `${p}.duration_ms`) }
+    case 'approval':
+      return {
+        kind: 'approval',
+        message: str(o.message, `${p}.message`),
+        timeout_ms: num(o.timeout_ms, `${p}.timeout_ms`)
+      }
     default:
-      return fail(`${p}.kind`, 'http|agent|transform|condition|fail|for_each|merge|wait|mcp_tool')
+      return fail(
+        `${p}.kind`,
+        'http|agent|transform|condition|fail|for_each|merge|wait|approval|mcp_tool'
+      )
   }
 }
 
@@ -225,6 +241,14 @@ function lastRun(v: unknown, p: string): LastRun {
   }
 }
 
+function layout(v: unknown, p: string): AutomationLayout {
+  const entries = Object.entries(obj(v, p)).map(([key, at]) => {
+    const o = obj(at, `${p}.${key}`)
+    return [key, { x: num(o.x, `${p}.${key}.x`), y: num(o.y, `${p}.${key}.y`) }] as const
+  })
+  return Object.fromEntries(entries)
+}
+
 export function parseAutomation(v: unknown, p = 'automation'): Automation {
   const o = obj(v, p)
   return {
@@ -236,6 +260,7 @@ export function parseAutomation(v: unknown, p = 'automation'): Automation {
     enabled: bool(o.enabled, `${p}.enabled`),
     trigger: trigger(o.trigger, `${p}.trigger`),
     graph: graph(o.graph, `${p}.graph`),
+    layout: layout(o.layout, `${p}.layout`),
     isolation: oneOf(o.isolation, `${p}.isolation`, [
       'shared_in_root',
       'worktree_per_run'
@@ -273,7 +298,16 @@ function agentPolicy(v: unknown, p: string): AgentPolicy {
     agent_id: str(o.agent_id, `${p}.agent_id`),
     model: nullable(o.model, `${p}.model`, str),
     timeout_ms: num(o.timeout_ms, `${p}.timeout_ms`),
-    tools: agentTools(o.tools, `${p}.tools`)
+    tools: agentTools(o.tools, `${p}.tools`),
+    mcp_servers: arr(o.mcp_servers, `${p}.mcp_servers`, agentMcpServer)
+  }
+}
+
+function agentMcpServer(v: unknown, p: string): AgentMcpServer {
+  const o = obj(v, p)
+  return {
+    server_id: str(o.server_id, `${p}.server_id`),
+    name: str(o.name, `${p}.name`)
   }
 }
 
@@ -328,6 +362,15 @@ export function parseApplyOpsResult(v: unknown): ApplyOpsResult {
   }
 }
 
+function parked(v: unknown, p: string): Parked {
+  const o = obj(v, p)
+  return {
+    node_id: nodeId(o.node_id, `${p}.node_id`),
+    iteration: nullable(o.iteration, `${p}.iteration`, num),
+    until: num(o.until, `${p}.until`)
+  }
+}
+
 export function parseRun(v: unknown, p = 'run'): AutomationRun {
   const o = obj(v, p)
   return {
@@ -343,7 +386,8 @@ export function parseRun(v: unknown, p = 'run'): AutomationRun {
     stop_reason: nullable(o.stop_reason, `${p}.stop_reason`, str),
     summary: nullable(o.summary, `${p}.summary`, str),
     conversation_id: nullable(o.conversation_id, `${p}.conversation_id`, str),
-    worktree_id: nullable(o.worktree_id, `${p}.worktree_id`, str)
+    worktree_id: nullable(o.worktree_id, `${p}.worktree_id`, str),
+    parked: nullable(o.parked, `${p}.parked`, parked)
   }
 }
 
@@ -368,6 +412,31 @@ function step(v: unknown, p: string): AutomationStep {
 
 export function parseStepList(v: unknown): AutomationStep[] {
   return arr(v, 'steps', step)
+}
+
+/**
+ * An approval step's output, or `null` when it has another shape. Step output
+ * is free-form per node kind, so a mismatch hides the approval detail rather
+ * than failing the whole step list.
+ */
+export function parseApprovalOutput(v: unknown): ApprovalStepOutput | null {
+  try {
+    const o = obj(v, 'output')
+    const message = str(o.message, 'output.message')
+    if (o.decision === undefined) return { message }
+    return {
+      message,
+      decision: oneOf<ApprovalDecision>(o.decision, 'output.decision', APPROVAL_DECISIONS),
+      decided_at: num(o.decided_at, 'output.decided_at')
+    }
+  } catch (err) {
+    if (err instanceof WireShapeError) return null
+    throw err
+  }
+}
+
+export function parseDecided(v: unknown): boolean {
+  return bool(v, 'decided')
 }
 
 export interface SchedulePreview {

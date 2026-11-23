@@ -1,4 +1,4 @@
-# termul Documentation Index
+# Troupe Documentation Index
 
 **Type:** monolith
 **Primary Language:** TypeScript and Rust
@@ -7,7 +7,7 @@
 
 ## Project Overview
 
-Termul Manager is a project-aware desktop terminal workspace built with Tauri 2. It combines terminal management, project organization, snapshots, file exploration, editor panels, embedded browser tabs, and browser annotation workflows inside a single desktop shell.
+Troupe is a project-aware desktop terminal workspace built with Tauri 2. It combines terminal management, project organization, snapshots, file exploration, editor panels, embedded browser tabs, and browser annotation workflows inside a single desktop shell.
 
 ## Quick Reference
 
@@ -29,7 +29,7 @@ Termul Manager is a project-aware desktop terminal workspace built with Tauri 2.
 - [Design system](../DESIGN.md) - Token and component rules for renderer UI (`docs/design/` for topics)
 - [Development Guide](./development-guide.md) - Local setup, commands, and developer workflows
 - [API Contracts](./api-contracts.md) - Internal Tauri IPC command/event contracts
-- [Deployment Guide](./deployment-guide.md) - Release, packaging, updater workflow, and running `termul-server` in Docker
+- [Deployment Guide](./deployment-guide.md) - Release, packaging, updater workflow, and running `troupe-server` in Docker
 - [Contribution Guide](./contribution-guide.md) - Contribution process and coding conventions
 - [Native SSH](./ssh-native.md) - SSH sessions, host keys, credentials and the russh stack
 - [Canvas](./canvas.md) - The built-in figcraft design editor: documents, lifecycle, persistence, access control, agent gateway and the pinned bundle
@@ -45,6 +45,8 @@ Termul Manager is a project-aware desktop terminal workspace built with Tauri 2.
 - [Auto Update Release Verification](./auto-update-release-verification.md) - Operational updater and release verification notes
 - [Project Scan Analysis](./project-scan-analysis.json) - Prior scan artifact summarizing repository composition
 - [Claude Agent ACP](./claude-agent-acp.md) - Host install, prerequisites, auth, and headless administration
+- [Sidebar V2 handoff](./design/sidebar-v2-handoff.md) - Shell Rail with chats under the open project, collapsed rail and hover panels, tool strip and right panel; spec and checklist (P1 to P5)
+- [Composer V2 handoff](./design/composer-v2-handoff.md) - Composer V2 (desktop and phone), phone sheets, status rail counts, long-text rules (`fade-end`); design-only spec and checklist
 - [In-Chat Agent Switch](./in-chat-agent-switch.md) - Mid-conversation agent switching with context handoff, busy behavior, and reopen resolution
 - [ADR-0004: Claude accounts use linked config directories](./adr/0004-claude-accounts-linked-config-dirs.md) - Per-account `CLAUDE_CONFIG_DIR` with shared history, settings, and skills; spike results
 - [QA Report 2026-09-15](./qa-report-2026-09-15.md) - termul-server e2e: protocol, ACP UI, persistence (auth/posture findings)

@@ -14,6 +14,7 @@ import { clearChatRoute } from '@/lib/router-navigate'
 import { randomUUID } from '@/lib/uuid'
 import type { EnvVariable, Project, ProjectColor, ProjectGroup, Worktree } from '@/types/project'
 import { useProjectBusyStore } from './project-busy-store'
+import { closeQuickChatView } from './quick-chat-store'
 
 /** How long a new project may take to come back through the `projects` watch before it is selected anyway. */
 const LISTED_TIMEOUT_MS = 5000
@@ -61,7 +62,8 @@ export interface ProjectState {
   deleteProject: (id: string, options?: CascadeOptions) => Promise<void>
   /** Like `deleteProject`, for archiving. */
   archiveProject: (id: string, options?: CascadeOptions) => Promise<void>
-  restoreProject: (id: string) => Promise<void>
+  /** Resolves false when the host refused; the user has been told. */
+  restoreProject: (id: string) => Promise<boolean>
   reorderProjects: (activeProjectIds: string[]) => void
   /** The projects-watch feed only: replaces the whole list. */
   setProjects: (projects: Project[], activeProjectId?: string, groups?: ProjectGroup[]) => void
@@ -139,13 +141,25 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
   selectProject: (id: string): void => {
     const prev = get().activeProjectId
+    // A quick chat covers the project tree. Selecting a project (also the
+    // active one, and also from the palette or a notification) shows it.
+    const quickSessionId = closeQuickChatView()
+    if (quickSessionId) {
+      void logFrontendError({
+        level: 'info',
+        source: 'project-store.selectProject',
+        message: `Closed the quick chat view (${quickSessionId}) for project ${id}`
+      })
+    }
     set((state) => ({
       activeProjectId: id,
       projects: state.projects.map((p) => ({ ...p, isActive: p.id === id }))
     }))
     if (prev !== id) {
       writeActiveProject(id)
-      clearChatRoute()
+      // The quick chat's route settles in `closeQuickChatView`. Clearing it
+      // here too would add a second history entry.
+      if (!quickSessionId) clearChatRoute()
     }
   },
 
@@ -166,7 +180,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       // gitBranch intentionally omitted: a stale hardcoded 'main' here was
       // shown in the status bar before the real branch was detected.
       // `useProjectGitBranch` auto-detects the actual HEAD branch on project
-      // activation; the manual GitBranchPicker switch still updates it.
+      // activation; a branch switch (Changes header) still updates it.
     }
     // Remembered first: the watch state that lists the project can land before
     // the reply does, and must find the shell and env vars waiting.
@@ -260,11 +274,13 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     }
   },
 
-  restoreProject: async (id: string): Promise<void> => {
+  restoreProject: async (id: string): Promise<boolean> => {
     try {
       await projectRegistryApi.restore(id)
+      return true
     } catch (error) {
       toast.error(`Could not restore the project: ${describe(error)}`)
+      return false
     }
   },
 

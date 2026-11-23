@@ -107,6 +107,8 @@ pub const WS_COMMAND_CLASSES: &[(&str, CommandClass)] = &[
     ("send_prompt", CommandClass::command(Replay::Entity)),
     ("cancel_prompt", CommandClass::idempotent()),
     ("stop_subagent", CommandClass::idempotent()),
+    ("subagent_settings_get", CommandClass::read()),
+    ("subagent_settings_set", CommandClass::idempotent()),
     ("set_config_option", CommandClass::idempotent()),
     ("set_mode", CommandClass::idempotent()),
     ("set_model", CommandClass::idempotent()),
@@ -114,6 +116,8 @@ pub const WS_COMMAND_CLASSES: &[(&str, CommandClass)] = &[
     // reply + resend of the same commandId must replay the original outcome.
     ("respond_permission", CommandClass::command(Replay::Payload)),
     ("answer_question", CommandClass::command(Replay::Payload)),
+    // The payload carries secret field values. Nothing is ledgered.
+    ("answer_mcp_install", CommandClass::command(Replay::Never)),
     ("browser_stop", CommandClass::idempotent()),
     ("create_session", CommandClass::create()),
     ("load_session", CommandClass::command(Replay::Payload)),
@@ -129,12 +133,18 @@ pub const WS_COMMAND_CLASSES: &[(&str, CommandClass)] = &[
         "register_discovered_session",
         CommandClass::command(Replay::Payload),
     ),
+    (
+        "import_agent_session",
+        CommandClass::command(Replay::Payload),
+    ),
     ("spawn_agent", CommandClass::create()),
     ("list_claude_accounts", CommandClass::read()),
     ("list_claude_usage", CommandClass::read()),
     ("set_default_claude_account", CommandClass::idempotent()),
     ("set_project_claude_account", CommandClass::idempotent()),
+    ("set_chat_claude_account", CommandClass::idempotent()),
     ("set_claude_auto_switch", CommandClass::idempotent()),
+    ("set_claude_resume", CommandClass::idempotent()),
     // A resend of a lost reply answers with the Account the first run added,
     // instead of adding a second one.
     ("add_claude_account", CommandClass::command(Replay::Payload)),
@@ -151,6 +161,24 @@ pub const WS_COMMAND_CLASSES: &[(&str, CommandClass)] = &[
         CommandClass::command(Replay::ReceiptOnly),
     ),
     ("cancel_claude_login", CommandClass::idempotent()),
+    ("list_codex_accounts", CommandClass::read()),
+    ("list_codex_usage", CommandClass::read()),
+    ("set_default_codex_account", CommandClass::idempotent()),
+    ("set_project_codex_account", CommandClass::idempotent()),
+    ("set_chat_codex_account", CommandClass::idempotent()),
+    ("set_codex_auto_switch", CommandClass::idempotent()),
+    ("set_codex_resume", CommandClass::idempotent()),
+    // A resend answers with the Account the first run added.
+    ("add_codex_account", CommandClass::command(Replay::Payload)),
+    ("rename_codex_account", CommandClass::idempotent()),
+    ("remove_codex_account", CommandClass::idempotent()),
+    // The reply is the spawned agent. A resend returns that outcome instead
+    // of starting a second process. The config env is not part of the
+    // fingerprint.
+    (
+        "start_codex_account_login",
+        CommandClass::command(Replay::Payload),
+    ),
     ("kill_agent", CommandClass::idempotent()),
     ("list_agents", CommandClass::read()),
     ("authenticate", CommandClass::read()),
@@ -168,6 +196,7 @@ pub const WS_COMMAND_CLASSES: &[(&str, CommandClass)] = &[
     ("ping", CommandClass::read()),
     ("list_persisted_sessions", CommandClass::read()),
     ("delete_session", CommandClass::idempotent()),
+    ("rename_session", CommandClass::idempotent()),
     ("open_persisted_session", CommandClass::read()),
     ("get_session_payload", CommandClass::read()),
     ("recover_session_snapshot", CommandClass::read()),
@@ -232,15 +261,26 @@ pub fn class_of(request_type: &str) -> Option<(&'static str, CommandClass)> {
 /// secret.
 fn identifying_fields(request_type: &str) -> &'static [&'static str] {
     match request_type {
-        "create_session" => &["agentId", "cwd", "projectId"],
-        "spawn_agent" => &["config.name", "config.command", "config.configId", "projectId"],
+        "create_session" => &["agentId", "cwd", "projectId", "kind"],
+        "rename_session" => &["sessionId"],
+        "spawn_agent" => &[
+            "config.name",
+            "config.command",
+            "config.configId",
+            "projectId",
+        ],
         "load_session" | "resume_session" => &["agentId", "sessionId", "cwd"],
-        "close_session" | "dispose_ephemeral_session" | "promote_session"
+        "close_session"
+        | "dispose_ephemeral_session"
+        | "promote_session"
         | "delete_agent_session" => &["agentId", "sessionId"],
-        "register_discovered_session" => &["agentId", "sessionId", "cwd", "projectId"],
+        "register_discovered_session" | "import_agent_session" => {
+            &["agentId", "sessionId", "cwd", "projectId"]
+        }
         "record_agent_switch" => &["sessionId", "fromConfigId", "toConfigId", "newSessionId"],
         "respond_permission" => &["agentId", "requestId", "optionId"],
         "answer_question" => &["agentId", "questionId"],
+        "answer_mcp_install" => &["requestId"],
         "browser_stop" => &["sessionId"],
         "authenticate_agent" => &["agentId", "methodId"],
         "respond_elicitation" => &["agentId", "requestId", "action"],
@@ -249,6 +289,13 @@ fn identifying_fields(request_type: &str) -> &'static [&'static str] {
         }
         "add_claude_account" => &["name"],
         "finish_claude_link_login" => &["accountId"],
+        "add_codex_account" => &["name"],
+        "start_codex_account_login" => &[
+            "accountId",
+            "config.name",
+            "config.command",
+            "config.configId",
+        ],
         _ => &[],
     }
 }

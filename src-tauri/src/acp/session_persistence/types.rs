@@ -12,8 +12,8 @@ pub enum PersistedSessionStatus {
 /// (AD-1): `LocalAlias > BackgroundGenerated > AgentSupplied >
 /// DerivedFirstMessage > Untitled`. Once `title_source ==
 /// BackgroundGenerated`, subsequent `session_info_update` events do NOT
-/// overwrite the title. `LocalAlias` is reserved for a future local-rename
-/// feature; it is the highest precedence so a user-chosen name always wins.
+/// overwrite the title. `LocalAlias` is a user rename of a quick chat; it is
+/// the highest precedence so a user-chosen name always wins.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TitleSource {
@@ -21,6 +21,25 @@ pub enum TitleSource {
     AgentSupplied,
     DerivedFirstMessage,
     LocalAlias,
+}
+
+/// Whether a session is a project chat or a quick chat (no project).
+///
+/// Old records omit the field and load as [`SessionKind::Project`]. A quick
+/// chat serializes as `"quick"`. The unassigned project sentinel is not this
+/// flag: a legacy unassigned session stays a project-kind record.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionKind {
+    #[default]
+    Project,
+    Quick,
+}
+
+/// `true` when `kind` is a project chat, so the field is omitted on the wire.
+#[must_use]
+pub fn is_project_kind(kind: &SessionKind) -> bool {
+    *kind == SessionKind::Project
 }
 
 /// Returns `true` when `source` is one of the precedence tiers the host must
@@ -142,6 +161,29 @@ pub struct SessionMetadata {
     /// loads with `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sweep_checkpoint: Option<SweepCheckpoint>,
+    /// The previous session id this session continues from, when it was
+    /// created by an in-chat agent switch (the `agent_switch` marker's
+    /// `newSessionId` target). Stamped by `record_agent_switch` on the NEW
+    /// session so history surfaces can fold a switch chain into one row.
+    /// Derived cache: the durable `agent_switch` record on the SOURCE log
+    /// stays authoritative — this is the O(1) lookup a list-fold needs (the
+    /// alternative scans every log for a marker naming this session).
+    /// Additive: old metadata loads with `None` and the renderer heals the
+    /// fold lazily when a source payload's markers are installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continued_from: Option<String>,
+    /// `quick` for a chat with no project. Absent on old records, which stay
+    /// project chats. Not the unassigned-project sentinel.
+    #[serde(default, skip_serializing_if = "is_project_kind")]
+    pub kind: SessionKind,
+    /// Host-minted folder id under `~/.troupe/quick-chats`. Set only when
+    /// `kind` is quick. The host derives the cwd from this id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quick_chat_id: Option<String>,
+    /// The chat whose agent started this one with the `start_chat` host
+    /// tool. Absent on chats a person started and on old records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_by: Option<String>,
 }
 
 impl SessionMetadata {
@@ -213,6 +255,20 @@ pub struct SessionIndexEntry {
     /// The session log's epoch (see [`SessionMetadata::log_epoch`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_epoch: Option<String>,
+    /// The previous session id this session continues from (see
+    /// [`SessionMetadata::continued_from`]). Carried on the wire so a client
+    /// can collapse a switch chain into one conversation row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continued_from: Option<String>,
+    /// `quick` for a chat with no project. Absent on old records.
+    #[serde(default, skip_serializing_if = "is_project_kind")]
+    pub kind: SessionKind,
+    /// Host-minted folder id. See [`SessionMetadata::quick_chat_id`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quick_chat_id: Option<String>,
+    /// See [`SessionMetadata::started_by`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_by: Option<String>,
 }
 
 impl From<&SessionMetadata> for SessionIndexEntry {
@@ -239,6 +295,10 @@ impl From<&SessionMetadata> for SessionIndexEntry {
             model_id: metadata.model_id.clone(),
             model_name: metadata.model_name.clone(),
             log_epoch: metadata.log_epoch.clone(),
+            continued_from: metadata.continued_from.clone(),
+            kind: metadata.kind,
+            quick_chat_id: metadata.quick_chat_id.clone(),
+            started_by: metadata.started_by.clone(),
         }
     }
 }
@@ -286,6 +346,8 @@ pub struct SessionRegistration {
     /// The client `commandId` of the creating request (stamped on the record;
     /// see `SessionMetadata::command_id`). Never set for discovered sessions.
     pub command_id: Option<String>,
+    /// See [`SessionMetadata::started_by`].
+    pub started_by: Option<String>,
 }
 
 /// A session's current model id plus a display-name snapshot (CAP-3).
@@ -317,7 +379,9 @@ pub struct AgentSwitchRecord {
 pub enum SessionPersistenceError {
     Io(io::Error),
     Json(serde_json::Error),
-    UnsupportedVersion { found: u64 },
+    UnsupportedVersion {
+        found: u64,
+    },
     SessionNotFound,
     CorruptSession,
     InvalidStorageKey,
@@ -329,7 +393,10 @@ pub enum SessionPersistenceError {
     QueueFull,
     WriterStopped,
     PersistenceUnhealthy(String),
-    StaleCursor { cursor: u64, last_seq: u64 },
+    StaleCursor {
+        cursor: u64,
+        last_seq: u64,
+    },
 }
 
 impl std::fmt::Display for SessionPersistenceError {

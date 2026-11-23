@@ -16,9 +16,9 @@ import { logFrontendError } from '@/lib/log-api'
 import { syntaxShikiPair } from '@/lib/themes/syntax-shiki'
 import { cn } from '@/lib/utils'
 import { useColorTheme } from '@/stores/app-settings-store'
-import { TermulPlanRenderer } from './ChatMarkdownPlanFence'
 import { ChatImageGallery, ChatMedia, MediaAltChip } from './ChatMedia'
 import { chatCodePlugin } from './chat-code-plugin'
+import { remarkBareLinkChips } from './chat-markdown-bare-links'
 import { ChatMarkdownCode } from './chat-markdown-code'
 import { remarkFilePathLinks } from './chat-markdown-file-links'
 import {
@@ -29,13 +29,19 @@ import {
 import { ChatMarkdownTable } from './chat-markdown-table'
 import { ChatMarkdownSpan } from './chat-markdown-word'
 import { chatMediaFromMarkdown } from './chat-media-source'
+import { LinkChip } from './LinkChip'
 
-const MEDIA_REMARK_PLUGINS = [...Object.values(defaultRemarkPlugins), remarkTermulMedia]
+const MEDIA_REMARK_PLUGINS = [
+  ...Object.values(defaultRemarkPlugins),
+  remarkTermulMedia,
+  remarkBareLinkChips
+]
 /** Adds prose file-path linkification when a `filePathContext` exists. */
 const FILE_PATH_REMARK_PLUGINS = [
   ...Object.values(defaultRemarkPlugins),
   remarkTermulMedia,
-  remarkFilePathLinks
+  remarkFilePathLinks,
+  remarkBareLinkChips
 ]
 
 /**
@@ -46,7 +52,8 @@ const FILE_PATH_REMARK_PLUGINS = [
 export const STREAMDOWN_ALLOWED_TAGS: AllowedTags = {
   'termul-file-path': ['dataPath'],
   'termul-media': ['dataUrl', 'dataAlt', 'dataLinkPreview'],
-  'termul-gallery': ['dataItems']
+  'termul-gallery': ['dataItems'],
+  'termul-link': ['dataUrl']
 }
 
 function stringProp(props: Record<string, unknown>, name: string): string | undefined {
@@ -62,17 +69,10 @@ const CODE_PLUGIN = chatCodePlugin
 /** Live Mermaid diagram rendering for ```mermaid fences. */
 const MERMAID_PLUGIN = mermaidPlugin
 /**
- * Base plugin set used while the agent message is still streaming. The
- * `termul-plan` renderer is deliberately absent here so an in-flight turn
- * never renders a duplicate inline plan (the live sticky `PlanPanel` covers
- * the streaming turn). Historical (non-streaming) messages swap in
- * `STREAMDOWN_PLUGINS_WITH_PLAN` via the `plugins` prop on `AgentProse`.
+ * Plan fences are never rendered in the transcript. The sticky `PlanPanel`
+ * is the only plan UI, for the live turn and for a reopened chat.
  */
 const STREAMDOWN_PLUGINS = { code: CODE_PLUGIN, mermaid: MERMAID_PLUGIN }
-const STREAMDOWN_PLUGINS_WITH_PLAN = {
-  ...STREAMDOWN_PLUGINS,
-  renderers: [{ language: 'termul-plan', component: TermulPlanRenderer }]
-}
 
 // Copy on code blocks, plus download (save an agent-generated file); no line
 // numbers (chat snippets are short). Mermaid keeps its interactive controls.
@@ -89,12 +89,13 @@ const STREAMDOWN_COMPONENTS = {
   table: ChatMarkdownTable
 } as const
 
-// Streamdown blurIn, tuned to the streaming-text tokens.
+// Streamdown fadeIn, tuned to the streaming-text tokens.
 // Duration = --stream-fade. Easing = --stream-ease. Word gap = --stream-gap.
-// The 1px blur lives in the sd-blurIn keyframe (--stream-blur).
+// Opacity only: an animated `filter` gives every word its own render surface,
+// and a long reply then holds hundreds of layers that Chromium drops tiles for.
 // Active only while isAnimating is true. Settled markdown is not replayed.
 const STREAMDOWN_ANIMATED = {
-  animation: 'blurIn',
+  animation: 'fadeIn',
   duration: 350,
   easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
   sep: 'word',
@@ -206,7 +207,9 @@ export function TermulFilePathButton({
       type="button"
       data-testid="termul-file-path"
       data-path={path}
-      className="cursor-pointer appearance-none text-left font-medium text-primary underline underline-offset-2"
+      // Touch: an invisible 12px pad above and below makes the tap height
+      // about 44px without moving the line (the pseudo-element takes no space).
+      className="relative cursor-pointer appearance-none text-left font-medium text-primary underline underline-offset-2 pointer-coarse:after:absolute pointer-coarse:after:inset-x-0 pointer-coarse:after:-inset-y-3 pointer-coarse:after:content-['']"
       title="Open in editor"
       onClick={(event) => {
         if (event.button !== 0 || event.shiftKey) return
@@ -270,6 +273,16 @@ export function AgentProse({
           filePathContext={filePathContext}
         />
       ),
+      // A bare URL (see `remarkBareLinkChips`) shows as favicon + page title
+      // once the reply settles; a streaming URL may still be incomplete.
+      'termul-link': (props: Record<string, unknown>) => {
+        const url = stringProp(props, 'data-url') ?? ''
+        return /^https?:\/\//i.test(url) ? (
+          <LinkChip url={url} resolve={!streaming} />
+        ) : (
+          <>{props.children as React.ReactNode}</>
+        )
+      },
       'termul-gallery': (props: Record<string, unknown>) => (
         <TermulMarkdownGallery
           items={stringProp(props, 'data-items')}
@@ -325,7 +338,7 @@ export function AgentProse({
       }
     }
     return merged
-  }, [filePathContext])
+  }, [filePathContext, streaming])
 
   return (
     <div
@@ -339,11 +352,7 @@ export function AgentProse({
         caret={streaming ? 'block' : undefined}
         animated={reduced ? false : STREAMDOWN_ANIMATED}
         parseIncompleteMarkdown={streaming}
-        // The `termul-plan` renderer is attached only to historical
-        // (non-streaming) messages so an in-flight turn never renders a
-        // duplicate inline plan — the live sticky `PlanPanel` owns the
-        // streaming turn.
-        plugins={streaming ? STREAMDOWN_PLUGINS : STREAMDOWN_PLUGINS_WITH_PLAN}
+        plugins={STREAMDOWN_PLUGINS}
         remarkPlugins={filePathContext ? FILE_PATH_REMARK_PLUGINS : MEDIA_REMARK_PLUGINS}
         allowedTags={STREAMDOWN_ALLOWED_TAGS}
         parseMarkdownIntoBlocksFn={parseChatMarkdownBlocks}

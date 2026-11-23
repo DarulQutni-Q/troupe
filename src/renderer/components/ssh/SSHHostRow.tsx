@@ -1,5 +1,5 @@
 import type { SSHProfile } from '@shared/types/ssh.types'
-import { Copy, MoreHorizontal, Pencil, Pin, Terminal, Trash2 } from '@/components/icons'
+import { Copy, Edit, MoreHorizontal, Pin, Terminal, Trash2 } from '@/components/icons'
 import {
   ContextMenu,
   ContextMenuContent,
@@ -80,7 +80,7 @@ export function SSHHostRow({
         </Item>
       )}
       <Item onSelect={() => actions.edit(profile)}>
-        <Pencil className="mr-2 h-4 w-4" />
+        <Edit className="mr-2 h-4 w-4" />
         Edit
       </Item>
       <Item onSelect={() => actions.duplicate(profile)}>
@@ -128,8 +128,6 @@ export function SSHHostRow({
               }
             }}
             data-ssh-host-button=""
-            // A full-width row shrinking on press reads as the layout jumping.
-            data-press-feedback="off"
             aria-label={`${canConnect ? 'Connect to' : 'Edit'} ${profile.name}, ${showAddress ? `${addressLabel(profile)}, ` : ''}${authMethodLabel(profile.authMethod)}${status ? `, ${status}` : ''}`}
           >
             <span
@@ -188,7 +186,7 @@ export function SSHHostRow({
             aria-label={`Edit ${profile.name}`}
             title="Edit"
           >
-            <Pencil size={13} />
+            <Edit size={13} />
           </button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>

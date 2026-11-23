@@ -1,6 +1,13 @@
 import type { PersistedModelCatalog } from '@shared/types/persistence.types'
 import type { StoredAgentConfig } from '@/lib/acp-agents-persistence'
 import type { AgentCapabilities, SessionConfigOption, SessionModelState } from '@/lib/acp-api'
+import { canonicalAgentDisplayName } from '@/lib/agents/acp-registry'
+import {
+  canonicalAgentId,
+  isLegacyAgentId,
+  registryAgentIdFromConfigs,
+  sameAgentId
+} from '@/lib/agents/agent-aliases'
 import type { SupportedAcpAgentEntry } from '@/lib/agents/supported-acp-agents'
 import {
   flattenConfigOptionValues,
@@ -202,14 +209,25 @@ export function catalogFromSessionState(
   return null
 }
 
+/** The session options a saved model list stands for: its models and its model option. */
+export function optionsFromPersisted(saved: PersistedModelCatalog): {
+  models: SessionModelState | null
+  configOptions: SessionConfigOption[]
+} {
+  return {
+    models: saved.models,
+    configOptions: saved.modelOption
+      ? [{ ...saved.modelOption, category: 'model', type: 'select' }]
+      : []
+  }
+}
+
 export function catalogFromPersisted(
   saved: PersistedModelCatalog | null | undefined
 ): ModelCatalog | null {
   if (!saved) return null
-  return catalogFromSessionState(
-    saved.models,
-    saved.modelOption ? [{ ...saved.modelOption, category: 'model', type: 'select' }] : []
-  )
+  const { models, configOptions } = optionsFromPersisted(saved)
+  return catalogFromSessionState(models, configOptions)
 }
 
 /**
@@ -250,6 +268,33 @@ export interface AgentTab {
   entry: SupportedAcpAgentEntry | null
 }
 
+/**
+ * The id a tab click should show. When the tab is the chat's agent, keep the
+ * chat's saved id so the panel does not treat the canonical id as a switch.
+ */
+export function agentTabViewId(tab: AgentTab, currentConfigId: string | null): string {
+  if (currentConfigId && agentTabSelected(tab, currentConfigId)) return currentConfigId
+  return tab.configId
+}
+
+/** True when this tab is the agent named by `configId`, including a legacy alias. */
+export function agentTabSelected(tab: AgentTab, configId: string | null): boolean {
+  if (!configId) return false
+  if (tab.configId === configId || tab.config?.id === configId) return true
+  if (sameAgentId(tab.configId, configId)) return true
+  if (tab.config != null && sameAgentId(tab.config.id, configId)) return true
+  // A registry tab's bare row id serves a legacy chat id. A custom tab that
+  // reused that bare id stays a different agent.
+  const registryId = registryAgentIdFromConfigs(tab.config?.id, tab.configId)
+  return (
+    tab.entry != null &&
+    registryId != null &&
+    isLegacyAgentId(configId) &&
+    registryId === canonicalAgentId(configId) &&
+    tab.entry.id === canonicalAgentId(configId)
+  )
+}
+
 function tabFromEntry(
   entry: SupportedAcpAgentEntry,
   agentConfigs: readonly StoredAgentConfig[]
@@ -281,15 +326,27 @@ function allAgentTabs({
   const byId = new Map(all.map((tab) => [tab.configId, tab]))
   const pinnedTab = (configId: string | null): AgentTab | null => {
     if (!configId) return null
-    const found = byId.get(configId)
+    const found = all.find((tab) => agentTabSelected(tab, configId))
     if (found) return found
     const config = agentConfigs.find((c) => c.id === configId)
-    return config ? { configId, name: config.name, config, entry: null } : null
+    return config
+      ? {
+          configId,
+          name: canonicalAgentDisplayName(config.id, config.name),
+          config,
+          entry: null
+        }
+      : null
   }
   const extra: AgentTab[] = []
   for (const id of [currentConfigId, armedConfigId, viewConfigId]) {
     const tab = pinnedTab(id)
-    if (tab && !byId.has(tab.configId) && !extra.some((t) => t.configId === tab.configId)) {
+    if (
+      tab &&
+      !byId.has(tab.configId) &&
+      !all.some((existing) => agentTabSelected(existing, tab.configId)) &&
+      !extra.some((existing) => agentTabSelected(existing, tab.configId))
+    ) {
       extra.push(tab)
     }
   }
@@ -353,16 +410,77 @@ export function isInstalledTab(tab: AgentTab): boolean {
 }
 
 /**
- * The V2 agent order: installed agents, then the rest, each A to Z by name
- * (case- and accent-insensitive). It ignores which agent is current, armed, or
- * viewed, so choosing an agent never moves its tab.
+ * What choosing an agent does, which sets where the pickers list it: `ready`
+ * shows its models, `setup` needs its config saved first (the store rejects
+ * arming an agent with no stored config), `install` needs installing first.
+ * The V2 pickers in chat and the launcher classify alike, so both show the
+ * same tabs.
  */
-export function orderAgentTabs(tabs: readonly AgentTab[]): AgentTab[] {
+export type AgentGroup = 'ready' | 'setup' | 'install'
+
+/** The groups in list order, with the heading each one shows under. */
+export const AGENT_GROUPS: ReadonlyArray<{ group: AgentGroup; label: string }> = [
+  { group: 'ready', label: 'Ready' },
+  { group: 'setup', label: 'Needs setup' },
+  { group: 'install', label: 'Install' }
+]
+
+const GROUP_RANK: Record<AgentGroup, number> = { ready: 0, setup: 1, install: 2 }
+
+/**
+ * The one classification behind the desktop tabs, its "More" list and the
+ * mobile provider list. An installed current agent counts as `ready`: the
+ * launcher can have one selected before its config is stored (first run).
+ */
+export function agentGroup(
+  tab: AgentTab,
+  agentConfigs: readonly { id: string }[],
+  currentConfigId: string | null
+): AgentGroup {
+  if (!isInstalledTab(tab)) return 'install'
+  if (
+    tab.entry &&
+    armableConfigId(tab.entry, agentConfigs) === null &&
+    !agentTabSelected(tab, currentConfigId)
+  ) {
+    return 'setup'
+  }
+  return 'ready'
+}
+
+export interface AgentTabGroup {
+  group: AgentGroup
+  label: string
+  tabs: AgentTab[]
+}
+
+/** `tabs` bucketed by group, in `AGENT_GROUPS` order, each keeping its input order; empty groups dropped. */
+export function groupAgentTabs(
+  tabs: readonly AgentTab[],
+  groupOf: (tab: AgentTab) => AgentGroup
+): AgentTabGroup[] {
+  return AGENT_GROUPS.map(({ group, label }) => ({
+    group,
+    label,
+    tabs: tabs.filter((tab) => groupOf(tab) === group)
+  })).filter(({ tabs: inGroup }) => inGroup.length > 0)
+}
+
+/**
+ * The V2 agent order: ready agents, then those that need setup, then those
+ * that need installing, each A to Z by name (case- and accent-insensitive).
+ * It ignores which agent is current, armed, or viewed, so choosing an agent
+ * never moves its tab.
+ */
+export function orderAgentTabs(
+  tabs: readonly AgentTab[],
+  groupOf: (tab: AgentTab) => AgentGroup
+): AgentTab[] {
   return tabs
-    .map((tab, index) => ({ tab, index, installed: isInstalledTab(tab) }))
+    .map((tab, index) => ({ tab, index, rank: GROUP_RANK[groupOf(tab)] }))
     .sort(
       (a, b) =>
-        Number(b.installed) - Number(a.installed) ||
+        a.rank - b.rank ||
         a.tab.name.localeCompare(b.tab.name, undefined, { sensitivity: 'base' }) ||
         a.index - b.index
     )
@@ -370,16 +488,23 @@ export function orderAgentTabs(tabs: readonly AgentTab[]): AgentTab[] {
 }
 
 /**
- * Fill `capacity` slots with tabs. When they all fit there is no "More";
- * otherwise the last slot is "More" and holds the rest, in the same order.
+ * Fill `capacity` slots with tabs in `orderAgentTabs` order. Only ready agents
+ * get a tab. When every agent is ready and fits there is no "More"; otherwise
+ * the last slot is "More" and holds the rest, in the same order. With no ready
+ * agent the track is "More" alone.
  */
 export function splitAgentTabs(
   ordered: readonly AgentTab[],
-  capacity: number
+  capacity: number,
+  groupOf: (tab: AgentTab) => AgentGroup
 ): { visible: AgentTab[]; overflow: AgentTab[] } {
   const slots = Math.max(1, Math.floor(capacity))
-  if (ordered.length <= slots) return { visible: [...ordered], overflow: [] }
-  const shown = Math.max(0, slots - 1)
+  const firstNotReady = ordered.findIndex((tab) => groupOf(tab) !== 'ready')
+  const ready = firstNotReady < 0 ? ordered.length : firstNotReady
+  if (ready === ordered.length && ordered.length <= slots) {
+    return { visible: [...ordered], overflow: [] }
+  }
+  const shown = Math.min(ready, slots - 1)
   return { visible: ordered.slice(0, shown), overflow: ordered.slice(shown) }
 }
 
@@ -388,7 +513,9 @@ export function stableAgentTabs(source: AgentTabSource & { capacity: number }): 
   visible: AgentTab[]
   overflow: AgentTab[]
 } {
-  return splitAgentTabs(orderAgentTabs(allAgentTabs(source).all), source.capacity)
+  const groupOf = (tab: AgentTab): AgentGroup =>
+    agentGroup(tab, source.agentConfigs, source.currentConfigId)
+  return splitAgentTabs(orderAgentTabs(allAgentTabs(source).all, groupOf), source.capacity, groupOf)
 }
 
 /**
@@ -410,7 +537,10 @@ export const AGENT_TRACK_CLASS = {
   railPadding: 'py-1',
   /** Rail tabs are squares, as tall as a list row. */
   railTab: 'size-7',
-  railTabTouch: 'size-11'
+  railTabTouch: 'size-11',
+  /** Top-strip tabs: a 16px glyph with 10px either side; 44 on touch. */
+  stripTab: 'w-9',
+  stripTabTouch: 'w-11'
 } as const
 
 /** px of a class on Tailwind's default 4px spacing scale: `size-7` is 28. */
@@ -431,9 +561,8 @@ export const AGENT_TRACK = {
   stripWidth: 300,
   stripPadding: 8,
   stripPaddingTouch: 24,
-  /** Narrowest top-strip tab: a 16px glyph with 10px either side; 44 on touch. */
-  stripMinTab: 36,
-  stripMinTabTouch: 44,
+  stripPitch: spacingPx(AGENT_TRACK_CLASS.stripTab),
+  stripPitchTouch: spacingPx(AGENT_TRACK_CLASS.stripTabTouch),
   /** Top strip on touch before its width is measured: the old 4 tabs + More. */
   stripFallbackSlots: 5
 } as const
@@ -456,9 +585,9 @@ export function agentTrackCapacity({
   if (rail === 'left') {
     return tabTrackCapacity(t.listMaxHeight, touch ? t.railPitchTouch : t.railPitch, t.railPadding)
   }
-  if (!touch) return tabTrackCapacity(t.stripWidth, t.stripMinTab, t.stripPadding)
+  if (!touch) return tabTrackCapacity(t.stripWidth, t.stripPitch, t.stripPadding)
   return width
-    ? tabTrackCapacity(width, t.stripMinTabTouch, t.stripPaddingTouch)
+    ? tabTrackCapacity(width, t.stripPitchTouch, t.stripPaddingTouch)
     : t.stripFallbackSlots
 }
 

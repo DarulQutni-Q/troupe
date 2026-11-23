@@ -21,6 +21,7 @@ const MUTATIONS: &[&str] = &[
     "dispose_ephemeral_session",
     "promote_session",
     "register_discovered_session",
+    "import_agent_session",
     "delete_session",
     "send_prompt",
     "cancel_prompt",
@@ -33,6 +34,7 @@ const MUTATIONS: &[&str] = &[
     "update_project",
     "remove_project",
     "set_default_project",
+    "subagent_settings_set",
     "set_catalog_opt_in",
     "install_acp_agent",
     "authenticate_agent",
@@ -117,7 +119,14 @@ fn view_only_store_writes_only_under_the_device_prefix() {
     for type_ in ["store_write", "store_delete"] {
         let own = run(type_, json!({ "key": "device/phone/layout", "value": 1 }), &mut access, &mut identity);
         assert_ne!(code(&own), "forbidden", "{type_} on the own device prefix");
-        for key in ["settings/theme", "device/tablet/layout", "device/phone"] {
+        // `shared/lww/acp/mcp-servers` defines the stdio commands the host
+        // spawns (F-004): a view-only peer may never write it.
+        for key in [
+            "settings/theme",
+            "device/tablet/layout",
+            "device/phone",
+            crate::web::mcp_registry::STORE_KEY,
+        ] {
             let other = run(type_, json!({ "key": key, "value": 1 }), &mut access, &mut identity);
             assert_eq!(code(&other), "forbidden", "{type_} on `{key}`");
         }

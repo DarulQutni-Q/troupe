@@ -24,6 +24,9 @@
   --animate-typing-bounce: typing-bounce 1s cubic-bezier(0.77, 0, 0.175, 1) infinite;
   /* Streaming caret: a steady blink while the agent is writing. */
   --animate-caret-blink: caret-blink 1s step-end infinite;
+  /* Status rail "new changes" dot: pops once when it mounts (--ease-bounce,
+     250ms). Reduced motion: motion-reduce:animate-none, it just shows. */
+  --animate-mark-pop: mark-pop 250ms cubic-bezier(0.34, 1.36, 0.64, 1) both;
 
   @keyframes accordion-down {
     from {
@@ -81,6 +84,16 @@
     }
     to {
       opacity: 1;
+    }
+  }
+  @keyframes mark-pop {
+    from {
+      opacity: 0;
+      scale: 0.6;
+    }
+    to {
+      opacity: 1;
+      scale: 1;
     }
   }
   @keyframes typing-bounce {
@@ -144,10 +157,10 @@
 @layer base {
   :root {
     /* Color tokens are OKLCH "L C H" components, read as oklch(var(--token)).
-       These match Termul dark `applyColorTheme('termul')` so first paint
+       These match Troupe dark `applyColorTheme('termul')` so first paint
        equals runtime. applyColorTheme overwrites them at startup. */
 
-    /* Termul dark first paint. Neutrals are the Linear void scale.
+    /* Troupe dark first paint. Neutrals are the Linear void scale.
        Brand fill stays the composer blue. applyColorTheme overwrites these. */
     --background: 0.139 0.003 246.3;
     --foreground: 0.922 0.001 286.4;
@@ -160,7 +173,7 @@
     --popover-foreground: 0.922 0.001 286.4;
 
     /* --primary is AA text on card. Solid buttons use --primary-fill (L ≤ 0.55;
-       Termul pins it to brand blue-11 #0d74ce, 4.77:1 with white). */
+       Troupe pins it to brand blue-11 #0d74ce, 4.77:1 with white). */
     --primary: 0.688 0.169 251.4;
     --primary-fill: 0.5558 0.1622 252.2;
     --primary-foreground: 1 0 0;
@@ -253,10 +266,9 @@
     --think-highlight: oklch(var(--foreground));
     --think-ease: ease-in-out;
 
-    /* Streaming word resolve (Streamdown blurIn). */
+    /* Streaming word fade (Streamdown fadeIn). */
     --stream-gap: 12ms;
     --stream-fade: 350ms;
-    --stream-blur: 1px;
     --stream-ease: cubic-bezier(0.22, 1, 0.36, 1);
 
     /* Accordion expand / collapse. Symmetric. */
@@ -296,15 +308,15 @@
     /* Rail row hover surface: the 3% foreground wash of the State table
        (docs/design/colors.md). One strength feeds both forms: --row-hover is
        the translucent wash (stacks on a group surface); --row-hover-solid is
-       the same wash flattened over the Rail's sidebar surface, for a fade
+       the same wash flattened over the Rail's background surface, for a fade
        that must end in the row's own colour. Both follow applyColorTheme
-       through --foreground and --sidebar-background. */
+       through --foreground and --background. */
     --row-hover-strength: 3%;
     --row-hover: oklch(var(--foreground) / var(--row-hover-strength));
     --row-hover-solid: color-mix(
       in oklab,
       oklch(var(--foreground)) var(--row-hover-strength),
-      oklch(var(--sidebar-background))
+      oklch(var(--background))
     );
 
     /* Rail keycap fill: the `.keycap` surface inside the Rail
@@ -398,10 +410,24 @@
     --elevation-menu: 0 12px 32px oklch(0 0 0 / 0.6);
     --composer-shadow: 0 0 #0000;
     --prompt-panel-shadow: var(--elevation-panel);
+    --control-fill: oklch(var(--muted));
+    --control-fill-hover: color-mix(in oklab, oklch(var(--muted)), oklch(var(--foreground)) 5%);
+    --shadow-control: 0 0 0 0.5px var(--popover-edge), 0 1px 2px rgb(0 0 0 / 0.5);
+    --rail-fill: oklch(var(--muted));
+    --rail-edge: color-mix(in oklab, oklch(var(--muted)), oklch(var(--foreground)) 15%);
+    --shadow-rail: 0 0 0 0.5px var(--rail-edge), 0 1px 2px rgb(0 0 0 / 0.5);
+    --rail-segment-hover: color-mix(in oklab, var(--rail-fill), oklch(var(--foreground)) 5%);
+    --rail-segment-active: color-mix(in oklab, var(--rail-fill), oklch(var(--foreground)) 10%);
     --keycap-fill: oklch(var(--muted));
     --keycap-shadow: inset 0 1px 0 oklch(var(--ring) / 0.08), 0 1px 2px #00000040;
     --rail-keycap-fill: var(--rail-keycap);
     --rail-keycap-shadow: var(--keycap-shadow);
+    /* Rail hover panels (collapsed Rail peek, project card, nav tooltip,
+       Sidebar V2): a 0.5px edge one step above the popover fill (#38393A on
+       Troupe dark) and a short two-step drop. Computed from existing tokens,
+       so every theme follows applyColorTheme. */
+    --popover-edge: color-mix(in oklab, oklch(var(--popover)), oklch(var(--foreground)) 19.5%);
+    --rail-hover-panel-shadow: 0 1px 2px #00000099, 0 4px 8px -4px #00000080;
     --focus-ring: oklch(0.571 0.003 228.8);
   }
 }
@@ -436,6 +462,9 @@
   }
 
   html {
+    /* Same fill as body: Safari on iOS reads the html background for the
+       area behind its bars. */
+    background-color: oklch(var(--background));
     /* Crisp font rendering on Linux/Wayland (sub-pixel AA off by default) */
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -445,6 +474,28 @@
        WebKitGTK on Linux paints <select> popups with the system light theme,
        which clashes hard with our dark UI. */
     color-scheme: dark;
+    /* Phone (mobile-native): no grey tap flash over pressed controls (each
+       control draws its own :active state), and no font inflation in
+       landscape. */
+    -webkit-tap-highlight-color: transparent;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  /* Controls answer a tap at once (no double-tap-zoom wait) and a long press
+     does not select their label or open the link callout. Text that is
+     content (messages, code, links in prose) stays selectable. */
+  button,
+  [role="button"],
+  [role="tab"],
+  [role="switch"],
+  [role="menuitem"],
+  [role="menuitemcheckbox"],
+  [role="radio"] {
+    touch-action: manipulation;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
   }
 
   body {
@@ -466,57 +517,6 @@
     font-synthesis-style: none;
   }
 
-  /* Press feedback for ALL pressable elements. Buttons must feel like the
-     UI heard the click. Subtle scale (0.96) + custom ease-out keeps it
-     snappy. Disabled buttons skip the press to avoid "dead element"
-     feedback. We scope by [data-press-feedback] for opt-out flexibility,
-     but default it on for buttons / role=button / summary. Triggers that
-     open a menu, popover or list skip it: the surface that opens is the
-     feedback, and a shrinking trigger under a growing menu reads as a jolt.
-     Switches skip it too: the thumb moving is the feedback. */
-  @media (hover: hover) and (pointer: fine) {
-    button:not(:disabled):not([data-press-feedback="off"]):not([aria-haspopup]):not(
-        [role="combobox"]
-      ):not([role="switch"]),
-    [role="button"]:not([aria-disabled="true"]):not([data-press-feedback="off"]):not(
-        [aria-haspopup]
-      ),
-    summary:not([data-press-feedback="off"]) {
-      /* Note: 'transition' here is shorthand and resets transition-property
-         on the element. Components that rely on tailwind's transition-colors
-         (e.g. hover:bg-primary-fill) may lose their colour transition on buttons
-         that match this selector. We accept that trade-off because press
-         feedback is the dominant interaction and per-component
-         transition-colors usually still wins by specificity / cascade order
-         (this rule is in @layer base, tailwind utilities are @layer
-         utilities and apply later). If a hover snap shows up, scope the
-         override per component or drop the shorthand here in favour of
-         transition-property: transform; transition-duration: 120ms;
-         transition-timing-function: var(--ease-out); */
-      transition: transform 120ms var(--ease-out);
-    }
-
-    button:not(:disabled):not([data-press-feedback="off"]):not([aria-haspopup]):not(
-        [role="combobox"]
-      ):not([role="switch"]):active,
-    [role="button"]:not([aria-disabled="true"]):not([data-press-feedback="off"]):not(
-        [aria-haspopup]
-      ):active,
-    summary:not([data-press-feedback="off"]):active {
-      transform: scale(0.96);
-    }
-  }
-
-  /* Honour user motion preference: drop the press transform but keep
-     functional state changes (colour, focus ring) intact. */
-  @media (prefers-reduced-motion: reduce) {
-    button:active,
-    [role="button"]:active,
-    summary:active {
-      transform: none;
-    }
-  }
-
   /* Native <select> dropdown items: WebKitGTK ignores parent styling on the
      popup menu, so set our theme tokens directly on <option>. */
   select option {
@@ -524,11 +524,12 @@
     color: oklch(var(--popover-foreground));
   }
   /* Neutral, solid highlight: native popups may drop alpha, and --accent
-     is maroon in Termul Light. --input is one step above popover in both. */
+     is maroon in Troupe Light. --input is one step above popover in both. */
   select option:checked,
   select option:hover {
     background-color: oklch(var(--input));
     color: oklch(var(--popover-foreground));
+    transition-duration: var(--duration-quick, 150ms);
   }
 
   /* Custom scrollbar, app-wide — replaces the native scrollbar everywhere.
@@ -573,6 +574,7 @@
 
     ::-webkit-scrollbar-thumb:hover {
       background-color: oklch(var(--foreground) / var(--scrollbar-thumb-hover-alpha));
+      transition-duration: var(--duration-quick, 150ms);
     }
 
     ::-webkit-scrollbar-thumb:active {
@@ -617,6 +619,7 @@
   }
   .xterm .xterm-scrollable-element > .xterm-scrollbar > .xterm-slider:hover {
     background: oklch(var(--foreground) / var(--terminal-scrollbar-hover-alpha));
+    transition-duration: var(--duration-quick, 150ms);
   }
 
   /* Thin separator line between commands (OSC 133;A + xterm decoration) */
@@ -629,6 +632,47 @@
     /* biome-ignore lint/complexity/noImportantStyles: override xterm inline decoration geometry */
     left: 0 !important;
     pointer-events: none;
+  }
+
+  /* Success/failure dot left of each finished command (OSC 133;D;<exit>;termul).
+     Sits in the terminal's left padding, like an editor gutter. */
+  .xterm .termul-command-status {
+    /* biome-ignore lint/complexity/noImportantStyles: override xterm inline decoration geometry */
+    width: 10px !important;
+    /* biome-ignore lint/complexity/noImportantStyles: override xterm inline decoration geometry */
+    left: -13px !important;
+    cursor: default;
+  }
+  .xterm .termul-command-status::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 2px;
+    width: 6px;
+    height: 6px;
+    margin-top: -3px;
+    border-radius: 9999px;
+    background: currentColor;
+  }
+  /* Phone shell pads only 6px inside an overflow-hidden pane: shrink the dot
+     so it fits the padding instead of being clipped. */
+  .termul-terminal-compact .xterm .termul-command-status {
+    /* biome-ignore lint/complexity/noImportantStyles: override xterm inline decoration geometry */
+    width: 6px !important;
+    /* biome-ignore lint/complexity/noImportantStyles: override xterm inline decoration geometry */
+    left: -6px !important;
+  }
+  .termul-terminal-compact .xterm .termul-command-status::after {
+    left: 1px;
+    width: 4px;
+    height: 4px;
+    margin-top: -2px;
+  }
+  .xterm .termul-command-status--success {
+    color: oklch(var(--success));
+  }
+  .xterm .termul-command-status--failure {
+    color: oklch(var(--destructive));
   }
 
   /* ------------------------------------------------------------
@@ -674,13 +718,13 @@
         )
       )
     );
-    animation-duration: var(--duration-fast);
-    animation-timing-function: var(--ease-smooth-out);
+    animation-duration: var(--duration-fast, 250ms);
+    animation-timing-function: var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1));
   }
 
   /* Closing is quicker than opening so dismiss feels instant. */
   [data-radix-popper-content-wrapper] > [data-state="closed"] {
-    animation-duration: var(--duration-quick);
+    animation-duration: var(--duration-quick, 150ms);
   }
 
   /* ------------------------------------------------------------
@@ -707,7 +751,7 @@
   :where([role="dialog"], [role="alertdialog"])[data-state]:not(
     [data-radix-popper-content-wrapper] *
   ):not([data-sheet]) {
-    animation-timing-function: var(--ease-out);
+    animation-timing-function: var(--ease-out, ease-out);
   }
 
   :where([role="dialog"], [role="alertdialog"])[data-state="open"]:not(
@@ -750,7 +794,8 @@
    * Tooltip open/close (transitions.dev recipe, Radix-adapted).
    * Appear-only delay lives on TooltipProvider (--tt-delay / 80ms).
    * Default rule = LEAVE (50ms, no delay). Open = 150ms fade+scale.
-   * Radix open states are delayed-open | instant-open (not "open").
+   * Radix Tooltip open states are delayed-open | instant-open; a HoverCard
+   * (the collapsed Rail hover panels) uses "open", so it shares the motion.
    * @starting-style so first mount still plays the enter transition.
    * ------------------------------------------------------------ */
   .animate-tooltip-in {
@@ -759,10 +804,12 @@
     transition:
       opacity var(--tt-out-dur) var(--tt-out-ease),
       transform var(--tt-out-dur) var(--tt-out-ease);
+    transition-delay: var(--tt-delay, 80ms);
   }
 
   .animate-tooltip-in[data-state="delayed-open"],
-  .animate-tooltip-in[data-state="instant-open"] {
+  .animate-tooltip-in[data-state="instant-open"],
+  .animate-tooltip-in[data-state="open"] {
     opacity: 1;
     transform: scale(1);
     transition-duration: var(--tt-in-dur);
@@ -771,7 +818,8 @@
 
   @starting-style {
     .animate-tooltip-in[data-state="delayed-open"],
-    .animate-tooltip-in[data-state="instant-open"] {
+    .animate-tooltip-in[data-state="instant-open"],
+    .animate-tooltip-in[data-state="open"] {
       opacity: 0;
       transform: scale(var(--tt-scale));
     }
@@ -784,7 +832,8 @@
     }
 
     .animate-tooltip-in[data-state="delayed-open"],
-    .animate-tooltip-in[data-state="instant-open"] {
+    .animate-tooltip-in[data-state="instant-open"],
+    .animate-tooltip-in[data-state="open"] {
       opacity: 1;
       transform: none;
     }
@@ -802,6 +851,45 @@
   [data-radix-popper-content-wrapper] > [data-state="closed"] {
     animation-name: termul-popover-fade-out;
     animation-duration: 150ms;
+  }
+}
+
+/* A popup trigger (menu, popover, select, sheet: every element with
+   aria-haspopup) does not squeeze on press, even when its own classes ask
+   for it (Button's active:scale). Unlayered, so it wins over utilities. */
+[aria-haspopup]:active {
+  scale: none;
+}
+
+/* Phone text floor (tactile-design "Phone", touch-and-accessibility).
+   On a touch phone (the same viewports as `useMobileWebShell`: narrow, or a
+   short landscape phone) small text is hard to read at arm's length, so
+   every size under 15px becomes 15px with a 24px line. `text-base` and
+   larger keep their size; fields stay at 16px (`pointer-coarse:text-base`)
+   so iOS does not zoom. A mouse or trackpad never matches, so the desktop
+   app and a narrow desktop window keep the dense 12/14px scale.
+   `--font-size-micro` drives `text-2xs` / `text-3xs` / `text-4xs`
+   (tailwind.config.ts). Unlayered, so it wins over the theme layer. */
+:root {
+  --font-size-micro: 0.75rem;
+}
+
+@media (pointer: coarse) and (max-width: 767px), (pointer: coarse) and (max-height: 499px) {
+  :root {
+    --font-size-micro: 0.9375rem;
+    --text-xs: 0.9375rem;
+    --text-xs--line-height: calc(24 / 15);
+    --text-sm: 0.9375rem;
+    --text-sm--line-height: calc(24 / 15);
+  }
+
+  /* Safari on iOS evens out every line of a `text-wrap: pretty` paragraph,
+     so reply lines break well before the right padding and the column
+     looks inset on the right. On a phone the lines fill to the padding,
+     so both sides look the same. Unlayered, so it wins over `.chat-prose`. */
+  .chat-prose,
+  .chat-streamdown {
+    text-wrap: wrap;
   }
 }
 
@@ -825,6 +913,45 @@
   }
   to {
     opacity: 0;
+  }
+}
+
+/* Rail expand/collapse: a part that sits at a different x in the two
+   densities travels by `--rail-travel-x` with the width (`RAIL_TRAVEL_CLASS`
+   in rail-motion.ts). `-out` runs while collapsing and holds its end until the
+   collapsed layout takes over; `-in` runs from the collapsed x while
+   expanding. */
+@keyframes rail-travel-out {
+  to {
+    translate: var(--rail-travel-x) 0;
+  }
+}
+
+@keyframes rail-travel-in {
+  from {
+    translate: var(--rail-travel-x) 0;
+  }
+}
+
+/* A project's chat row also closes its clip to the 30px collapsed square
+   (4px outset on the other sides keeps the keycap drop). */
+@keyframes rail-row-travel-out {
+  from {
+    clip-path: inset(-4px -4px -4px -4px round 8px);
+  }
+  to {
+    translate: var(--rail-travel-x) 0;
+    clip-path: inset(-4px calc(100% - 30px) -4px -4px round 8px);
+  }
+}
+
+@keyframes rail-row-travel-in {
+  from {
+    translate: var(--rail-travel-x) 0;
+    clip-path: inset(-4px calc(100% - 30px) -4px -4px round 8px);
+  }
+  to {
+    clip-path: inset(-4px -4px -4px -4px round 8px);
   }
 }
 
@@ -865,6 +992,33 @@
     height: 2px;
     border-radius: 1px;
     margin-bottom: 2px;
+  }
+}
+
+/* One-line label that fades out over its last 24px instead of an ellipsis
+   (Sidebar V2). Give the label the full row width (`min-w-0 flex-1`) so a
+   short label never reaches the fade. Multi-line text keeps line-clamp. */
+@utility fade-end {
+  overflow: hidden;
+  white-space: nowrap;
+  mask-image: linear-gradient(to right, black calc(100% - 24px), transparent);
+}
+
+/* `fade-end` that ends before a project row's hover actions (two 20px
+   buttons and a 4px gap = 44px, plus 4px of air), so the actions need no
+   backdrop. */
+@utility fade-before-row-actions {
+  mask-image: linear-gradient(to right, black calc(100% - 68px), transparent calc(100% - 48px));
+}
+
+/* `fade-end` for a label whose box hugs its text (a centred title, a label
+   next to a chevron): the fade shows only while the text overflows. The
+   `useOverflowFade` hook sets `data-overflowing` on the element. */
+@utility fade-end-overflow {
+  overflow: hidden;
+  white-space: nowrap;
+  &[data-overflowing] {
+    mask-image: linear-gradient(to right, black calc(100% - 24px), transparent);
   }
 }
 
@@ -927,9 +1081,11 @@
   @media (hover: hover) {
     .switch-track[data-state="unchecked"]:enabled:hover {
       background-color: var(--switch-track-off-hover);
+      transition-duration: var(--duration-quick, 150ms);
     }
     .switch-track[data-state="checked"]:enabled:hover {
       background-color: var(--switch-track-on-hover);
+      transition-duration: var(--duration-quick, 150ms);
     }
   }
   .switch-track[data-state="unchecked"]:enabled:active {
@@ -987,7 +1143,7 @@
  * --rail-keycap-shadow. By default those are --rail-keycap (`muted` in dark
  * themes, a slightly darker step in light themes so it reads on the sidebar
  * mist) and --keycap-shadow. Off the Rail it takes --keycap-fill (`muted`)
- * and --keycap-shadow. Termul Light sets a white container with its
+ * and --keycap-shadow. Troupe Light sets a white container with its
  * s-default shadow for both. Inside a popover use a foreground wash
  * instead (see components/ui/menu-styles.ts): `muted` sits too close to
  * `popover` to read there.
@@ -1160,8 +1316,8 @@
     border-radius: 4px;
     opacity: 0;
     transition:
-      opacity 150ms var(--ease-out),
-      color 150ms var(--ease-out);
+      opacity var(--duration-quick, 150ms) var(--ease-out, ease-out),
+      color var(--duration-quick, 150ms) var(--ease-out, ease-out);
     cursor: pointer;
   }
   .chat-code-copy svg {
@@ -1234,7 +1390,7 @@
     background-clip: text;
     color: transparent;
     -webkit-text-fill-color: transparent;
-    animation: t-shimmer var(--shimmer-dur) var(--shimmer-ease) infinite;
+    animation: t-shimmer var(--shimmer-dur, 2000ms) var(--shimmer-ease) infinite;
   }
   @keyframes t-shimmer {
     0% {
@@ -1268,7 +1424,7 @@
     position: absolute;
     inset: 0;
     transform-origin: center;
-    animation: tm-comet-rotate 700ms linear infinite;
+    animation: tm-comet-rotate var(--duration-very-slow, 500ms) var(--ease-linear, linear) infinite;
     animation-play-state: var(--tm-comet-play);
   }
   .tm-comet-tail {
@@ -1331,9 +1487,9 @@
     filter: blur(0);
     opacity: 1;
     transition:
-      transform var(--think-swap) var(--think-ease),
-      filter var(--think-swap) var(--think-ease),
-      opacity var(--think-swap) var(--think-ease);
+      transform var(--think-swap, 150ms) var(--think-ease),
+      filter var(--think-swap, 150ms) var(--think-ease),
+      opacity var(--think-swap, 150ms) var(--think-ease);
     will-change: transform, filter, opacity;
   }
   .t-think-text::before {
@@ -1355,7 +1511,7 @@
     background-clip: text;
     color: transparent;
     -webkit-text-fill-color: transparent;
-    animation: t-think-shimmer var(--think-shimmer) linear infinite;
+    animation: t-think-shimmer var(--think-shimmer, 2000ms) var(--ease-linear, linear) infinite;
   }
   @keyframes t-think-shimmer {
     0% {
@@ -1389,6 +1545,11 @@
   .t-think.is-settled .t-think-text::before {
     /* biome-ignore lint/complexity/noImportantStyles: settled labels must suppress the live shimmer pseudo-element */
     display: none !important;
+  }
+  .t-think.is-truncate .t-think-text,
+  .t-think.is-truncate .t-think-text::before {
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -1493,7 +1654,7 @@
     cursor: pointer;
     color: oklch(var(--muted-foreground));
     transition-property: color;
-    transition-duration: 150ms;
+    transition-duration: var(--duration-quick, 150ms);
   }
   .chat-streamdown [data-streamdown="table-toolbar"] button:hover {
     color: oklch(var(--foreground));
@@ -1509,6 +1670,28 @@
     height: 0.875rem;
     flex-shrink: 0;
   }
+  /* Touch: the 24px code and table actions keep their look but get a 44px
+     hit area (an invisible ring 10px wide), and a press shows the hover ink. */
+  @media (pointer: coarse) {
+    .chat-streamdown [data-streamdown="code-block-actions"] button,
+    .chat-streamdown [data-streamdown="table-toolbar"] button {
+      position: relative;
+    }
+    .chat-streamdown [data-streamdown="code-block-actions"] button::after,
+    .chat-streamdown [data-streamdown="table-toolbar"] button::after {
+      content: "";
+      position: absolute;
+      inset: -0.625rem;
+    }
+    /* 20px apart so two hit areas never overlap. */
+    .chat-streamdown [data-streamdown="code-block-actions"] {
+      gap: 1.25rem;
+    }
+    .chat-streamdown [data-streamdown="code-block-actions"] button:active,
+    .chat-streamdown [data-streamdown="table-toolbar"] button:active {
+      color: oklch(var(--foreground));
+    }
+  }
   /* Fullscreen table toolbar is portaled to document.body, so it's outside
      .chat-streamdown. Keep a 44px hit area. */
   [data-streamdown="table-fullscreen"] button {
@@ -1521,7 +1704,7 @@
     cursor: pointer;
     color: oklch(var(--muted-foreground));
     transition-property: color;
-    transition-duration: 150ms;
+    transition-duration: var(--duration-quick, 150ms);
   }
   [data-streamdown="table-fullscreen"] button:hover {
     color: oklch(var(--foreground));
@@ -1898,42 +2081,6 @@
 }
 
 @layer components {
-  /* Agent-controlled browser pane: animated gradient ring on every side of
-     the panel (spec-acp-browser-pane-agent-ui). Applied WITH padding on the
-     panel root — the padding reserves layout space the native child webview
-     shrinks inside, so the ring is real chrome, never painted over. Hues
-     come from the status-bar scale (theme-aware via applyColorTheme). */
-  .termul-agent-border {
-    background-image: linear-gradient(
-      115deg,
-      oklch(var(--status-bar-blue)),
-      oklch(var(--status-bar-purple)),
-      oklch(var(--status-bar-pink)),
-      oklch(var(--status-bar-blue))
-    );
-    background-size: 300% 300%;
-    /* repeat (not no-repeat): a 300% position offset equals exactly one
-       image width, so the pan wraps seamlessly — no-repeat slides the image
-       fully off-element for the back half of every cycle. */
-    background-repeat: repeat;
-    animation: termul-agent-border-pan 6s linear infinite;
-  }
-  @keyframes termul-agent-border-pan {
-    0% {
-      background-position: 0% 50%;
-    }
-    100% {
-      background-position: 300% 50%;
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .termul-agent-border {
-      animation: none;
-    }
-  }
-}
-
-@layer components {
   /* Mobile drawer rows: an over-long title scrolls to its tail on a slow
      scroll-pause-return loop (MarqueeText measures the overflow and sets
      --termul-marquee-distance/-duration inline). Reduced motion never mounts
@@ -1968,19 +2115,18 @@
   }
 }
 
-/* Unlayered so this wins over streamdown/styles.css (imported first).
-   Streamdown prefixes the animation name: blurIn → sd-blurIn.
-   Blur settles from --stream-blur (1px). Duration and easing come from
-   the animated prop (--stream-fade, --stream-ease). The end state is
-   `filter: none` so settled words (kept by fill-mode `both`) do not each
-   hold a blur(0) filter and their own stacking context. */
-@keyframes sd-blurIn {
-  from {
-    opacity: 0;
-    filter: blur(var(--stream-blur));
-  }
-  to {
-    opacity: 1;
-    filter: none;
-  }
+/* Translucent Rail (macOS desktop, opt-in, `use-translucent-rail.ts`): the
+   window is transparent and the native sidebar material sits behind the
+   webview. The page and the shell frame let it through only while the shell
+   is on screen; the shell row paints its own solid surface, so the Rail is the
+   only glass. A 60% background tint keeps Rail text and row states readable on
+   any wallpaper. Unlayered so it wins over the `bg-background` utilities. */
+html[data-translucent-rail]:has([data-shell-frame]),
+html[data-translucent-rail]:has([data-shell-frame]) body,
+html[data-translucent-rail] [data-shell-frame] {
+  background-color: transparent;
+}
+
+html[data-translucent-rail] [data-shell-frame] [data-rail-surface] {
+  background-color: oklch(var(--background) / 0.6);
 }

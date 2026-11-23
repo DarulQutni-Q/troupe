@@ -346,7 +346,7 @@ fn session_reopen_timeout_defaults_to_constant() {
     // Shared with the real-loop harness, which clears/restores these env vars
     // and resolves these timeouts while a mock agent runs: never interleave.
     let _serial = super::real_loop_tests::TIMEOUT_TEST_LOCK.blocking_lock();
-    if std::env::var("TERMUL_ACP_SESSION_REOPEN_TIMEOUT_SECS").is_err() {
+    if crate::brand_env::value("ACP_SESSION_REOPEN_TIMEOUT_SECS").is_none() {
         assert_eq!(session_reopen_timeout(), SESSION_REOPEN_TIMEOUT);
     }
     assert_eq!(SESSION_REOPEN_TIMEOUT, Duration::from_secs(60));
@@ -408,6 +408,45 @@ fn acp_err_wire_string_tags_auth_required_only() {
     assert_eq!(acp_err_wire_string(other), "Internal error");
 }
 
+/// The wire string reaches the client that sent the command, so the raw
+/// JSON-RPC `data` that `Display` appends (here a bearer token) never rides
+/// along, for the auth, not-found, provider and untagged arms alike.
+#[test]
+fn acp_err_wire_string_drops_the_error_data() {
+    let data = serde_json::json!({"headers": {"authorization": "Bearer sk-test"}});
+    let auth = agent_client_protocol::Error::auth_required().data(data.clone());
+    assert_eq!(
+        acp_err_wire_string(auth),
+        format!("{ACP_AUTH_REQUIRED_PREFIX}: Authentication required")
+    );
+    let not_found = agent_client_protocol::Error::resource_not_found(None).data(data.clone());
+    let wire = acp_err_wire_string(not_found);
+    assert!(wire.starts_with(ACP_RESOURCE_NOT_FOUND_PREFIX), "{wire}");
+    assert!(!wire.contains("sk-test"), "{wire}");
+    let untagged = agent_client_protocol::Error::internal_error().data(data.clone());
+    assert_eq!(acp_err_wire_string(untagged), "Internal error");
+    let provider = agent_client_protocol::Error::new(-32603, "rate limited").data(
+        serde_json::json!({"status": 429, "headers": {"authorization": "Bearer sk-test"}}),
+    );
+    let wire = acp_err_wire_string(provider);
+    assert!(wire.ends_with(": rate limited"), "{wire}");
+    assert!(!wire.contains("sk-test"), "{wire}");
+}
+
+/// A load/resume failure reaches the client through `run_session_reopen` with
+/// no secret from the error data.
+#[tokio::test]
+async fn session_reopen_failure_keeps_no_secret_from_the_error_data() {
+    let state = Mutex::new(DriverState::new());
+    let error = agent_client_protocol::Error::new(-32603, "Internal error")
+        .data(serde_json::json!({"authorization": "Bearer sk-test"}));
+    let outcome = run_session_reopen("session/load", "sess-leak", "/work", &state, async {
+        Err::<LoadSessionResponse, _>(error)
+    })
+    .await;
+    assert_eq!(outcome.unwrap_err(), "Internal error");
+}
+
 /// Story 7: an agent `AuthRequired` failure on `session/load` carries the
 /// prefix through `run_session_reopen` (the WS layer maps it to
 /// `agent_auth_required`; the desktop renderer prefix-matches the string).
@@ -439,7 +478,7 @@ async fn session_reopen_resource_not_found_is_prefixed() {
     .await;
     assert_eq!(
         outcome.unwrap_err(),
-        "ACP_RESOURCE_NOT_FOUND: Resource not found: {\n  \"uri\": \"sess-gone\"\n}"
+        "ACP_RESOURCE_NOT_FOUND: Resource not found"
     );
 }
 
@@ -997,7 +1036,7 @@ fn turn_timeout_override_takes_effect_when_no_env_var() {
     let _serial = super::real_loop_tests::TIMEOUT_TEST_LOCK.blocking_lock();
     // The env var is usually absent in the test runner; when it IS set
     // (operator machine), it correctly masks the UI override — skip there.
-    if std::env::var("TERMUL_ACP_TURN_TIMEOUT_SECS").is_ok() {
+    if crate::brand_env::value("ACP_TURN_TIMEOUT_SECS").is_some() {
         return;
     }
     set_turn_timeout_override(Some(42));
@@ -1018,6 +1057,9 @@ fn turn_idle_timeout_precedence_env_beats_override_beats_default() {
     // Shared with the real-loop tests, which run turns under their own idle
     // window: neither side may observe the other's override/env var.
     let _serial = super::real_loop_tests::TIMEOUT_TEST_LOCK.blocking_lock();
+    if std::env::var_os("TROUPE_ACP_TURN_IDLE_TIMEOUT_SECS").is_some() {
+        return;
+    }
     let preexisting = std::env::var("TERMUL_ACP_TURN_IDLE_TIMEOUT_SECS").ok();
     if preexisting.is_none() {
         set_turn_idle_timeout_override(Some(42));
@@ -1045,7 +1087,7 @@ fn session_new_timeout_override_takes_effect_when_no_env_var() {
     // Shared with the real-loop harness, which clears/restores these env vars
     // and resolves these timeouts while a mock agent runs: never interleave.
     let _serial = super::real_loop_tests::TIMEOUT_TEST_LOCK.blocking_lock();
-    if std::env::var("TERMUL_ACP_SESSION_NEW_TIMEOUT_SECS").is_ok() {
+    if crate::brand_env::value("ACP_SESSION_NEW_TIMEOUT_SECS").is_some() {
         return;
     }
     set_session_new_timeout_override(Some(42));
@@ -1063,7 +1105,7 @@ fn session_reopen_timeout_override_takes_effect_when_no_env_var() {
     // Shared with the real-loop harness, which clears/restores these env vars
     // and resolves these timeouts while a mock agent runs: never interleave.
     let _serial = super::real_loop_tests::TIMEOUT_TEST_LOCK.blocking_lock();
-    if std::env::var("TERMUL_ACP_SESSION_REOPEN_TIMEOUT_SECS").is_ok() {
+    if crate::brand_env::value("ACP_SESSION_REOPEN_TIMEOUT_SECS").is_some() {
         return;
     }
     set_session_reopen_timeout_override(Some(42));
@@ -3435,4 +3477,91 @@ async fn the_sweeper_reports_the_end_of_work_once_the_session_goes_quiet() {
     assert_eq!(working_events(&sink), vec![true, false]);
     assert_eq!(state.lock().activity(0).unprompted_sessions, 0);
     sweeper.abort();
+}
+
+/// Reopen starts a new agent and leaves `runtime_agent_id` on the agent from
+/// create. Delete must stop the live owner, not only the stored id.
+#[tokio::test]
+async fn delete_of_a_reopened_quick_chat_stops_the_live_agent() {
+    let root = tempfile::tempdir().expect("quick chat root");
+    let _guard = crate::acp::quick_chat::set_quick_chat_root_for_test(root.path());
+    let (chat_id, folder) = crate::acp::quick_chat::prepare_new_chat_dir().expect("chat folder");
+    let store = tempfile::tempdir().expect("session store");
+    let persistence = crate::acp::session_persistence::SessionPersistence::open(store.path().to_path_buf())
+        .await
+        .expect("persistence");
+    let session_id = "sess-reopen";
+    persistence
+        .register_quick_session(
+            crate::acp::session_persistence::SessionRegistration {
+                session_id: session_id.to_string(),
+                stable_agent_namespace: Some("config:test".to_string()),
+                runtime_agent_id: Some("created-agent".to_string()),
+                project_id: Some(
+                    crate::acp::session_persistence::UNASSIGNED_PROJECT_ID.to_string(),
+                ),
+                cwd: folder.clone(),
+                ..Default::default()
+            },
+            chat_id,
+        )
+        .await
+        .expect("register quick session");
+
+    let manager = AcpManager::new(vec![]);
+    let live = AgentId("reopened-agent".to_string());
+    let bystander = AgentId("other-agent".to_string());
+    let (live_tx, live_rx) = mpsc::unbounded_channel();
+    let (other_tx, other_rx) = mpsc::unbounded_channel();
+    let insert = |id: AgentId, tx: mpsc::UnboundedSender<AcpCommand>| {
+        manager.agents.lock().insert(
+            id,
+            AgentEntry {
+                command_tx: tx,
+                capabilities: AgentCapabilities::default(),
+                stable_namespace: None,
+                name: "test-agent".to_string(),
+                config_id: None,
+                join_handle: None,
+                exit: Default::default(),
+                stamp: SpawnStamp::default(),
+            },
+        );
+    };
+    insert(live.clone(), live_tx);
+    insert(bystander.clone(), other_tx);
+
+    let answer = |owns: bool, mut rx: mpsc::UnboundedReceiver<AcpCommand>| {
+        tokio::spawn(async move {
+            while let Some(command) = rx.recv().await {
+                match command {
+                    AcpCommand::OwnsSession { reply, .. } => {
+                        let _ = reply.send(Ok(owns));
+                    }
+                    AcpCommand::Shutdown => break,
+                    _ => {}
+                }
+            }
+        })
+    };
+    let live_task = answer(true, live_rx);
+    let other_task = answer(false, other_rx);
+
+    manager
+        .delete_persisted_session(&persistence, session_id)
+        .await
+        .expect("delete");
+
+    assert!(
+        manager.agents.lock().get(&live).is_none(),
+        "the reopened agent must stop before the record is removed"
+    );
+    assert!(
+        manager.agents.lock().contains_key(&bystander),
+        "an agent that does not own the session must stay"
+    );
+    assert!(persistence.metadata(session_id).is_err());
+    assert!(!folder.exists(), "the quick chat folder must be removed");
+    live_task.abort();
+    other_task.abort();
 }

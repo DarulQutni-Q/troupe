@@ -23,6 +23,15 @@ export interface ChatHistorySidebarEntry {
    * the single `agentConfigId` icon exactly as before.
    */
   agents?: string[]
+  /**
+   * Switch-chain membership (spec-in-chat-agent-switch CAP-8): every session
+   * id in this row's chain, oldest → newest, when the row folds more than
+   * one session. `id` stays the terminal (live) session — opens/reloads
+   * target it — while delete walks `chainIds` so absorbed sources do not
+   * resurface as standalone rows. Absent on standalone chats.
+   */
+  chainIds?: string[]
+  startedByLabel?: string
   cwd?: string
   lastActivityAt: number
   /** When the chat was first indexed; never re-stamped. Absent or 0 when unknown. */
@@ -179,7 +188,7 @@ export function ChatHistoryEntryRow({
               ? `${entry.title} — ${entry.agentName} (resume from CLI history)`
               : entry.title
         }
-        className="flex min-h-11 min-w-0 flex-1 items-center gap-2 px-3 py-1.5 text-left text-xs disabled:cursor-not-allowed @[400px]:min-h-10"
+        className="flex min-h-11 min-w-0 flex-1 items-center gap-2 px-3 py-1.5 text-left text-xs disabled:cursor-not-allowed @[400px]:pointer-fine:min-h-10"
       >
         <ChatEntryIcon
           agentId={entry.agentId}
@@ -220,7 +229,7 @@ export function ChatHistoryEntryRow({
           title="Delete chat"
           onClick={() => onDelete(entry.id)}
           className={cn(
-            'relative inline-flex size-11 shrink-0 items-center justify-center rounded-md text-muted-foreground @[400px]:size-10',
+            'relative inline-flex size-11 shrink-0 items-center justify-center rounded-md text-muted-foreground @[400px]:pointer-fine:size-10',
             'opacity-100 transition-colors hover:bg-foreground/[0.03] hover:text-foreground',
             'pointer-fine:opacity-0 pointer-fine:group-hover:opacity-100 focus-visible:opacity-100'
           )}

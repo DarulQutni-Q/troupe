@@ -1,12 +1,14 @@
 import type { AutomationId, RunId } from '@shared/types/automation.types'
 import { useEffect, useState } from 'react'
-import { ArrowLeft, Workflow } from '@/components/icons'
+import { ArrowLeft, CalendarClock } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import { useMobileWebShell } from '@/hooks/use-mobile-web-shell'
+import { useServerAdmitsRemoteWrites } from '@/hooks/use-server-admits-remote-writes'
 import { AutomationDetail } from './AutomationDetail'
 import { AutomationList, AutomationListEmpty } from './AutomationList'
 import { AutomationRunDetail } from './AutomationRunDetail'
 import { useAutomationFocus } from './automation-focus'
+import { AutomationEditor } from './canvas/AutomationEditor'
 import { SuggestedAutomations } from './SuggestedAutomations'
 import { useAutomationDetail, useAutomationList, useAutomationRuns } from './use-automations'
 
@@ -17,7 +19,8 @@ interface AutomationsPanelProps {
 
 /**
  * The project's automations: a list beside the selected automation on
- * desktop, a list → detail → run stack on the phone shell.
+ * desktop, a list → detail stack on the phone shell. A run and the editor
+ * take the whole pane.
  */
 export function AutomationsPanel({
   projectId,
@@ -26,6 +29,10 @@ export function AutomationsPanel({
   const phone = useMobileWebShell()
   const [chosenId, setSelectedId] = useState<AutomationId | null>(null)
   const [runId, setRunId] = useState<RunId | null>(null)
+  const [editingId, setEditingId] = useState<AutomationId | null>(null)
+  // Another automation asked for the pane while the editor is open: the editor confirms first.
+  const [leaveFor, setLeaveFor] = useState<{ id: AutomationId; nonce: number } | null>(null)
+  const writable = useServerAdmitsRemoteWrites()
   const list = useAutomationList(projectId)
   // A choice deleted elsewhere (another device, an agent) counts as no choice.
   const chosen =
@@ -43,10 +50,19 @@ export function AutomationsPanel({
   const requested = useAutomationFocus((s) => s.requests[projectId])
   useEffect(() => {
     if (!requested) return
+    useAutomationFocus.getState().clear(projectId)
+    // Switching away would unmount the editor and its draft; let the editor ask first.
+    if (editingId !== null && requested !== editingId) {
+      setLeaveFor({ id: requested, nonce: Date.now() })
+      return
+    }
     setSelectedId(requested)
     setRunId(null)
-    useAutomationFocus.getState().clear(projectId)
-  }, [requested, projectId])
+  }, [requested, projectId, editingId])
+  // An editor belongs to the automation it opened on: once that leaves the pane, so does the editor.
+  useEffect(() => {
+    if (editingId !== null && editingId !== selectedId) setEditingId(null)
+  }, [editingId, selectedId])
   const reloadAll = (): void => {
     list.reload()
     detail.reload()
@@ -78,29 +94,62 @@ export function AutomationsPanel({
         onOpenRun={setRunId}
         onDeleted={() => select(null)}
         onChanged={reloadAll}
+        onEdit={() => {
+          // Pin the selection: on desktop it may only be "the first in the list", which can change.
+          setSelectedId(selectedId)
+          setEditingId(selectedId)
+        }}
       />
     )
 
-  const runView = run ? <AutomationRunDetail run={run} /> : null
+  // The editor takes the whole pane, on the phone too.
+  if (writable && editingId !== null && editingId === selectedId && detail.data) {
+    return (
+      <AutomationEditor
+        key={editingId}
+        detail={detail.data}
+        phone={phone}
+        onClose={() => {
+          setEditingId(null)
+          if (leaveFor) {
+            setSelectedId(leaveFor.id)
+            setRunId(null)
+          }
+          setLeaveFor(null)
+        }}
+        onChanged={reloadAll}
+        leave={leaveFor}
+        onStay={() => setLeaveFor(null)}
+      />
+    )
+  }
+
+  if (run) {
+    return (
+      <AutomationRunDetail
+        key={run.id}
+        run={run}
+        automation={detail.data?.automation ?? null}
+        phone={phone}
+        onClose={() => setRunId(null)}
+        onChanged={runs.reload}
+      />
+    )
+  }
 
   if (phone) {
-    const level = runView ? 'run' : selectedId ? 'detail' : 'list'
     return (
       <div className="flex h-full min-h-0 flex-col bg-background">
-        {level !== 'list' && (
+        {selectedId && (
           <div className="flex shrink-0 items-center border-b border-border px-1">
-            <Button
-              variant="ghost"
-              size="touch"
-              onClick={() => (level === 'run' ? setRunId(null) : select(null))}
-            >
+            <Button variant="ghost" size="touch" onClick={() => select(null)}>
               <ArrowLeft size={16} />
-              {level === 'run' ? 'Automation' : 'Automations'}
+              Automations
             </Button>
           </div>
         )}
         <div className="min-h-0 flex-1 overflow-y-auto">
-          {level === 'list' ? listView : <div className="p-4">{runView ?? detailView}</div>}
+          {selectedId ? <div className="p-4">{detailView}</div> : listView}
         </div>
       </div>
     )
@@ -121,30 +170,13 @@ export function AutomationsPanel({
     <div className="flex h-full min-h-0 bg-background">
       <aside className="flex w-72 shrink-0 flex-col border-r border-border">
         <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-4">
-          <Workflow size={14} className="text-muted-foreground" />
+          <CalendarClock size={14} className="text-muted-foreground" />
           <h2 className="text-sm font-medium text-foreground">Automations</h2>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto">{listView}</div>
       </aside>
       <main className="min-w-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex max-w-3xl flex-col gap-4 p-6">
-          {runView ? (
-            <>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="self-start"
-                onClick={() => setRunId(null)}
-              >
-                <ArrowLeft size={14} />
-                Back to automation
-              </Button>
-              {runView}
-            </>
-          ) : (
-            detailView
-          )}
-        </div>
+        <div className="mx-auto flex max-w-3xl flex-col gap-4 p-6">{detailView}</div>
       </main>
     </div>
   )

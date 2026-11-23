@@ -221,7 +221,7 @@ async fn legacy_initialize_still_lists_tools() {
 
 /// The `initialize` result must carry `instructions` advertising the chat
 /// renderer's markdown affordances and the design canvas: this is the channel
-/// that tells agents images embed inline, file links open in Termul's editor,
+/// that tells agents images embed inline, file links open in Troupe's editor,
 /// and the canvas tools draw on the project's canvas.
 #[tokio::test]
 async fn initialize_advertises_the_chat_and_canvas_instructions() {
@@ -260,7 +260,7 @@ async fn initialize_advertises_the_chat_and_canvas_instructions() {
             "Do not create or edit .figcraft, .pen or .op files",
             "do not look for other design tools",
             "CANVAS_CLOSED",
-            "Canvas button in Termul's left rail",
+            "Canvas button in Troupe's left rail",
             "read_canvas_guide",
             "get_canvas_style",
             "This looks repeatable. Want me to turn it into a scheduled background automation?",
@@ -270,6 +270,9 @@ async fn initialize_advertises_the_chat_and_canvas_instructions() {
             "call `set_session_title` once",
             "ask with the `ask_user` tool or your client's own question tool",
             "load its definition (for example with tool search)",
+            "Delegate long work through Troupe",
+            "`subagent_list_agents`, `subagent_start` an allowed agent",
+            "Use your client's built-in subagent tool for short lookups",
         ] {
             assert!(instructions.contains(needle), "missing {needle:?}");
         }
@@ -286,7 +289,7 @@ async fn initialize_advertises_the_chat_and_canvas_instructions() {
 }
 
 /// Claude Code keeps only the first `CLAUDE_INSTRUCTIONS_BUDGET` UTF-16 code
-/// units of a server's instructions. Everything Termul writes must survive
+/// units of a server's instructions. Everything Troupe writes must survive
 /// that cut; only figcraft's guide, last, may be clipped.
 #[test]
 fn termul_instructions_fit_claude_codes_budget() {
@@ -297,7 +300,7 @@ fn termul_instructions_fit_claude_codes_budget() {
     let units = termul_owned.encode_utf16().count();
     assert!(
         units <= crate::acp::host_mcp::CLAUDE_INSTRUCTIONS_BUDGET,
-        "Termul-owned instructions are {units} UTF-16 code units, over the budget"
+        "Troupe-owned instructions are {units} UTF-16 code units, over the budget"
     );
 }
 
@@ -317,6 +320,7 @@ async fn every_session_tools_are_always_loaded() {
     assert_eq!(always_load("plan"), Some(true));
     assert_eq!(always_load("set_session_title"), Some(true));
     assert_eq!(always_load("ask_user"), None);
+    assert_eq!(always_load("read_chat"), None);
     assert_eq!(always_load("create_node"), None);
 }
 
@@ -506,7 +510,8 @@ pub(super) async fn list_tools(config: ChildConfig) -> Vec<serde_json::Value> {
     let (server_io, client_io) = tokio::io::duplex(256 * 1024);
     let (server_read, server_write) = tokio::io::split(server_io);
     let (client_read, mut client_write) = tokio::io::split(client_io);
-    let serve = tokio::spawn(async move { serve_mcp_transport(config, server_read, server_write).await });
+    let serve =
+        tokio::spawn(async move { serve_mcp_transport(config, server_read, server_write).await });
     let mut reader = BufReader::new(client_read);
     let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"0.0.1"}}}"#;
     client_write.write_all(init.as_bytes()).await.unwrap();
@@ -523,7 +528,10 @@ pub(super) async fn list_tools(config: ChildConfig) -> Vec<serde_json::Value> {
     drop(client_write);
     drop(reader);
     serve.await.expect("serve task").expect("serve ok");
-    tools["result"]["tools"].as_array().expect("tools array").clone()
+    tools["result"]["tools"]
+        .as_array()
+        .expect("tools array")
+        .clone()
 }
 
 #[test]
@@ -560,7 +568,8 @@ async fn call_browser(config: ChildConfig, calls: &[serde_json::Value]) -> Vec<s
     let (server_io, client_io) = tokio::io::duplex(256 * 1024);
     let (server_read, server_write) = tokio::io::split(server_io);
     let (client_read, mut client_write) = tokio::io::split(client_io);
-    let serve = tokio::spawn(async move { serve_mcp_transport(config, server_read, server_write).await });
+    let serve =
+        tokio::spawn(async move { serve_mcp_transport(config, server_read, server_write).await });
     let mut reader = BufReader::new(client_read);
     let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"0.0.1"}}}"#;
     client_write.write_all(init.as_bytes()).await.unwrap();
@@ -580,7 +589,10 @@ async fn call_browser(config: ChildConfig, calls: &[serde_json::Value]) -> Vec<s
             "method": "tools/call",
             "params": { "name": "browser", "arguments": arguments },
         });
-        client_write.write_all(request.to_string().as_bytes()).await.unwrap();
+        client_write
+            .write_all(request.to_string().as_bytes())
+            .await
+            .unwrap();
         client_write.write_all(b"\n").await.unwrap();
         results.push(read_json_id(&mut reader, id).await["result"].clone());
     }
@@ -614,8 +626,14 @@ fn without_a_host_the_browser_tool_is_advertised_fail_closed() {
         .find(|tool| tool["name"] == "browser")
         .expect("the browser tool is advertised");
     let description = browser["description"].as_str().unwrap();
-    assert!(description.contains("not available on this host"), "{description}");
-    assert!(description.contains("capability_unavailable"), "{description}");
+    assert!(
+        description.contains("not available on this host"),
+        "{description}"
+    );
+    assert!(
+        description.contains("capability_unavailable"),
+        "{description}"
+    );
 
     let started = std::time::Instant::now();
     let results = runtime.block_on(call_browser(
@@ -627,7 +645,10 @@ fn without_a_host_the_browser_tool_is_advertised_fail_closed() {
             serde_json::json!({}),
         ],
     ));
-    assert!(started.elapsed() < std::time::Duration::from_secs(5), "fail-closed calls never wait");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "fail-closed calls never wait"
+    );
     for result in results {
         assert_eq!(result["isError"], true, "{result}");
         assert_eq!(
@@ -649,8 +670,9 @@ fn without_a_host_the_browser_tool_is_advertised_fail_closed() {
     }
 }
 
-const HOST_TOOLS: [&str; 13] = [
+const HOST_TOOLS: [&str; 23] = [
     "ask_user",
+    "mcp_install",
     "automation_apply_ops",
     "automation_capabilities",
     "automation_create",
@@ -660,9 +682,18 @@ const HOST_TOOLS: [&str; 13] = [
     "automation_propose",
     "browser",
     "get_canvas_style",
+    "list_started_chats",
     "plan",
     "read_canvas_guide",
+    "read_chat",
+    "send_to_chat",
     "set_session_title",
+    "start_chat",
+    "subagent_list_agents",
+    "subagent_start",
+    "subagent_status",
+    "subagent_stop",
+    "subagent_wait",
 ];
 
 pub(super) type ClientWriter = tokio::io::WriteHalf<tokio::io::DuplexStream>;
@@ -741,6 +772,12 @@ async fn tools_list_carries_figcraft_tools_by_name_with_the_canvas_tag() {
             .filter(|name| !HOST_TOOLS.contains(name))
             .collect();
         canvas.sort_unstable();
+        for name in HOST_TOOLS.iter().filter(|name| name.starts_with("subagent_")) {
+            assert!(
+                tools.iter().any(|tool| tool["name"] == *name),
+                "{name} is advertised"
+            );
+        }
         let mut upstream = figcraft_mcp::TOOL_NAMES.to_vec();
         upstream.sort_unstable();
         assert_eq!(canvas, upstream);
@@ -750,13 +787,20 @@ async fn tools_list_carries_figcraft_tools_by_name_with_the_canvas_tag() {
                 .iter()
                 .find(|tool| tool["name"] == definition["name"])
                 .expect("every figcraft tool is listed");
-            for field in ["inputSchema", "title"] {
-                assert_eq!(
-                    tool[field], definition[field],
-                    "{} {field}",
-                    definition["name"]
-                );
+            let mut input_schema = definition["inputSchema"].clone();
+            if let Some(properties) = input_schema["properties"].as_object_mut() {
+                properties.remove("document");
             }
+            assert_eq!(
+                tool["inputSchema"], input_schema,
+                "{} inputSchema",
+                definition["name"]
+            );
+            assert_eq!(
+                tool["title"], definition["title"],
+                "{} title",
+                definition["name"]
+            );
             if definition["name"] == "export" {
                 continue;
             }
@@ -775,13 +819,13 @@ async fn tools_list_carries_figcraft_tools_by_name_with_the_canvas_tag() {
             .expect("export is listed");
         assert_eq!(
             export["annotations"]["readOnlyHint"], false,
-            "Termul's export writes files"
+            "Troupe's export writes files"
         );
         assert_eq!(export["annotations"]["destructiveHint"], true);
         let description = export["description"].as_str().unwrap_or_default();
         assert!(
             !description.contains("absolute path"),
-            "Termul refuses absolute paths: {description}"
+            "Troupe refuses absolute paths: {description}"
         );
         assert!(
             description.contains("relative to the project"),
@@ -963,6 +1007,60 @@ fn create_node_over_stdio_reaches_the_renderer_and_returns_its_result() {
     );
 }
 
+/// Troupe's canvas holds one document, so a `document` argument (an agent
+/// copying `inspect_document`'s `name`) is dropped at the gateway rather than
+/// sent to the engine, which would look for an open file by that id or path.
+#[test]
+fn a_document_argument_is_ignored_and_never_reaches_the_renderer() {
+    use crate::acp::host_mcp::gateway_harness::{mount_renderer, Harness};
+
+    let (harness, configs) = Harness::new(&[("sess-1", Some("proj-1"))]);
+    let seen = mount_renderer(&harness.router(), "conn-a", "proj-1", 3, |frame| {
+        if frame.params.contains("\"document\"") {
+            return Some(Err(crate::acp::host_mcp::canvas::CanvasError::new(
+                crate::acp::host_mcp::canvas::CanvasErrorCode::EngineError,
+                "no open document \"design\" (`document` takes an `id` from doc.list, or an open file's path)",
+            )));
+        }
+        Some(Ok(match frame.method.as_str() {
+            "node.get" => r#"{"id":7,"name":"Card","type":"FRAME"}"#.to_string(),
+            presence if presence.starts_with("host.guest") => "{}".to_string(),
+            other => panic!("unexpected {other}"),
+        }))
+    });
+    harness
+        .runtime
+        .block_on(with_mcp_session(configs[0].clone(), |mut writer, mut reader| async move {
+            send_line(
+                &mut writer,
+                r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+            )
+            .await;
+            let listed = read_json_id(&mut reader, 2).await;
+            for tool in listed["result"]["tools"].as_array().expect("tools array") {
+                assert!(
+                    tool["inputSchema"]["properties"].get("document").is_none(),
+                    "{} advertises `document`",
+                    tool["name"]
+                );
+            }
+
+            send_line(
+                &mut writer,
+                r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_node","arguments":{"id":7,"document":"design"}}}"#,
+            )
+            .await;
+            let reply = read_json_id(&mut reader, 3).await;
+            assert_eq!(reply["result"]["isError"], false, "{reply}");
+            let text = reply["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or_default();
+            assert!(text.contains("Card"), "{text}");
+            drop(writer);
+        }));
+    drop(seen);
+}
+
 #[tokio::test]
 async fn canvas_tools_answer_canvas_closed_with_the_way_to_open_it() {
     let parent = crate::acp::host_mcp::parent::HostPlanServer::start(vec![], None);
@@ -991,6 +1089,93 @@ async fn canvas_tools_answer_canvas_closed_with_the_way_to_open_it() {
             text.contains("ask the user to open it with the Canvas button"),
             "{text}"
         );
+        drop(writer);
+    })
+    .await;
+}
+
+/// `tools/list` advertises `mcp_install`, and `tools/call` returns the
+/// parent's declined result. The description tells the agent how to resolve
+/// a link and that the user must approve.
+#[tokio::test]
+async fn mcp_install_lists_and_a_declined_call_returns_declined() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(
+        crate::web::store::WebStore::open(
+            dir.path().join("store.json"),
+            crate::web::store::StorePolicy::default(),
+        )
+        .unwrap(),
+    );
+    let catalog = std::sync::Arc::new(crate::mcp_catalog::McpCatalogService::service_for_rows(
+        Vec::new(),
+        crate::mcp_catalog::RunnerAvailability {
+            npx: true,
+            uvx: true,
+            docker: true,
+            dotnet: true,
+        },
+    ));
+    let parent = crate::acp::host_mcp::parent::HostPlanServer::start(vec![], None);
+    parent.set_mcp_install_answer_floor_for_tests(std::time::Duration::ZERO);
+    parent.set_mcp_installer_for_tests(std::sync::Arc::new(
+        crate::acp::host_mcp::mcp_install::HostMcpInstall::for_tests(catalog, store),
+    ));
+    let (port, token, provisional) = parent.register_session("agent-1");
+    parent.bind_session(&token, "sess-server");
+    parent.begin_turn("agent-1", "sess-server");
+    let config = ChildConfig {
+        port,
+        token,
+        session_id: provisional,
+        agent_id: "agent-1".to_string(),
+    };
+    let parent_for_call = std::sync::Arc::clone(&parent);
+    with_mcp_session(config, move |mut writer, mut reader| async move {
+        send_line(
+            &mut writer,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+        )
+        .await;
+        let listed = read_json_id(&mut reader, 2).await;
+        let tool = listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "mcp_install")
+            .expect("mcp_install is listed");
+        let description = tool["description"].as_str().unwrap();
+        assert!(description.contains("catalog"), "{description}");
+        assert!(description.contains("import"), "{description}");
+        assert!(description.contains("approves"), "{description}");
+        assert!(description.contains("secret"), "{description}");
+        assert!(
+            description.contains("`attached` is always false for now"),
+            "{description}"
+        );
+
+        let call = r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"mcp_install","arguments":{"source":{"kind":"import","json":"{\"mcpServers\":{\"echo\":{\"command\":\"echo\",\"args\":[\"hi\"]}}}"}}}}"#;
+        send_line(&mut writer, call).await;
+        let parent = parent_for_call;
+        tokio::spawn(async move {
+            for _ in 0..200 {
+                if let Some(id) = parent.open_mcp_install_ids().into_iter().next() {
+                    assert!(parent
+                        .answer_mcp_install(
+                            &id,
+                            "sess-server",
+                            crate::acp::host_mcp::mcp_install::McpInstallDecision::Decline,
+                        )
+                        .is_ok());
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        });
+        let reply = read_json_id(&mut reader, 3).await;
+        let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(parsed["outcome"], "declined", "{text}");
         drop(writer);
     })
     .await;

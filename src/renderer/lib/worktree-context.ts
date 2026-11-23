@@ -3,7 +3,6 @@ import { worktreeApi } from '@/lib/api'
 import { serverAdmitsRemoteWrites } from '@/lib/tauri-runtime'
 import { useProjectStore } from '@/stores/project-store'
 import { useShellLayoutStore } from '@/stores/shell-layout-store'
-import type { Worktree } from '@/types/project'
 
 /**
  * Get the main project root path (ignoring any active worktree).
@@ -26,15 +25,6 @@ export function getDefaultCwdForProject(projectId: string): string {
 /** The Workspace-switcher pick for a project, read from the shell-layout store. */
 function pickOf(projectId: string): string | undefined {
   return useShellLayoutStore.getState().worktreePickByProject[projectId]
-}
-
-/**
- * Get the active worktree for a project, if any: the worktree the switcher
- * pick resolves to (a pruned or disabled pick resolves as the project folder).
- */
-export function getActiveWorktreeForProject(projectId: string): Worktree | undefined {
-  const project = useProjectStore.getState().projects.find((p) => p.id === projectId)
-  return activeWorktreeOf(project, pickOf(projectId))
 }
 
 /**

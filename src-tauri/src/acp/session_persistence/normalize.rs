@@ -21,9 +21,13 @@ pub fn is_durable_event(type_: &str) -> bool {
     !matches!(
         type_,
         "permission_request"
+            | "mcp_install_request"
+            | "mcp_install_resolved"
+            | "mcp_registry_changed"
             | "browser_ticket_closed"
             | "browser_stop_changed"
             | "agent_working"
+            | "background_commands"
             | "auth_required"
             | "agent_spawned"
             | "agent_disconnected"
@@ -451,6 +455,108 @@ fn add_subagent_result(
     );
 }
 
+/// Leaf of a tool name: `mcp__server__plan` and `server:plan` are both `plan`.
+fn plan_tool_leaf(name: &str) -> String {
+    let slashed = name.rsplit(['/', ':']).next().unwrap_or(name);
+    let leaf = slashed.rsplit("__").next().unwrap_or(slashed);
+    leaf.trim().to_ascii_lowercase().replace('-', "_")
+}
+
+fn is_plan_tool_name(name: &str) -> bool {
+    matches!(
+        plan_tool_leaf(name).as_str(),
+        "plan" | "todowrite" | "todo_write" | "update_plan" | "updatetodos" | "update_todos"
+    )
+}
+
+const MAX_DURABLE_PLAN_ENTRIES: usize = 100;
+const MAX_DURABLE_PLAN_CONTENT_CHARS: usize = 240;
+
+fn bounded_plan_text(value: &str) -> String {
+    let mut out = String::new();
+    for (index, ch) in value.chars().enumerate() {
+        if index >= MAX_DURABLE_PLAN_CONTENT_CHARS {
+            break;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// The plan list from a tool call, without the rest of `rawInput`. Enough for
+/// a reload to rebuild the panel. `merge` is kept separately.
+fn durable_plan_entries(tool: &serde_json::Map<String, Value>) -> Option<Value> {
+    let input = tool.get("rawInput")?.as_object()?;
+    let list = ["todos", "plan", "entries", "tasks"]
+        .iter()
+        .find_map(|key| input.get(*key).and_then(Value::as_array))?;
+    let mut entries = Vec::new();
+    for item in list.iter().take(MAX_DURABLE_PLAN_ENTRIES) {
+        let Some(record) = item.as_object() else {
+            continue;
+        };
+        let Some(content) = ["content", "step", "text"]
+            .iter()
+            .find_map(|key| record.get(*key).and_then(Value::as_str))
+        else {
+            continue;
+        };
+        let mut entry = serde_json::Map::new();
+        entry.insert(
+            "content".to_string(),
+            Value::String(bounded_plan_text(content)),
+        );
+        if let Some(id) = record.get("id").and_then(Value::as_str) {
+            entry.insert("id".to_string(), Value::String(bounded_plan_text(id)));
+        }
+        if let Some(status) = record.get("status").and_then(Value::as_str) {
+            entry.insert(
+                "status".to_string(),
+                Value::String(bounded_plan_text(status)),
+            );
+        }
+        if let Some(priority) = record.get("priority").and_then(Value::as_str) {
+            entry.insert(
+                "priority".to_string(),
+                Value::String(bounded_plan_text(priority)),
+            );
+        }
+        entries.push(Value::Object(entry));
+    }
+    Some(Value::Array(entries))
+}
+
+/// A plan/todo tool call. The renderer hides these from the transcript.
+fn is_plan_tool(tool: &serde_json::Map<String, Value>) -> bool {
+    let mut names = Vec::new();
+    if let Some(title) = tool.get("title").and_then(Value::as_str) {
+        names.push(title);
+    }
+    if let Some(name) = tool
+        .get("_meta")
+        .and_then(Value::as_object)
+        .and_then(|meta| meta.get("claudeCode"))
+        .and_then(Value::as_object)
+        .and_then(|claude| claude.get("toolName"))
+        .and_then(Value::as_str)
+    {
+        names.push(name);
+    }
+    if let Some(name) = tool
+        .get("rawInput")
+        .and_then(Value::as_object)
+        .and_then(|input| {
+            input
+                .get("_toolName")
+                .and_then(Value::as_str)
+                .or_else(|| input.get("toolName").and_then(Value::as_str))
+        })
+    {
+        names.push(name);
+    }
+    names.iter().any(|name| is_plan_tool_name(name))
+}
+
 pub(super) fn normalize_durable_payload(type_: &str, payload: &Value) -> Value {
     if matches!(type_, "tool_call" | "tool_call_update") {
         // Strict DTO: tool-authored free-form content, arguments, output, and
@@ -481,6 +587,23 @@ pub(super) fn normalize_durable_payload(type_: &str, payload: &Value) -> Value {
             for field in ["toolCallId", "kind", "status"] {
                 if let Some(value) = tool.get(field) {
                     reduced.insert(field.to_string(), value.clone());
+                }
+            }
+            // Plan/todo writes render only in the sticky plan panel. The name
+            // is not otherwise durable, so the flag is what hides the card
+            // after a reload. Mirrors `planToolLeaf` in plan-session.ts.
+            if is_plan_tool(tool) {
+                reduced.insert("planTool".to_string(), Value::Bool(true));
+                if let Some(entries) = durable_plan_entries(tool) {
+                    reduced.insert("planEntries".to_string(), entries);
+                }
+                if let Some(merge) = tool
+                    .get("rawInput")
+                    .and_then(Value::as_object)
+                    .and_then(|input| input.get("merge"))
+                    .filter(|merge| merge.is_boolean())
+                {
+                    reduced.insert("planMerge".to_string(), merge.clone());
                 }
             }
             add_file_change_summary(type_, tool, &mut reduced);
@@ -635,21 +758,31 @@ const TOOL_PILL_LABELS: &[(&str, &str)] = &[
     ("the browser tool", "Browser"),
     ("the canvas tools", "Canvas"),
     ("the automation tools", "Automations"),
+    ("the subagent tools", "Orchestrate"),
 ];
 
-/// `text` with each `(Use <hint> from the termul MCP server)` frame replaced
-/// by its pill label, an unknown hint dropped. `None` when there is no frame.
+/// How a tool pill's frame ends, current name first. 0.4.x hosts named their
+/// server `termul`, and chats persisted then still carry that frame.
+const TOOL_PILL_CLOSES: &[&str] = &[
+    " from the troupe MCP server)",
+    " from the termul MCP server)",
+];
+
+/// `text` with each `(Use <hint> from the troupe MCP server)` frame (or its
+/// 0.4.x `termul` twin) replaced by its pill label, an unknown hint dropped.
+/// `None` when there is no frame.
 fn tool_pill_labels(text: &str) -> Option<String> {
     const OPEN: &str = "(Use ";
-    const CLOSE: &str = " from the termul MCP server)";
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     let mut found = false;
     while let Some(start) = rest.find(OPEN) {
         let after = &rest[start + OPEN.len()..];
-        let Some(end) = after
-            .find(CLOSE)
-            .filter(|end| !after[..*end].contains(['(', ')', '\n']))
+        let Some((end, close_len)) = TOOL_PILL_CLOSES
+            .iter()
+            .filter_map(|close| after.find(close).map(|end| (end, close.len())))
+            .min()
+            .filter(|(end, _)| !after[..*end].contains(['(', ')', '\n']))
         else {
             out.push_str(&rest[..start + OPEN.len()]);
             rest = after;
@@ -663,7 +796,7 @@ fn tool_pill_labels(text: &str) -> Option<String> {
         {
             out.push_str(&format!(" {label} "));
         }
-        rest = &after[end + CLOSE.len()..];
+        rest = &after[end + close_len..];
     }
     if !found {
         return None;

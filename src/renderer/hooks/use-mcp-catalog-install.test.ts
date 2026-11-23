@@ -33,12 +33,12 @@ vi.mock('@/lib/log-api', () => ({ logFrontendError: vi.fn() }))
 vi.mock('@/lib/acp-mcp-persistence', async (orig) => ({
   ...(await orig<typeof import('@/lib/acp-mcp-persistence')>()),
   loadMcpServers: vi.fn(async () => []),
-  saveMcpServers: vi.fn(async () => {}),
-  syncMcpRegistryToProjectBestEffort: vi.fn(async () => {})
+  saveMcpServers: vi.fn(async () => {})
 }))
 
 import { invoke } from '@tauri-apps/api/core'
-import { acpApi } from '@/lib/acp-api'
+import { toast } from 'sonner'
+import { acpApi, MCP_OAUTH_CANCELLED, McpOAuthError } from '@/lib/acp-api'
 import { saveMcpServers } from '@/lib/acp-mcp-persistence'
 import { isTauriContext } from '@/lib/tauri-runtime'
 import { useAcpStore } from '@/stores/acp-store'
@@ -229,7 +229,7 @@ describe('useMcpCatalogInstall', () => {
         launchDigest: 'digest-0123456789abcdef'
       }
     })
-    expect(vi.mocked(saveMcpServers).mock.calls).toEqual([[[saved], 'p1']])
+    expect(vi.mocked(saveMcpServers).mock.calls).toEqual([[[saved]]])
     expect(hook.result.current.flow).toMatchObject({
       step: 'done',
       probe: { status: 'connected', tools: 2 }
@@ -301,8 +301,7 @@ describe('useMcpCatalogInstall', () => {
           name: 'io.example/weather',
           version: '1.2.0',
           title: 'Weather Tools',
-          choice: { kind: 'remote', index: 0 },
-          projectId: 'p1'
+          choice: { kind: 'remote', index: 0 }
         },
         failure: { kind: 'unsupported', reason: { code: 'needs-runtime', runtime: 'npx' } }
       })
@@ -386,7 +385,42 @@ describe('useMcpCatalogInstall', () => {
 
     act(() => hook.result.current.signIn())
 
-    expect(startOAuth.mock.calls).toEqual([['p1', 'https://weather.example/mcp']])
+    expect(startOAuth.mock.calls).toEqual([
+      [
+        'p1',
+        'https://weather.example/mcp',
+        expect.objectContaining({ signal: expect.any(AbortSignal) })
+      ]
+    ])
+  })
+
+  it.each([
+    ['toasts "Connected" once the sign-in stores a token', () => Promise.resolve(), true],
+    [
+      'shows no toast when the sign-in is cancelled',
+      () => Promise.reject(new McpOAuthError('OAuth sign-in cancelled', MCP_OAUTH_CANCELLED)),
+      false
+    ]
+  ] as const)('%s', async (_, signInResult, toasted) => {
+    probeReturns({ status: 'authRequired', tools: [], error: 'sign in required' })
+    const startOAuth = vi.spyOn(acpApi, 'startMcpOAuth').mockImplementation(signInResult)
+    const hook = await toConsent()
+    act(() => hook.result.current.approve())
+    await waitFor(() => expect(hook.result.current.flow.step).toBe('done'))
+
+    act(() => hook.result.current.signIn())
+    await waitFor(() => expect(startOAuth).toHaveBeenCalled())
+    await waitFor(() =>
+      expect(Object.values(useAcpStore.getState().mcpOAuthConnecting)).toEqual([false])
+    )
+
+    if (toasted) {
+      await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Connected to weather-tools'))
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(toast.success).not.toHaveBeenCalled()
+      expect(toast.error).not.toHaveBeenCalled()
+    }
   })
 
   it('cancels the plan when the commit never reached the host', async () => {
@@ -416,42 +450,18 @@ describe('useMcpCatalogInstall', () => {
     expect(useAcpStore.getState().mcpServers).toEqual([])
   })
 
-  it('refuses a web save into a project other than the one the install started in', async () => {
-    vi.mocked(isTauriContext).mockReturnValue(false)
-    const hook = await toConsent()
-    useProjectStore.setState({ activeProjectId: 'p2' })
-
-    act(() => hook.result.current.approve())
-
-    await waitFor(() =>
-      expect(hook.result.current.flow).toMatchObject({ step: 'failed', failure: { kind: 'save' } })
-    )
-    expect(vi.mocked(saveMcpServers).mock.calls).toEqual([])
-  })
-
-  it('starts over in the project now open after a web save failed on a project switch', async () => {
+  it('saves a web install into the host list even when the open project changed', async () => {
     vi.mocked(isTauriContext).mockReturnValue(false)
     probeReturns({ status: 'connected', tools: [] })
     const hook = await toConsent()
     useProjectStore.setState({ activeProjectId: 'p2' })
-    act(() => hook.result.current.approve())
-    await waitFor(() =>
-      expect(hook.result.current.flow).toMatchObject({ step: 'failed', failure: { kind: 'save' } })
-    )
 
-    act(() => hook.result.current.startOver())
-    await waitFor(() => expect(hook.result.current.flow.step).toBe('form'))
-    act(() => hook.result.current.change(KEY_FIELD.id, 'sk-live'))
-    act(() => hook.result.current.submit())
-    await waitFor(() => expect(hook.result.current.flow.step).toBe('consent'))
     act(() => hook.result.current.approve())
 
     await waitFor(() => expect(hook.result.current.flow.step).toBe('done'))
     expect(
-      vi
-        .mocked(saveMcpServers)
-        .mock.calls.map(([servers, projectId]) => [servers.map((server) => server.name), projectId])
-    ).toEqual([[['weather-tools'], 'p2']])
+      vi.mocked(saveMcpServers).mock.calls.map(([servers]) => servers.map((server) => server.name))
+    ).toEqual([['weather-tools']])
   })
 
   it('does not offer to start over when the catalog no longer lists the version', async () => {

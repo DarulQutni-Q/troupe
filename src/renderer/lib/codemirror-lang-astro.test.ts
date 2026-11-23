@@ -1,4 +1,4 @@
-import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
+import { forceParsing, HighlightStyle, syntaxHighlighting } from '@codemirror/language'
 import { EditorState } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
 import { highlightTree, tags } from '@lezer/highlight'
@@ -132,6 +132,10 @@ describe('astro editor marks', () => {
         ]
       })
     })
+    // A new view parses only for a few milliseconds and finishes in the
+    // background; the nested template expressions can land after that slice.
+    // Assert the colors once parsing is done, as a reader sees them.
+    forceParsing(view, view.state.doc.length, 5000)
 
     const line = (snippet: string): string => {
       const match = [...view.dom.querySelectorAll('.cm-line')].find((node) =>

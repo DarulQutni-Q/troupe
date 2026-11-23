@@ -1,3 +1,4 @@
+import type { SubagentAgent } from '@shared/types/subagent'
 import { useCallback, useLayoutEffect, useMemo, useRef } from 'react'
 import { toast } from 'sonner'
 import { ShieldAlert, ShieldCheck } from '@/components/icons'
@@ -7,7 +8,14 @@ import type { PermissionOption } from '@/lib/acp-api'
 import { logFrontendError } from '@/lib/log-api'
 import { permissionToolTitle } from '@/lib/permission-tool-title'
 import { cn } from '@/lib/utils'
-import { type PendingPermission, useAcpStore } from '@/stores/acp-store'
+import {
+  type PendingPermission,
+  useAcpStore,
+  useAgentIcon,
+  useAgentTemplateId
+} from '@/stores/acp-store'
+import { AgentGlyph } from './AgentGlyph'
+import { askingOrchestratedSubagent } from './subagent-strip'
 import {
   isAllowOption,
   isRejectOption,
@@ -34,6 +42,22 @@ interface PermissionPromptProps {
 }
 
 /**
+ * The approval's asking child: its own glyph and title, when the pending
+ * permission belongs to an orchestrated run of this chat. The join is
+ * renderer-side — the request's `agentId` is the child host agent's.
+ */
+function AskingChild({ agent, title }: { agent: SubagentAgent; title: string }): React.JSX.Element {
+  const templateId = useAgentTemplateId(agent.agentId, agent.configId)
+  const icon = useAgentIcon(agent.agentId, agent.configId)
+  return (
+    <span className="inline-flex min-w-0 items-center gap-1 font-normal text-muted-foreground">
+      <AgentGlyph templateId={templateId} icon={icon} size={14} />
+      <span className="truncate">{title}</span>
+    </span>
+  )
+}
+
+/**
  * Inline approval prompt for a single pending request. It intentionally has
  * no dismiss or outside-click behavior; the agent stays paused until the user
  * chooses an option or explicitly cancels the request.
@@ -45,6 +69,9 @@ export function PermissionPrompt({
 }: PermissionPromptProps): React.JSX.Element {
   const respond = useAcpStore((s) => s.respondPermission)
   const isMobileShell = useMobileWebShell()
+  const asking = useAcpStore((s) =>
+    askingOrchestratedSubagent(s.toolCalls?.[permission.sessionId], permission.agentId)
+  )
   // When this request first became visible: set at mount and again whenever
   // the requestId changes (the prompt is not re-keyed per request) or a hidden
   // pane turns visible. A request that changes while hidden is stamped when
@@ -97,7 +124,7 @@ export function PermissionPrompt({
         variant={primary ? 'default' : 'outline'}
         size={isMobileShell ? 'touch' : 'sm'}
         className={cn(
-          'min-w-0 rounded-lg px-3 font-medium whitespace-nowrap transition-[transform,color,background-color,border-color] duration-150 active:scale-[0.96]',
+          'min-w-0 rounded-lg px-3 font-medium whitespace-nowrap transition-[scale,color,background-color,border-color] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] active:scale-[0.97] motion-reduce:active:scale-100',
           !isMobileShell && 'h-8 text-xs',
           primary && 'shadow-2xs',
           !primary &&
@@ -144,16 +171,36 @@ export function PermissionPrompt({
         <div className="min-w-0 flex-1">
           <h2
             id={`permission-title-${permission.requestId}`}
-            className="text-xs font-semibold leading-5 text-foreground"
+            className="flex items-center gap-1.5 text-xs font-semibold leading-5 text-foreground"
           >
             Approval needed
+            {asking?.agent && (
+              <>
+                <span aria-hidden="true" className="font-normal text-muted-foreground">
+                  ·
+                </span>
+                <AskingChild agent={asking.agent} title={asking.title} />
+              </>
+            )}
           </h2>
           <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
-            The agent is waiting for permission to run{' '}
-            <code className="rounded border border-border/50 bg-muted/60 px-1.5 py-0.5 font-mono text-xs text-foreground break-all select-all">
-              {permissionToolTitle(permission.toolCall)}
-            </code>
-            .
+            {asking?.agent ? (
+              <>
+                {asking.agent.name} sub-agent wants to run{' '}
+                <code className="rounded border border-border/50 bg-muted/60 px-1.5 py-0.5 font-mono text-xs text-foreground break-all select-all">
+                  {permissionToolTitle(permission.toolCall)}
+                </code>
+                {asking.workspace?.mode === 'worktree' ? ' in its worktree.' : '.'}
+              </>
+            ) : (
+              <>
+                The agent is waiting for permission to run{' '}
+                <code className="rounded border border-border/50 bg-muted/60 px-1.5 py-0.5 font-mono text-xs text-foreground break-all select-all">
+                  {permissionToolTitle(permission.toolCall)}
+                </code>
+                .
+              </>
+            )}
           </p>
         </div>
       </div>
@@ -177,7 +224,7 @@ export function PermissionPrompt({
             variant="ghost"
             size={isMobileShell ? 'touch' : 'sm'}
             className={cn(
-              'rounded-lg px-2.5 text-muted-foreground transition-[transform,color,background-color] duration-150 hover:bg-destructive/10 hover:text-destructive active:scale-[0.96]',
+              'rounded-lg px-2.5 text-muted-foreground transition-colors duration-150 hover:bg-destructive/10 hover:text-destructive',
               !isMobileShell && 'h-8 text-xs'
             )}
             onClick={() => choose(undefined)}
@@ -190,10 +237,8 @@ export function PermissionPrompt({
       {rejectOnCancel && (
         <p
           className={cn(
-            'mt-2 leading-tight',
-            isMobileShell
-              ? 'text-2xs text-muted-foreground'
-              : 'text-[11px] text-muted-foreground/70'
+            'mt-2 text-2xs leading-tight',
+            isMobileShell ? 'text-muted-foreground' : 'text-muted-foreground/70'
           )}
         >
           Choose an option to resume the agent. This request stays here until you respond.

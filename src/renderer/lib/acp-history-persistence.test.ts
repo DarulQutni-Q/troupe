@@ -72,6 +72,7 @@ import {
   normalizeCwdForScope,
   PERSISTED_TOOL_CALL_BYTE_BUDGET,
   PERSISTED_TOOL_CALLS_LIMIT,
+  payloadSeqFloor,
   queueSessionPayloadDelete,
   queueSessionPayloadSave,
   reloadSessionPayloadFromHost,
@@ -514,6 +515,33 @@ describe('payload restore helpers', () => {
     ).toBe(9)
   })
 
+  it('payloadSeqFloor sits above a subagent message that opened after every timeline item', () => {
+    const payload = {
+      messages: [
+        { id: 'm', role: 'user' as const, blocks: [], streaming: false, timestamp: 0, seq: 3 }
+      ],
+      toolCalls: [
+        {
+          toolCallId: 'dispatch',
+          seq: 4,
+          subagentMessages: [
+            { seq: 5, timestamp: 0, text: 'Reading.' },
+            { seq: 11, timestamp: 0, text: 'Still going.' }
+          ]
+        },
+        { toolCallId: 'child', seq: 8, parentToolCallId: 'dispatch' }
+      ]
+    }
+    expect(maxPayloadSeq(payload)).toBe(8)
+    expect(payloadSeqFloor(payload)).toBe(11)
+    expect(
+      payloadSeqFloor({
+        messages: [],
+        toolCalls: [{ toolCallId: 'x', seq: 2, subagentMessages: 'bad' as never }]
+      })
+    ).toBe(2)
+  })
+
   it('restore helpers degrade corrupt toolCalls shapes instead of throwing', () => {
     const corrupt = { toolCalls: 'not-an-array' as unknown as ToolCall[] }
     expect(maxPayloadSeq({ messages: [], ...corrupt })).toBe(0)
@@ -599,7 +627,12 @@ describe('provider routing', () => {
   })
 
   it('reads the host-recorded model identically via the desktop and WS readers', async () => {
-    const hostFields = { modelId: 'claude-opus', modelName: 'Claude Opus' }
+    const hostFields = {
+      modelId: 'claude-opus',
+      modelName: 'Claude Opus',
+      continuedFrom: 'src-session',
+      startedBy: 'parent-session'
+    }
     const wireSummary = {
       storageKey: 'opaque',
       sessionId: 'host-1',
@@ -630,10 +663,20 @@ describe('provider routing', () => {
 
     expect(desktop.modelId).toBe('claude-opus')
     expect(desktop.modelName).toBe('Claude Opus')
-    expect({ id: web.id, modelId: web.modelId, modelName: web.modelName }).toEqual({
+    expect(desktop.continuedFrom).toBe('src-session')
+    expect(desktop.startedBy).toBe('parent-session')
+    expect({
+      id: web.id,
+      modelId: web.modelId,
+      modelName: web.modelName,
+      continuedFrom: web.continuedFrom,
+      startedBy: web.startedBy
+    }).toEqual({
       id: desktop.id,
       modelId: desktop.modelId,
-      modelName: desktop.modelName
+      modelName: desktop.modelName,
+      continuedFrom: desktop.continuedFrom,
+      startedBy: desktop.startedBy
     })
 
     // Round-trip back to the wire shape keeps the fields.
@@ -663,6 +706,7 @@ describe('provider routing', () => {
     for (const read of [desktop, web]) {
       expect(read.modelId).toBeUndefined()
       expect(read.modelName).toBeUndefined()
+      expect(read.startedBy).toBeUndefined()
     }
     expect(toPersistedSessionSummaries([web])[0].modelId).toBeUndefined()
   })

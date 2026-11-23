@@ -38,13 +38,15 @@ describe('public/manifest.webmanifest', () => {
   it('declares the required PWA fields', () => {
     expect(manifest.id).toBe('/')
     expect(manifest.lang).toBe('en')
-    expect(manifest.name).toBe('Termul')
-    expect(manifest.short_name).toBe('Termul')
+    expect(manifest.name).toBe('Troupe')
+    expect(manifest.short_name).toBe('Troupe')
     expect(manifest.start_url).toBe('/')
     expect(manifest.scope).toBe('/')
     expect(manifest.display).toBe('standalone')
     expect(manifest.theme_color).toBe('#1E1E1E')
-    expect(manifest.background_color).toBe('#0F172A')
+    // The splash matches theme_color, so the install splash and the status
+    // bar are one colour.
+    expect(manifest.background_color).toBe('#1E1E1E')
     expect(manifest.categories).toEqual(expect.arrayContaining(['utilities', 'productivity']))
   })
 

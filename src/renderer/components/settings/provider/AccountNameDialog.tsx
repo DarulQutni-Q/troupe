@@ -61,11 +61,11 @@ export function AccountNameDialog({
 
   return (
     <Dialog open={open} onOpenChange={(next) => !saving && onOpenChange(next)}>
-      <DialogContent className="sm:max-w-[420px]">
+      <DialogContent className="max-h-[90dvh] overflow-y-auto overscroll-contain sm:max-w-[420px]">
         <DialogHeader>
           <DialogTitle>Rename account</DialogTitle>
           <DialogDescription>
-            Termul shows this name instead of the email address.
+            Troupe shows this name instead of the email address.
           </DialogDescription>
         </DialogHeader>
         <form

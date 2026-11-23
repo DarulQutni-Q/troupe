@@ -75,6 +75,7 @@ use crate::web::ws::ClientIdentity;
 mod desktop_import;
 mod errors;
 mod gc;
+mod host_write;
 mod legacy;
 mod lww;
 mod manifest_import;
@@ -157,6 +158,9 @@ pub enum WriteOutcome {
         merged: bool,
     },
 }
+
+/// `clientInstanceId` of a record the host itself wrote.
+const HOST_CLIENT_INSTANCE: &str = "host";
 
 /// Maximum size of the `data` payload a write may persist.
 const MAX_DATA_BYTES: usize = 10 * 1024 * 1024;
@@ -752,6 +756,8 @@ fn check_expected(current: Option<&Record>, expected: &Value) -> Result<(), Stor
 mod desktop_import_tests;
 #[cfg(test)]
 mod gc_tests;
+#[cfg(test)]
+mod host_write_tests;
 #[cfg(test)]
 mod legacy_tests;
 #[cfg(test)]

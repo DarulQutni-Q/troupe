@@ -40,7 +40,7 @@ const FORM_ID = 'mcp-server-form'
 const trustNote = (
   <p className="text-xs text-muted-foreground">
     Only add servers from developers you trust. A server's tools can read and change things on your
-    behalf, and Termul can't check what they do.
+    behalf, and Troupe can't check what they do.
   </p>
 )
 
@@ -308,7 +308,7 @@ export function useMcpServerDialog(): {
           if (!open && !saving) closeDialog()
         }}
       >
-        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
+        <DialogContent className="max-h-[90dvh] overflow-y-auto overscroll-contain sm:max-w-xl">
           {dialog?.view === 'form' ? (
             <>
               <DialogHeader>
@@ -317,7 +317,7 @@ export function useMcpServerDialog(): {
                 </DialogTitle>
                 <DialogDescription>
                   {dialog.mode === 'edit'
-                    ? 'Change how Termul reaches this server.'
+                    ? 'Change how Troupe reaches this server.'
                     : 'Where does this server run? The setup page or README usually tells you.'}
                 </DialogDescription>
               </DialogHeader>

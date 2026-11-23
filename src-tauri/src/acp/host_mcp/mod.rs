@@ -1,6 +1,6 @@
 //! Host-injected `plan` MCP tool — first-class plan UI for every ACP agent.
 //!
-//! Termul auto-injects a host-side MCP server into every `session/new`
+//! Troupe auto-injects a host-side MCP server into every `session/new`
 //! `mcp_servers` list (see `AcpManager::new_session_with_context`). The agent
 //! discovers it like any MCP tool and calls it instead of a built-in todo
 //! tool. When called, the host updates a per-session plan cache and emits a
@@ -28,13 +28,21 @@ pub mod canvas_policy;
 pub mod canvas_skill;
 pub mod canvas_tools;
 pub mod child;
+pub mod mcp_install;
 pub mod parent;
 pub mod presence;
+pub mod read_chat;
+pub mod subagent_tools;
+pub mod worker_chats;
 
 #[cfg(test)]
 mod automation_tools_tests;
 #[cfg(test)]
 mod gateway_harness;
+#[cfg(test)]
+mod mcp_install_tests;
+#[cfg(test)]
+mod read_chat_tests;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -75,31 +83,42 @@ pub const ENV_AGENT_ID: &str = "TERMUL_PLAN_AGENT_ID";
 /// reach for. Claude Code defers MCP tools behind tool search and shows only
 /// their names, so a tool's own description never reaches the model unless
 /// the agent loads it; this paragraph is what makes the agent look.
-pub const TERMUL_TOOL_INSTRUCTIONS: &str = "Termul tools: if your client lists one of these \
+pub const TERMUL_TOOL_INSTRUCTIONS: &str = "Troupe tools: if your client lists one of these \
 tools by name only, load its definition (for example with tool search) before you call it. \
-Track your work in Termul's plan panel with the `plan` tool: call it whenever you would create \
+Track your work in Troupe's plan panel with the `plan` tool: call it whenever you would create \
 or update a todo list, send the full list with each item's status every time, and keep no todo \
 list of your own. In the first turn, once the user's intent is clear, call `set_session_title` \
 once with a short title and a kebab-case `branch` slug. When you need a decision or missing \
 details from the user, ask with the `ask_user` tool or your client's own question tool, not in \
-plain text.";
+plain text. When the user gives you a Troupe chat ID or a copied chat reference, read that chat \
+with the `read_chat` tool. To run a task in a parallel chat, call `start_chat`, then use \
+`read_chat` and `send_to_chat`. To install an MCP server from a link, a registry name, or \
+JSON, read it with your own tools and call `mcp_install`. The user approves on a card in the chat.";
+
+/// Splits delegation by cost. A long or parallel task, or one for a cheaper
+/// agent, goes through the orchestrator, where the user sees and stops it; a
+/// short lookup stays on the client's lighter built-in subagent, which is also
+/// the fallback when the orchestrator refuses.
+pub const DELEGATION_INSTRUCTIONS: &str = "Delegate long work through Troupe: for a long or \
+parallel task, or to use a cheaper agent, call `subagent_list_agents`, `subagent_start` \
+an allowed agent with a self-contained `task`, then `subagent_wait`. Use your client's built-in \
+subagent tool for short lookups, or when Troupe sub-agents are off, none is allowed, or \
+`subagent_start` refuses.";
 
 /// The context budget Claude Code gives a server's `instructions`: it keeps
 /// this many UTF-16 code units (`CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH`,
-/// default 4096) and drops the rest. Every Termul-owned paragraph must fit
+/// default 4096) and drops the rest. Every Troupe-owned paragraph must fit
 /// inside it; figcraft's guide, last, may be cut.
 pub const CLAUDE_INSTRUCTIONS_BUDGET: usize = 4096;
 
 /// Markdown affordances of the chat renderer.
-pub const TERMUL_CHAT_INSTRUCTIONS: &str = "Termul renders your markdown replies in a rich chat UI. \
-Embed images and videos inline with `![alt](path)`, for generated charts, screenshots, diagrams, \
-and screen recordings: paths relative to the session working directory, absolute paths, \
-`file://` URLs, and https URLs render in the desktop app and on the web. A markdown link to an \
-image or video file also shows it inline. \
-Reference files as markdown links `[label](path)`: Termul renders them as buttons that open \
-the file in its built-in editor — absolute and cwd-relative paths inside the session workspace \
-roots work, a `:line` suffix (or `#L<line>` on the link target) positions the cursor, and \
-bare multi-segment file paths in prose become open-in-editor links too.";
+pub const TERMUL_CHAT_INSTRUCTIONS: &str = "Troupe renders your markdown replies in a rich chat UI. \
+Embed images and videos (charts, screenshots, recordings) inline with \
+`![alt](path)`: relative, absolute, `file://` and https paths render on desktop and web, and a \
+markdown link to an image or video also shows it inline. Reference files as `[label](path)` \
+links, which open in Troupe's editor (paths inside the session workspace roots; a `:line` \
+suffix or `#L<line>` positions the cursor). Bare multi-segment file paths in prose become \
+editor links too.";
 
 /// Offer to schedule repeatable work. Automation runs never see it: their
 /// sessions get no host MCP server.
@@ -112,7 +131,7 @@ background automation?\" with the options \"Yes, schedule it\" and \"Not now\". 
 again in this chat. Skip the question when the user is already asking for an automation.";
 
 /// The full `instructions` of the child's `initialize` result: the host
-/// tools, the chat guidance, the repeatable-work offer, then the design
+/// tools, delegation, the chat guidance, the repeatable-work offer, then the design
 /// canvas guide. Agents surface it in model context, so it is the
 /// advertisement for the host tools and the chat renderer's markdown
 /// affordances. Most-needed first: Claude Code keeps only the first
@@ -120,7 +139,7 @@ again in this chat. Skip the question when the user is already asking for an aut
 #[must_use]
 pub fn session_instructions() -> String {
     format!(
-        "{TERMUL_TOOL_INSTRUCTIONS}\n\n{TERMUL_CHAT_INSTRUCTIONS}\n\n{AUTOMATION_SUGGESTION_INSTRUCTIONS}\n\n{}",
+        "{TERMUL_TOOL_INSTRUCTIONS}\n\n{DELEGATION_INSTRUCTIONS}\n\n{TERMUL_CHAT_INSTRUCTIONS}\n\n{AUTOMATION_SUGGESTION_INSTRUCTIONS}\n\n{}",
         canvas_tools::instructions()
     )
 }
@@ -189,6 +208,19 @@ pub enum FrameKind {
     /// An `automation_*` tool call, answered by the host automation service
     /// for the session's project.
     Automation,
+    /// A `read_chat` tool call: any chat on this host, rendered as text.
+    ReadChat,
+    /// `mcp_install`: show the approval card, then plan and commit on approve.
+    McpInstall,
+    /// `start_chat`: start a worker chat in the caller's project.
+    StartChat,
+    /// `send_to_chat`: a follow-up to one of the caller's worker chats.
+    SendToChat,
+    /// `list_started_chats`: the caller's worker chats and their status.
+    ListStartedChats,
+    /// A `subagent_*` tool call, answered by the host orchestrator engine
+    /// for the calling chat.
+    Subagent,
 }
 
 /// One option the agent offers in an `ask_user` question.
@@ -390,6 +422,24 @@ pub struct FrameRequest {
     /// An `Automation` frame's tool arguments, parsed by the parent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub automation_input: Option<serde_json::Value>,
+    /// The chat and page a `ReadChat` frame asks for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_chat: Option<read_chat::ReadChatInput>,
+    /// The catalog or import source of an `McpInstall` frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_install: Option<crate::mcp_catalog::FormRequest>,
+    /// The task of a `StartChat` frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_chat: Option<worker_chats::StartChatInput>,
+    /// The chat and message of a `SendToChat` frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub send_to_chat: Option<worker_chats::SendToChatInput>,
+    /// The tool a `Subagent` frame serves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_tool: Option<subagent_tools::SubagentTool>,
+    /// A `Subagent` frame's tool arguments, parsed by the parent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_input: Option<serde_json::Value>,
 }
 
 /// Parent reply frame (one per connection). `result` carries the browser
@@ -519,7 +569,7 @@ impl PlanStore {
 /// = clear contract: passing `entries: vec![]` emits a `Plan` with an empty
 /// list, which the renderer's `_onPlanUpdate` maps to `dropPlanForSession`.
 ///
-/// `agent_id` is the Termul-side `AgentId` (used for the wire event payload);
+/// `agent_id` is the Troupe-side `AgentId` (used for the wire event payload);
 /// the renderer keys plan state by `session_id`.
 pub fn emit_plan_update(
     sinks: &[Arc<dyn EventSink>],

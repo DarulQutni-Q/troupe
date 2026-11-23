@@ -11,8 +11,8 @@ use std::sync::LazyLock;
 
 use parking_lot::Mutex;
 use rmcp::transport::auth::{
-    AuthorizationCallback, AuthorizationManager, AuthorizationRequest, AuthorizationSession,
-    CredentialStore, InMemoryCredentialStore, OAuthState, OAuthTokenResponse, StoredCredentials,
+    AuthorizationManager, AuthorizationSession, CredentialStore, InMemoryCredentialStore,
+    OAuthTokenResponse, StoredCredentials,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -20,11 +20,22 @@ use serde_json::Value;
 pub const OAUTH_REDIRECT_PATH: &str = "/callback";
 pub const OAUTH_FLOW_TIMEOUT_SECS: u64 = 300;
 
-#[derive(Debug, Clone)]
+/// A web OAuth flow waiting for its authorization-server redirect, keyed by
+/// its CSRF `state` in `AppState::pending_oauth_flows`. It holds the session
+/// built at start, which carries the PKCE verifier and the registered client
+/// id the code exchange needs.
 pub struct PendingOAuthFlow {
     pub server_url: String,
     pub redirect_uri: String,
-    pub csrf_token: String,
+    pub session: AuthorizationSession,
+    pub created_at: std::time::Instant,
+}
+
+impl PendingOAuthFlow {
+    /// Whether the flow is older than [`OAUTH_FLOW_TIMEOUT_SECS`] at `now`.
+    pub fn is_expired(&self, now: std::time::Instant) -> bool {
+        now.saturating_duration_since(self.created_at).as_secs() >= OAUTH_FLOW_TIMEOUT_SECS
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,6 +58,9 @@ pub enum McpOAuthError {
     RegistrationFailed(String),
     AuthUrlFailed(String),
     TokenExchangeFailed(String),
+    /// The authorization server definitively rejected the refresh token
+    /// (`invalid_grant`). No retry can succeed.
+    RefreshRejected(String),
     Timeout,
     Keychain(String),
     Http(String),
@@ -63,6 +77,7 @@ impl std::fmt::Display for McpOAuthError {
             Self::RegistrationFailed(m) => write!(f, "Registration failed: {m}"),
             Self::AuthUrlFailed(m) => write!(f, "Auth URL failed: {m}"),
             Self::TokenExchangeFailed(m) => write!(f, "Token exchange failed: {m}"),
+            Self::RefreshRejected(m) => write!(f, "Refresh token rejected: {m}"),
             Self::Timeout => write!(f, "OAuth timed out"),
             Self::Keychain(m) => write!(f, "Keychain: {m}"),
             Self::Http(m) => write!(f, "HTTP: {m}"),
@@ -167,20 +182,24 @@ fn token_file_path(server_url: &str) -> Result<std::path::PathBuf, McpOAuthError
     // Credential Manager's 2560-char limit — OAuth JWTs routinely exceed it).
     // Uses the same env-var resolution as `web/config.rs` (LOCALAPPDATA on
     // Windows, XDG_STATE_HOME/HOME on Linux, HOME on macOS).
-    let base = std::env::var_os("LOCALAPPDATA")
-        .or_else(|| std::env::var_os("XDG_STATE_HOME"))
-        .or_else(|| std::env::var_os("HOME"))
-        .map(std::path::PathBuf::from)
-        .ok_or_else(|| McpOAuthError::Keychain("no data dir env var".to_string()))?;
-    let dir = base.join("com.termul-manager.app").join("mcp-oauth");
     // Hash the normalized URL with a version-stable digest so filenames do
     // not change across Rust releases (DefaultHasher has no stability
     // guarantee) and trailing-slash variants (`https://x/mcp` vs
     // `https://x/mcp/`) map to one file.
     use sha2::{Digest, Sha256};
     let normalized = server_url.trim_end_matches('/');
-    let hash = format!("{:x}", Sha256::digest(normalized.as_bytes()));
-    Ok(dir.join(format!("{hash}.json")))
+    let file = format!("{:x}.json", Sha256::digest(normalized.as_bytes()));
+    #[cfg(test)]
+    if let Some(dir) = tests::TOKEN_DIR_OVERRIDE.with(|dir| dir.borrow().clone()) {
+        return Ok(dir.join(file));
+    }
+    let base = std::env::var_os("LOCALAPPDATA")
+        .or_else(|| std::env::var_os("XDG_STATE_HOME"))
+        .or_else(|| std::env::var_os("HOME"))
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| McpOAuthError::Keychain("no data dir env var".to_string()))?;
+    let dir = base.join("com.termul-manager.app").join("mcp-oauth");
+    Ok(dir.join(file))
 }
 
 pub fn is_token_expired(token: &StoredToken) -> bool {
@@ -196,27 +215,72 @@ pub fn is_token_expired(token: &StoredToken) -> bool {
     }
 }
 
+/// Longest a caller waits for a token refresh before it continues without one.
+const REFRESH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// One lock per normalized server URL, so a server that rotates refresh tokens
+/// sees one refresh at a time. A second POST with the rotated-out token draws
+/// `invalid_grant` and used to delete the fresh token.
+static REFRESH_LOCKS: LazyLock<Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn refresh_lock(server_url: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    REFRESH_LOCKS
+        .lock()
+        .entry(server_url.trim_end_matches('/').to_string())
+        .or_default()
+        .clone()
+}
+
+/// A usable access token for `server_url`, refreshing an expired one. Only a
+/// definitive rejection of the refresh token deletes the stored token; a
+/// connection error, a timeout or a server error keeps it for the next call
+/// and the caller continues without a token.
 pub async fn get_valid_token(server_url: &str) -> Result<Option<String>, McpOAuthError> {
-    let stored = load_stored_token(server_url)?;
-    match stored {
+    match load_stored_token(server_url)? {
         Some(t) if !is_token_expired(&t) => Ok(Some(t.access_token)),
-        Some(t) if t.refresh_token.is_some() => match refresh_token(&t).await {
-            Ok(new) => {
-                store_token(server_url, &new)?;
-                log::info!("[mcp-oauth] expired token refreshed (url redacted)");
-                Ok(Some(new.access_token))
+        Some(t) if t.refresh_token.is_some() => {
+            match tokio::time::timeout(REFRESH_TIMEOUT, refresh_expired(server_url)).await {
+                Ok(result) => result,
+                Err(_) => {
+                    log::warn!("[mcp-oauth] token refresh timed out (url redacted)");
+                    Ok(None)
+                }
             }
-            Err(_) => {
-                log::warn!("[mcp-oauth] token refresh failed, stored token removed (url redacted)");
-                let _ = delete_stored_token(server_url);
-                Ok(None)
-            }
-        },
+        }
         Some(_) => {
             let _ = delete_stored_token(server_url);
             Ok(None)
         }
         None => Ok(None),
+    }
+}
+
+async fn refresh_expired(server_url: &str) -> Result<Option<String>, McpOAuthError> {
+    let lock = refresh_lock(server_url);
+    let _guard = lock.lock().await;
+    // A caller ahead in the queue may have refreshed or removed the token.
+    let Some(stored) = load_stored_token(server_url)? else {
+        return Ok(None);
+    };
+    if !is_token_expired(&stored) {
+        return Ok(Some(stored.access_token));
+    }
+    match refresh_token(&stored).await {
+        Ok(new) => {
+            store_token(server_url, &new)?;
+            log::info!("[mcp-oauth] expired token refreshed (url redacted)");
+            Ok(Some(new.access_token))
+        }
+        Err(McpOAuthError::RefreshRejected(_)) => {
+            log::warn!("[mcp-oauth] refresh token rejected, stored token removed (url redacted)");
+            let _ = delete_stored_token(server_url);
+            Ok(None)
+        }
+        Err(_) => {
+            log::warn!("[mcp-oauth] token refresh failed, stored token kept (url redacted)");
+            Ok(None)
+        }
     }
 }
 
@@ -252,10 +316,12 @@ async fn refresh_token(stored: &StoredToken) -> Result<StoredToken, McpOAuthErro
         .await
         .map_err(|e| McpOAuthError::TokenExchangeFailed(e.to_string()))?;
     manager.set_credential_store(store);
-    let tr = manager
-        .refresh_token()
-        .await
-        .map_err(|e| McpOAuthError::TokenExchangeFailed(e.to_string()))?;
+    let tr = manager.refresh_token().await.map_err(|e| match e {
+        rmcp::transport::auth::AuthError::TokenRefreshRejected(m) => {
+            McpOAuthError::RefreshRejected(m)
+        }
+        e => McpOAuthError::TokenExchangeFailed(e.to_string()),
+    })?;
     use oauth2::TokenResponse;
     Ok(StoredToken {
         access_token: tr.access_token().secret().to_string(),
@@ -278,78 +344,42 @@ async fn refresh_token(stored: &StoredToken) -> Result<StoredToken, McpOAuthErro
     })
 }
 
-pub async fn run_full_flow(
+/// Exchange an authorization code with the session that built the
+/// authorization URL (same PKCE verifier and client id), validate the RFC 9207
+/// `iss` when given, and persist the resulting token for `server_url`.
+pub async fn finish_session(
     server_url: &str,
-    redirect_uri: &str,
-    callback_url: String,
+    session: AuthorizationSession,
+    code: &str,
+    csrf_token: &str,
+    issuer: Option<&str>,
 ) -> Result<StoredToken, McpOAuthError> {
-    let mut manager = AuthorizationManager::new(server_url)
-        .await
-        .map_err(|e| McpOAuthError::DiscoveryFailed(e.to_string()))?;
-    let resolution = manager
-        .resolve_metadata()
-        .await
-        .map_err(|e| McpOAuthError::DiscoveryFailed(e.to_string()))?;
-    manager.set_metadata(resolution.metadata);
-    let request = AuthorizationRequest::new(redirect_uri).with_client_name("Termul");
-    let session = AuthorizationSession::new(manager, request)
-        .await
-        .map_err(|(_manager, e)| McpOAuthError::RegistrationFailed(e.to_string()))?;
-    let callback = AuthorizationCallback::from_redirect_url(&callback_url)
-        .map_err(|e| McpOAuthError::TokenExchangeFailed(format!("callback: {e}")))?;
-    let mut state = OAuthState::Session(session);
-    state
-        .handle_callback(&callback.code, &callback.csrf_token)
+    use oauth2::TokenResponse;
+    session
+        .handle_callback_with_issuer(code, csrf_token, issuer)
         .await
         .map_err(|e| McpOAuthError::TokenExchangeFailed(e.to_string()))?;
-    let access_token = state
+    let manager = &session.auth_manager;
+    let access_token = manager
         .get_access_token()
         .await
-        .map_err(|e| McpOAuthError::TokenExchangeFailed(e.to_string()))?;
-    let (client_id, refresh_token, expires_at) = match &state {
-        OAuthState::Session(s) => {
-            let c = s
-                .auth_manager
-                .get_credentials()
-                .await
-                .map_err(|e| McpOAuthError::TokenExchangeFailed(e.to_string()))?;
-            let refresh = c.1.as_ref().and_then(|tr| {
-                use oauth2::TokenResponse;
-                tr.refresh_token().map(|t| t.secret().to_string())
-            });
-            let exp = c.1.as_ref().and_then(|tr| {
-                use oauth2::TokenResponse;
-                tr.expires_in().map(|d| {
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|n| n.as_secs() + d.as_secs())
-                        .unwrap_or(0)
-                })
-            });
-            (c.0, refresh, exp)
-        }
-        OAuthState::Unauthorized(m) | OAuthState::Authorized(m) => {
-            let c = m
-                .get_credentials()
-                .await
-                .map_err(|e| McpOAuthError::TokenExchangeFailed(e.to_string()))?;
-            let refresh = c.1.as_ref().and_then(|tr| {
-                use oauth2::TokenResponse;
-                tr.refresh_token().map(|t| t.secret().to_string())
-            });
-            let exp = c.1.as_ref().and_then(|tr| {
-                use oauth2::TokenResponse;
-                tr.expires_in().map(|d| {
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|n| n.as_secs() + d.as_secs())
-                        .unwrap_or(0)
-                })
-            });
-            (c.0, refresh, exp)
-        }
-        _ => (String::new(), None, None),
-    };
+        .map_err(|e| McpOAuthError::TokenExchangeFailed(format!("access token: {e}")))?;
+    let (client_id, token_response) = manager
+        .get_credentials()
+        .await
+        .map_err(|e| McpOAuthError::TokenExchangeFailed(format!("credentials: {e}")))?;
+    let refresh_token = token_response
+        .as_ref()
+        .and_then(|tr| tr.refresh_token().map(|t| t.secret().to_string()));
+    let expires_at = token_response
+        .as_ref()
+        .and_then(|tr| tr.expires_in())
+        .map(|d| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|n| n.as_secs() + d.as_secs())
+                .unwrap_or(0)
+        });
     let stored = StoredToken {
         access_token,
         refresh_token,
@@ -359,12 +389,9 @@ pub async fn run_full_flow(
         server_url: server_url.to_string(),
     };
     store_token(server_url, &stored)?;
-    log::info!(
-        "[mcp-oauth] token stored (url redacted), expires: {:?}",
-        stored.expires_at
-    );
     Ok(stored)
 }
+
 #[allow(dead_code)]
 struct KeychainCredentialStore {
     server_url: String,
