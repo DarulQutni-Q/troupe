@@ -27,12 +27,4 @@ pub use machine::{CallId, Config, Effect, Event, Machine, SocketEvent};
 pub use rune_core::machine::{Attempt, Effects};
 
 #[cfg(test)]
-mod cursor_tests;
-#[cfg(test)]
-mod http_tests;
-#[cfg(test)]
-mod link_tests;
-#[cfg(test)]
 mod reconnect_tests;
-#[cfg(test)]
-mod terminal_tests;

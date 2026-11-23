@@ -1,18 +1,24 @@
 //! The desktop backend: one thread per socket (blocking `tungstenite`), a
 //! channel back to the [`Driver`] that steps the machine, and blocking HTTP
-//! through `ureq`.
+//! through `ureq`. `https://` and `wss://` hosts use rustls with the OS
+//! verifier, so a tunnel's public certificate and a CA the user installed both
+//! pass; plain `http://` (loopback) skips TLS.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::ErrorKind;
 use std::net::TcpStream;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
+use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use rune_core::machine::Attempt;
+use rustls::ClientConfig;
+use rustls_platform_verifier::BuilderVerifierExt;
 use serde_json::Value;
+use tungstenite::client::IntoClientRequest;
 use tungstenite::stream::MaybeTlsStream;
-use tungstenite::{Message, WebSocket};
+use tungstenite::{Connector, Message, WebSocket};
 
 use crate::http::{COMMAND_ID_HEADER, HttpError, HttpRequest, Method, parse_body};
 use crate::machine::{Config, Effect, Event, Machine, SocketEvent};
@@ -145,20 +151,61 @@ fn run_socket(
     events: &Sender<SocketEvent>,
     outgoing: &Receiver<Outgoing>,
 ) {
-    let mut ws = match tungstenite::connect(url) {
-        Ok((ws, _)) => ws,
+    let mut ws = match connect(url) {
+        Ok(ws) => ws,
         Err(e) => {
             log::info!("[client] connect {url} failed: {e}");
             let _ = events.send(SocketEvent::Closed { socket, code: None });
             return;
         }
     };
-    if let MaybeTlsStream::Plain(stream) = ws.get_ref() {
-        let _ = TcpStream::set_read_timeout(stream, Some(READ_SLICE));
-    }
     let _ = events.send(SocketEvent::Opened(socket));
     let code = pump(socket, &mut ws, events, outgoing);
     let _ = events.send(SocketEvent::Closed { socket, code });
+}
+
+/// Open `ws://` or `wss://`, then make reads return every [`READ_SLICE`] so
+/// the pump can write between them.
+fn connect(url: &str) -> Result<WebSocket<MaybeTlsStream<TcpStream>>, String> {
+    let request = url.into_client_request().map_err(|e| e.to_string())?;
+    let secure = request.uri().scheme_str() == Some("wss");
+    let connector = if secure {
+        Some(Connector::Rustls(tls_config()?))
+    } else {
+        None
+    };
+    let host = request.uri().host().ok_or("no host in url")?;
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    let port = request
+        .uri()
+        .port_u16()
+        .unwrap_or(if secure { 443 } else { 80 });
+    let stream = TcpStream::connect((host, port)).map_err(|e| e.to_string())?;
+    let (ws, _) = tungstenite::client_tls_with_config(request, stream, None, connector)
+        .map_err(|e| e.to_string())?;
+    let tcp = match ws.get_ref() {
+        MaybeTlsStream::Plain(tcp) => tcp,
+        MaybeTlsStream::Rustls(tls) => tls.get_ref(),
+        _ => return Err("unexpected socket stream".into()),
+    };
+    tcp.set_read_timeout(Some(READ_SLICE))
+        .map_err(|e| e.to_string())?;
+    Ok(ws)
+}
+
+/// One rustls config for every `wss://` socket, on ring with the OS verifier.
+fn tls_config() -> Result<Arc<ClientConfig>, String> {
+    static CONFIG: OnceLock<Result<Arc<ClientConfig>, String>> = OnceLock::new();
+    CONFIG
+        .get_or_init(|| {
+            let provider = Arc::new(rustls::crypto::ring::default_provider());
+            ClientConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()
+                .and_then(BuilderVerifierExt::with_platform_verifier)
+                .map(|b| Arc::new(b.with_no_client_auth()))
+                .map_err(|e| format!("tls setup failed: {e}"))
+        })
+        .clone()
 }
 
 /// Moves frames both ways until the socket ends; returns its close code.
@@ -208,7 +255,12 @@ fn pump(
 
 /// Send one HTTP request and read the Troupe body.
 pub fn http_send(config: &Config, request: &HttpRequest) -> Result<Value, HttpError> {
+    let tls = ureq::tls::TlsConfig::builder()
+        .provider(ureq::tls::TlsProvider::Rustls)
+        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+        .build();
     let agent: ureq::Agent = ureq::Agent::config_builder()
+        .tls_config(tls)
         .http_status_as_error(false)
         .timeout_global(Some(Duration::from_secs(30)))
         .build()
