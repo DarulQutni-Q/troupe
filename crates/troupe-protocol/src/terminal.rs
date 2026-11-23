@@ -59,7 +59,9 @@ pub struct WebTerminalRequest {
     pub id: String,
     #[serde(rename = "type")]
     pub kind: WebTerminalRequestType,
-    /// The request payload; `spawn` sends a [`TerminalSpawnOptions`].
+    /// The request payload; `spawn` sends a [`TerminalSpawnOptions`]. The
+    /// host accepts a request without one and reads it as `null`.
+    #[serde(default)]
     pub payload: Value,
     /// Client-minted id of a ledgered request (`spawn`, `write`, `kill`,
     /// `rotate_claim`, `revoke_claim`). A resend never runs twice.

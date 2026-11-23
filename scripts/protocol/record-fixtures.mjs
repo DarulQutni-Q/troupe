@@ -30,6 +30,7 @@ const port = Number(args.port)
 if (port < 8190 || port > 8199) throw new Error('--port must be in 8190-8199')
 
 const RUN = args.dir
+const MARKER = join(RUN, '.troupe-protocol-recorder')
 const STATE = join(RUN, 'state')
 const WORK = join(RUN, 'work')
 const HOME = join(RUN, 'home')
@@ -103,9 +104,12 @@ function writeFixtures() {
 }
 
 function prepareWorkspace() {
+  if (existsSync(RUN) && !existsSync(MARKER))
+    throw new Error(`${RUN} exists and was not created by this recorder; refusing to remove it`)
   rmSync(RUN, { recursive: true, force: true })
   for (const dir of [STATE, PROJ_A, PROJ_W, PROJ_COMPOSER, HOME])
     mkdirSync(dir, { recursive: true })
+  writeFileSync(MARKER, '')
   const git = (...argv) =>
     execFileSync('git', ['-c', 'user.email=fixture@troupe', '-c', 'user.name=fixture', ...argv], {
       cwd: PROJ_W,
@@ -139,7 +143,13 @@ async function startServer() {
     ],
     {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, HOME, RUST_LOG: 'warn' }
+      env: {
+        ...process.env,
+        HOME,
+        CLAUDE_CONFIG_DIR: join(HOME, '.claude'),
+        CODEX_HOME: join(HOME, '.codex'),
+        RUST_LOG: 'warn'
+      }
     }
   )
   const log = []
@@ -410,10 +420,8 @@ async function recordWs() {
     { agentId, sessionId, text: '[ASK:question] [DURATION:2] ask', turnId: 'fixture-turn-2' },
     { commandId: 'fixture-turn-2' }
   )
-  const question = await ws
-    .waitFor((f) => JSON.stringify(f).includes('questionId'), 15_000, 'question')
-    .catch(() => undefined)
-  const questionPayload = question?.payload ?? question?.delta?.payload ?? {}
+  const question = await event('question_request').catch(() => undefined)
+  const questionPayload = question?.payload ?? {}
   await ws.request(
     'answer_question',
     { agentId, questionId: questionPayload.questionId ?? 'missing', values: ['yes'] },
@@ -426,9 +434,7 @@ async function recordWs() {
     { agentId, sessionId, text: '[ASK:elicitation] [DURATION:2] elicit', turnId: 'fixture-turn-3' },
     { commandId: 'fixture-turn-3' }
   )
-  const elicitation = await ws
-    .waitFor((f) => JSON.stringify(f).includes('elicitation'), 15_000, 'elicitation')
-    .catch(() => undefined)
+  const elicitation = await event('elicitation_request').catch(() => undefined)
   const elicitationPayload = elicitation?.payload ?? {}
   await ws.request(
     'respond_elicitation',

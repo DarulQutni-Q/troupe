@@ -269,6 +269,8 @@ export type PersistedSessionSummary = {
   modelId?: string
   modelName?: string
   projectId?: string
+  /** Host-minted folder id of a quick chat. The hand-written type lacks it. */
+  quickChatId?: string
   resumeEligible: boolean
   runtimeAgentId?: string
   sessionId: string
@@ -695,7 +697,10 @@ export type WebTerminalRequest = {
    */
   commandId?: string
   id: string
-  /** The request payload; `spawn` sends a [`TerminalSpawnOptions`]. */
+  /**
+   * The request payload; `spawn` sends a [`TerminalSpawnOptions`]. The
+   * host accepts a request without one and reads it as `null`.
+   */
   payload: unknown
   type: WebTerminalRequestType
 }
@@ -1044,7 +1049,10 @@ export type WsRequest = {
    */
   command_id?: string
   id: string
-  /** The request payload; its shape depends on `type`. */
+  /**
+   * The request payload; its shape depends on `type`. The host accepts a
+   * request without one and reads it as `null`.
+   */
   payload: unknown
   type: WsRequestType
 }

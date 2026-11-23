@@ -574,6 +574,10 @@
         "projectId": {
           "type": "string"
         },
+        "quickChatId": {
+          "description": "Host-minted folder id of a quick chat. The hand-written type lacks it.",
+          "type": "string"
+        },
         "resumeEligible": {
           "type": "boolean"
         },
@@ -1582,7 +1586,8 @@
           "type": "string"
         },
         "payload": {
-          "description": "The request payload; `spawn` sends a [`TerminalSpawnOptions`]."
+          "default": null,
+          "description": "The request payload; `spawn` sends a [`TerminalSpawnOptions`]. The\nhost accepts a request without one and reads it as `null`."
         },
         "type": {
           "$ref": "#/$defs/WebTerminalRequestType"
@@ -2037,7 +2042,8 @@
           "type": "string"
         },
         "payload": {
-          "description": "The request payload; its shape depends on `type`."
+          "default": null,
+          "description": "The request payload; its shape depends on `type`. The host accepts a\nrequest without one and reads it as `null`."
         },
         "type": {
           "$ref": "#/$defs/WsRequestType"

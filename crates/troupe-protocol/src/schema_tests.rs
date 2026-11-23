@@ -21,6 +21,6 @@ fn committed_schema_matches_the_types() {
         .unwrap_or(Value::Null);
     assert!(
         committed == fresh,
-        "{SCHEMA_PATH} is stale; run `TROUPE_PROTOCOL_BLESS=1 cargo test` in crates/troupe-protocol, then `node scripts/protocol/gen-ts.mjs`"
+        "{SCHEMA_PATH} is stale; run `TROUPE_PROTOCOL_BLESS=1 cargo test --manifest-path crates/troupe-protocol/Cargo.toml` and `node scripts/protocol/gen-ts.mjs`, both from the repository root"
     );
 }

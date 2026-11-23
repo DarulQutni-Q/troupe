@@ -17,7 +17,9 @@ pub struct WsRequest {
     pub id: String,
     #[serde(rename = "type")]
     pub kind: WsRequestType,
-    /// The request payload; its shape depends on `type`.
+    /// The request payload; its shape depends on `type`. The host accepts a
+    /// request without one and reads it as `null`.
+    #[serde(default)]
     pub payload: Value,
     /// Client-minted id of a mutating request (1-128 characters of
     /// `[A-Za-z0-9_-]`). A resend with the same id never runs twice.

@@ -4,7 +4,7 @@
 //   node scripts/protocol/gen-ts.mjs          write the file
 //   node scripts/protocol/gen-ts.mjs --check  exit 1 when the committed file is stale
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -20,8 +20,19 @@ function refName(ref) {
   return ref.slice(prefix.length)
 }
 
+const LITERAL_ESCAPES = {
+  '\\': '\\\\',
+  "'": "\\'",
+  '\n': '\\n',
+  '\r': '\\r',
+  '\u2028': '\\u2028',
+  '\u2029': '\\u2029'
+}
+
 function literal(value) {
-  return typeof value === 'string' ? `'${value.replace(/[\\']/g, '\\$&')}'` : JSON.stringify(value)
+  return typeof value === 'string'
+    ? `'${value.replace(/[\\'\n\r\u2028\u2029]/g, (char) => LITERAL_ESCAPES[char])}'`
+    : JSON.stringify(value)
 }
 
 function union(parts) {
@@ -125,13 +136,31 @@ export function format(text) {
   return result.stdout
 }
 
-/** Layout-free form of a generated file: comments and whitespace dropped. */
+/** Layout-free form of a generated file: comments and whitespace dropped,
+ * while string literals keep every character. */
 export function normalize(text) {
-  return text
-    .replace(/\/\*\*[\s\S]*?\*\//g, '')
-    .replace(/\/\/.*$/gm, '')
-    .replace(/[\s;,]/g, '')
-    .replace(/([=:<(])\|/g, '$1')
+  let out = ''
+  let i = 0
+  while (i < text.length) {
+    const char = text[i]
+    if (char === "'" || char === '"' || char === '`') {
+      let end = i + 1
+      while (end < text.length && text[end] !== char) end += text[end] === '\\' ? 2 : 1
+      out += text.slice(i, end + 1)
+      i = end + 1
+    } else if (char === '/' && text[i + 1] === '/') {
+      while (i < text.length && text[i] !== '\n') i += 1
+    } else if (char === '/' && text[i + 1] === '*') {
+      const close = text.indexOf('*/', i + 2)
+      i = close === -1 ? text.length : close + 2
+    } else if (/[\s;,]/.test(char)) {
+      i += 1
+    } else {
+      out += char === '|' && /[=:<(]/.test(out.at(-1) ?? '') ? '' : char
+      i += 1
+    }
+  }
+  return out
 }
 
 function main() {
@@ -144,6 +173,7 @@ function main() {
     }
     return
   }
+  mkdirSync(dirname(OUTPUT_PATH), { recursive: true })
   writeFileSync(OUTPUT_PATH, format(fresh))
   console.log(`wrote ${OUTPUT_PATH}`)
 }

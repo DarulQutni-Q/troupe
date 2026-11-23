@@ -203,6 +203,9 @@ pub struct PersistedSessionSummary {
     /// The session this one continues after an in-chat agent switch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continued_from: Option<String>,
+    /// Host-minted folder id of a quick chat. The hand-written type lacks it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quick_chat_id: Option<String>,
     /// The chat whose agent started this one with `start_chat`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_by: Option<String>,
