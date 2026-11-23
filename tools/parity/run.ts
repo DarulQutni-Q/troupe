@@ -196,7 +196,7 @@ async function runClient(
     const deviceId = `matrix-${slug(surface.id)}-${role}-${attemptNumber}`
     await prepareDevice(world, deviceId)
     await resetSharedSettings(world)
-    await surface.prepare?.(world)
+    await surface.prepare?.(world, deviceId)
     const stateDir = path.join(STATE, 'clients', slug(surface.id), role)
     return await launcher.session({ world, surface, deviceId, points, stateDir }, (driver) =>
       runSteps(surface, role, launcher.client, driver)

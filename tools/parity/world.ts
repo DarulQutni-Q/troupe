@@ -244,6 +244,113 @@ export async function prepareDevice(world: World, deviceId: string): Promise<voi
   }
 }
 
+/** The workspace snapshot `seedSnapshot` saves for alpha. */
+export const SNAPSHOT_NAME = 'Before the route refactor'
+
+/** Write a device-scoped key the way its store writes it, from a connection as that device. */
+async function writeDevice(
+  world: World,
+  deviceId: string,
+  logicalKey: string,
+  data: unknown
+): Promise<void> {
+  // A device key is writable only from a connection that authenticated as that device.
+  const ws = await connectWs({
+    baseUrl: world.server.baseUrl,
+    token: TOKEN,
+    deviceId,
+    clientInstanceId: `${deviceId}-seed-${logicalKey}`
+  })
+  try {
+    const key = scopedKey(logicalKey, deviceId)
+    const current = await ws.request<{ revision?: number }>('store_read', { key })
+    await ws.request('store_write', {
+      key,
+      value: { _version: 1, data },
+      baseRevision: current.revision ?? 0
+    })
+  } finally {
+    ws.close()
+  }
+}
+
+/** Save one workspace snapshot of alpha on `deviceId` (snapshots are kept per device). */
+export async function seedSnapshot(world: World, deviceId: string): Promise<void> {
+  const createdAt = new Date(world.clock - 3_600_000).toISOString()
+  await writeDevice(world, deviceId, `snapshots/${PROJECTS.alpha.id}`, {
+    snapshots: [
+      {
+        id: 'matrix-snapshot',
+        projectId: PROJECTS.alpha.id,
+        name: SNAPSHOT_NAME,
+        description: 'Two terminals on main',
+        createdAt,
+        terminals: [],
+        activeTerminalId: null
+      }
+    ],
+    updatedAt: createdAt
+  })
+}
+
+/** The command `seedCommandHistory` records in alpha's terminal history. */
+export const HISTORY_COMMAND = 'bun vitest run src/renderer/lib'
+
+/** Record one terminal command for alpha on `deviceId` (command history is kept per device). */
+export async function seedCommandHistory(world: World, deviceId: string): Promise<void> {
+  await writeDevice(world, deviceId, `projects/${PROJECTS.alpha.id}/command-history`, [
+    {
+      id: 'matrix-command',
+      command: HISTORY_COMMAND,
+      terminalName: 'Terminal 1',
+      terminalId: 'matrix-terminal',
+      projectId: PROJECTS.alpha.id,
+      timestamp: world.clock - 600_000
+    }
+  ])
+}
+
+/** The automation `seedAutomation` saves in alpha: a manual trigger and one HTTP step. */
+export const AUTOMATION_NAME = 'Nightly digest'
+
+/** Save `AUTOMATION_NAME` in alpha unless an earlier run already did. */
+export async function seedAutomation(world: World): Promise<void> {
+  const route = '/api/automations'
+  const json = async (res: Response) => ((await res.json()) as { data: unknown }).data
+  const list = (await json(
+    await serverFetch(world.server, `${route}?project_id=${PROJECTS.alpha.id}`)
+  )) as { name: string }[]
+  if (list.some((row) => row.name === AUTOMATION_NAME)) return
+  const created = (await json(
+    await serverFetch(world.server, route, {
+      method: 'POST',
+      body: JSON.stringify({ project_id: PROJECTS.alpha.id, name: AUTOMATION_NAME })
+    })
+  )) as { id: string; revision: number }
+  const fetchStep = {
+    id: 'fetch',
+    label: 'Fetch the feed',
+    spec: {
+      kind: 'http',
+      method: 'GET',
+      url: 'https://example.invalid/feed.json',
+      headers: [],
+      body: null,
+      allowed_hosts: ['example.invalid']
+    }
+  }
+  await serverFetch(world.server, `${route}/${created.id}/ops`, {
+    method: 'POST',
+    body: JSON.stringify({
+      base_revision: created.revision,
+      ops: [
+        { op: 'add_node', node: fetchStep },
+        { op: 'connect', edge: { from: 'trigger', port: 'out', to: 'fetch' } }
+      ]
+    })
+  })
+}
+
 /** Re-add `key` when an earlier run removed it, and restore its seeded name and colour. */
 export async function ensureProject(world: World, key: ProjectKey): Promise<void> {
   const project = PROJECTS[key]
@@ -284,7 +391,7 @@ export async function writeShared(world: World, logicalKey: string, data: unknow
 
 /**
  * Put the shared settings every client run starts from: the default theme in
- * dark mode at 100 % zoom, and the default key bindings, so a surface that
+ * dark mode at 100 % zoom, the default key bindings and the default outline, so a surface that
  * changes them does not leak into the next run.
  */
 export async function resetSharedSettings(world: World): Promise<void> {
@@ -297,4 +404,5 @@ export async function resetSharedSettings(world: World): Promise<void> {
     uiZoomLevel: 1
   })
   await writeShared(world, 'settings/keyboard-shortcuts', {})
+  await writeShared(world, 'settings/toc', { isVisible: true, maxHeadingLevel: 3, width: 240 })
 }

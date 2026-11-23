@@ -16,7 +16,7 @@ export const AREA_WEIGHTS: Record<AreaId, number> = {
   editor: 7,
   'side-panel': 5,
   settings: 4,
-  statusbar: 3,
+  statusbar: 1,
   palette: 3,
   theme: 2,
   shortcuts: 1,
@@ -26,7 +26,9 @@ export const AREA_WEIGHTS: Record<AreaId, number> = {
   canvas: 0.5,
   ssh: 0.5,
   remote: 0.5,
-  snapshots: 0.5
+  snapshots: 0.5,
+  automations: 1,
+  github: 1
 }
 
 /**

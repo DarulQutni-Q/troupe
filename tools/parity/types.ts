@@ -97,6 +97,8 @@ export type AreaId =
   | 'remote'
   | 'snapshots'
   | 'dialogs'
+  | 'automations'
+  | 'github'
 
 /**
  * The window a surface runs in. `desktop` is 1280x800 with a mouse. `phone`
@@ -146,8 +148,12 @@ export interface Surface {
   pending?: { unit: string; reason: string }
   /** Not driven: no reference to compare against, for the reason given. */
   blocked?: string
-  /** Server-side setup run before each client's run (re-seeds what an earlier run changed). */
-  prepare?(world: import('./world').World): Promise<void>
+  /**
+   * Server-side setup run before each client's run (re-seeds what an earlier
+   * run changed). `deviceId` is the fresh device the run uses, for state the
+   * host keeps per device.
+   */
+  prepare?(world: import('./world').World, deviceId: string): Promise<void>
 }
 
 export interface ActionLog {
