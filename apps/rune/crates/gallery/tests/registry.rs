@@ -51,8 +51,7 @@ fn every_scene_builds_its_frame_at_the_registry_size() {
 #[test]
 fn zoom_scales_the_whole_view_from_one_factor() {
     let root_width = |zoom: f32| {
-        let mut state = State::default();
-        state.zoom = ui::Zoom::new(zoom);
+        let state = State { zoom: ui::Zoom::new(zoom), ..State::default() };
         let mut rt = Runtime::new(state, view, (1000.0, 800.0), Env::new(true, 1.0));
         rt.frame(0.0);
         rect(&rt, "gallery-root")[2]
