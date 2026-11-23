@@ -68,3 +68,12 @@ describe('cropPng', () => {
     })
   })
 })
+
+test('preserves rounded dimensions for fractional in-bounds crops', () => {
+  expect(cropPng(A, { x: 0.4, y: 0.4, width: 10.4, height: 10.4 }, out())).toEqual({
+    x: 0,
+    y: 0,
+    width: 10,
+    height: 10
+  })
+})
