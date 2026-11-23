@@ -114,6 +114,14 @@ jobs:
           VK_ICD_FILENAMES="$icd" xvfb-run -a -s '-screen 0 1280x800x24' \
             bash ../../scripts/rune/drive-hello.sh ./target/release/hello hello-drive-Linux.png
 
+      # `cargo test` built the example; renders Troupe dark's token swatches.
+      - name: Snapshot theme swatches (Linux)
+        if: runner.os == 'Linux'
+        working-directory: apps/rune
+        run: |
+          icd=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -1)
+          VK_ICD_FILENAMES="$icd" ./target/debug/examples/theme-swatches --scene termul --snap theme-swatches-Linux.png
+
       - name: Snapshot hello (macOS)
         if: runner.os == 'macOS'
         working-directory: apps/rune
@@ -129,6 +137,13 @@ jobs:
         with:
           name: hello-snap-${{ runner.os }}
           path: apps/rune/hello-snap-${{ runner.os }}.png
+
+      - name: Upload theme swatches (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: theme-swatches-Linux
+          path: apps/rune/theme-swatches-Linux.png
 
       - name: Upload driven frame (Linux)
         if: runner.os == 'Linux'
@@ -168,6 +183,10 @@ jobs:
       - name: Check hello with the live driver (wasm32)
         working-directory: apps/rune
         run: cargo check -p hello --features tooling --target wasm32-unknown-unknown
+
+      - name: Check the theme crate (wasm32)
+        working-directory: apps/rune
+        run: cargo check -p theme --target wasm32-unknown-unknown
 
       # web-build.sh requires a wasm-bindgen CLI whose version equals the one in
       # this workspace's Cargo.lock.
