@@ -1,5 +1,17 @@
 import type { Surface } from '../types'
-import { click, css, DASHBOARD, id, label, openChat, see, step, txt, wait } from './dsl'
+import {
+  CHAT_SETTLED,
+  click,
+  css,
+  DASHBOARD,
+  id,
+  label,
+  openChat,
+  see,
+  step,
+  txt,
+  wait
+} from './dsl'
 
 const NO_OPTIONS =
   'needs an agent that offers models and config options; the scripted agent offers none'
@@ -58,7 +70,7 @@ export const CHAT: Surface[] = [
     source: { overlay: ['components/chat/chat-markdown-table.tsx'] },
     steps: [
       DASHBOARD,
-      step('b-open', [openChat, wait(1500)], see('Where else is the chat route parsed?')),
+      step('b-open', [openChat, wait(1500)], CHAT_SETTLED),
       step(
         'c-zoom',
         [click(css('[data-streamdown="table-toolbar"] button[aria-label="View fullscreen"]'))],

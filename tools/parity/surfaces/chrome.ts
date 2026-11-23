@@ -1,6 +1,17 @@
 import type { Surface } from '../types'
 import { resetAlpha } from '../world'
-import { click, css, DASHBOARD, label, openChat, rclick, see, step, wait } from './dsl'
+import {
+  CHAT_SETTLED,
+  click,
+  css,
+  DASHBOARD,
+  label,
+  openChat,
+  rclick,
+  see,
+  step,
+  wait
+} from './dsl'
 
 /** The rail footer and the command palette. */
 export const CHROME: Surface[] = [
@@ -72,7 +83,7 @@ export const CHROME: Surface[] = [
     source: { overlay: ['components/external-link/ExternalLinkConfirm.tsx'] },
     steps: [
       DASHBOARD,
-      step('b-open', [openChat, wait(1500)], see('Where else is the chat route parsed?')),
+      step('b-open', [openChat, wait(1500)], CHAT_SETTLED),
       step(
         'c-confirm',
         [click(css('a[href^="https://reactrouter.com"]'))],

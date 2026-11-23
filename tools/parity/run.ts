@@ -64,7 +64,7 @@ const { values } = parseArgs({
     'client-dist': { type: 'string', default: path.join(REPO_DIR, 'dist-web') },
     'against-dist': { type: 'string', default: path.join(REPO_DIR, 'dist-web') },
     port: { type: 'string' },
-    out: { type: 'string' },
+    out: { type: 'string', default: path.join(ROOT, 'out') },
     state: { type: 'string', default: path.join(ROOT, 'state') },
     'server-bin': { type: 'string' },
     reruns: { type: 'string', default: '2' },
@@ -79,11 +79,11 @@ function parseProfile(name: string): Profile {
 }
 
 const PROFILE = parseProfile(values.profile as string)
-const OUT = path.resolve(
-  values.out ?? path.join(ROOT, PROFILE === 'desktop' ? 'out' : `out-${PROFILE}`)
-)
+const OUT = path.resolve(values.out as string)
+/** The desktop profile keeps the plain names; another profile suffixes them, so both can share `--out`. */
+const SUFFIX = PROFILE === 'desktop' ? '' : `-${PROFILE}`
 const STATE = path.resolve(values.state as string)
-const RESULTS = path.join(OUT, 'results.json')
+const RESULTS = path.join(OUT, `results${SUFFIX}.json`)
 const MAX_RERUNS = Number(values.reruns)
 if (!Number.isInteger(MAX_RERUNS) || MAX_RERUNS < 0) {
   throw new Error(`--reruns must be a whole number of 0 or more, not ${values.reruns}`)
@@ -349,7 +349,7 @@ function saveResults(saved: SavedResults): void {
 }
 
 function writeReport(saved: SavedResults): void {
-  const file = path.join(OUT, 'report.md')
+  const file = path.join(OUT, `report${SUFFIX}.md`)
   writeFileSync(file, renderReport(PROFILE_SURFACES, saved.surfaces, saved.comparison))
   console.error(`[parity] wrote ${file}`)
 }

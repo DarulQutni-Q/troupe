@@ -1,5 +1,5 @@
 import type { Surface } from '../types'
-import { click, css, DASHBOARD, label, see, step, wait } from './dsl'
+import { CHAT_SETTLED, click, css, DASHBOARD, label, see, step, wait } from './dsl'
 
 /** A gate replaces the whole workspace; none of them shows on a healthy, set-up web client. */
 const gate = (name: string, title: string, blocked: string, reference?: 'tauri'): Surface => ({
@@ -30,7 +30,7 @@ export const SHELL: Surface[] = [
       step(
         'b-open',
         [click(css('ul[aria-label="Chats in alpha"] button')), wait(1500)],
-        see('Where else is the chat route parsed?')
+        CHAT_SETTLED
       )
     ]
   },

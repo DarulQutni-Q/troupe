@@ -6,7 +6,20 @@ import {
   seedCommandHistory,
   seedSnapshot
 } from '../world'
-import { CHAT_TITLE, click, css, DASHBOARD, label, rclick, see, step, txt, type, wait } from './dsl'
+import {
+  CHAT_SETTLED,
+  CHAT_TITLE,
+  click,
+  css,
+  DASHBOARD,
+  label,
+  rclick,
+  see,
+  step,
+  txt,
+  type,
+  wait
+} from './dsl'
 
 /** The phone shell's header controls (390x844, touch). */
 const openDrawer = click(label('Open menu'))
@@ -15,11 +28,7 @@ const openProjectSheet = click(label('alpha · main, switch project'))
 const openPhoneChat = [openDrawer, click(txt(CHAT_TITLE, false)), wait(1500)]
 const DRAWER = step('b-drawer', [openDrawer], see('Recents', 'Search chats', 'Import chats'))
 const MORE = step('b-more', [openMore], see('Git changes', 'Command palette', 'Project settings'))
-const CHAT = step('b-chat', openPhoneChat, [
-  ...see('Where else is the chat route parsed?'),
-  // The scroller's button: gone once the transcript rests at its end.
-  { text: 'Scroll to latest', gone: true, timeoutMs: 15_000 }
-])
+const CHAT = step('b-chat', openPhoneChat, CHAT_SETTLED)
 const TERMINAL = step('c-terminal', [click(txt('New terminal')), wait(2500)], see('Paste'))
 const GIT_SHEET = step(
   'c-git',

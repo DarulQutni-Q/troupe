@@ -10,7 +10,7 @@ bun run parity rail.project-menu                         # writes pair.png next 
 bun run parity:matrix --profile phone --client react --against react   # the 390x844 touch profile
 ```
 
-A run drives one profile. `desktop` (the default) is a 1280x800 window with a mouse. `phone` is a 390x844 window with touch and `isMobile`, which puts the web client on its phone shell, and only web clients run it. The phone report goes to `out-phone/` unless `--out` names another directory.
+A run drives one profile. `desktop` (the default) is a 1280x800 window with a mouse. `phone` is a 390x844 window with touch and `isMobile`, which puts the web client on its phone shell, and only web clients run it. A phone run writes `report-phone.md` and `results-phone.json` beside the desktop files. Run one profile at a time per `--out`.
 
 The server binary comes from `TROUPE_SERVER_BIN`, or from `--server-bin`, or from this checkout's release build. Each run seeds a fresh world under `--state` and writes frames, `results.json` and `report.md` under `--out`. Both default to directories under `/tmp/troupe-parity`.
 
