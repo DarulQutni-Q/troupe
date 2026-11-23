@@ -245,7 +245,7 @@ function pageDriver(page: Page, points: Points, filesDir: string): Driver {
       const want = normalize(check.text)
       const painted = async () => normalize(await textOf(check.within)).includes(want)
       const pass = check.gone
-        ? await poll(async () => !(await painted()), GONE_TIMEOUT_MS)
+        ? await poll(async () => !(await painted()), check.timeoutMs ?? GONE_TIMEOUT_MS)
         : await poll(painted, check.timeoutMs ?? PRESENT_TIMEOUT_MS)
       return { step, text: check.text, expect: check.gone ? 'gone' : 'present', pass }
     },

@@ -61,7 +61,7 @@ export type Check =
       gone?: true
       within?: string
       order?: never
-      /** How long a present check waits, for a surface that is slow to load. */
+      /** How long the check waits, for a surface that is slow to settle. */
       timeoutMs?: number
     }
   | OrderCheck

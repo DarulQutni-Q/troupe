@@ -1,5 +1,5 @@
 import type { Surface } from '../types'
-import { click, DASHBOARD, gone, id, openChat, see, step, wait } from './dsl'
+import { click, DASHBOARD, id, openChat, see, step, wait } from './dsl'
 
 export const CHAT: Surface[] = [
   {
@@ -15,7 +15,7 @@ export const CHAT: Surface[] = [
         [
           ...see('Where else is the chat route parsed?', 'One more place parses it'),
           // The scroller's button text: gone once the transcript rests at its end.
-          gone('Scroll to latest')
+          { text: 'Scroll to latest', gone: true, timeoutMs: 15_000 }
         ]
       )
     ]

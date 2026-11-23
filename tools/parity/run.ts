@@ -149,13 +149,15 @@ async function runClient(
   role: Role,
   world: World,
   surface: Surface,
-  points: Points
+  points: Points,
+  attemptNumber: number
 ): Promise<Steps> {
   const started = performance.now()
   try {
     const killed = await killTerminals(world)
     if (killed > 0) console.error(`[parity] closed ${killed} terminals an earlier run left open`)
-    const deviceId = `matrix-${slug(surface.id)}-${role}`
+    // A fresh device per attempt: device-scoped layout (open tabs) would carry a failed attempt's state.
+    const deviceId = `matrix-${slug(surface.id)}-${role}-${attemptNumber}`
     await prepareDevice(world, deviceId)
     await resetSharedSettings(world)
     await surface.prepare?.(world)
@@ -232,7 +234,8 @@ function failureCause(result: SurfaceResult): string {
 async function attempt(
   surface: Surface,
   world: World,
-  launchers: Record<Role, ClientLauncher>
+  launchers: Record<Role, ClientLauncher>,
+  attemptNumber: number
 ): Promise<SurfaceResult> {
   const points: Points = new Map()
   // A client that cannot find targets itself acts where the other one found them.
@@ -241,7 +244,7 @@ async function attempt(
     : ['candidate', 'reference']
   const steps = {} as Record<Role, Steps>
   for (const role of order)
-    steps[role] = await runClient(launchers[role], role, world, surface, points)
+    steps[role] = await runClient(launchers[role], role, world, surface, points, attemptNumber)
   const diffs = diffSurface(surface, steps.reference, steps.candidate)
   return {
     id: surface.id,
@@ -278,7 +281,7 @@ async function runSurface(
   const maxReruns = Number(values.reruns)
   const reruns: Rerun[] = []
   for (let n = 0; ; n++) {
-    const result = await attempt(surface, world, launchers)
+    const result = await attempt(surface, world, launchers, n)
     const failed = result.auto === 'broken' || result.auto === 'unverified'
     if (!failed || n >= maxReruns) return { ...result, reruns }
     const cause = failureCause(result)
