@@ -126,7 +126,6 @@ async function restoreFromSnapshot(projectId: string, snapshot: PersistedSnapsho
   const project = projectStore.projects.find((p) => p.id === projectId)
 
   // Resolve project env vars for spawn
-  // TODO: Pass actual system env from backend for variable expansion
   const { env, hasProjectEnv } = passThroughProjectEnv(project?.envVars)
 
   // Close all existing terminals for this project

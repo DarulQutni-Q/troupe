@@ -879,7 +879,6 @@ async function restoreFromLayout(
     const project = projectStore.projects.find((p) => p.id === projectId)
 
     // Resolve project env vars for spawn
-    // TODO: Pass actual system env from backend for variable expansion
     const { env: projectEnv, hasProjectEnv } = passThroughProjectEnv(project?.envVars)
     const customAgents = await loadCustomAgents()
 
@@ -1407,7 +1406,6 @@ async function createDefaultTerminal(
     const shell = normalizeShellForStartup(resolvedShell)
 
     // Resolve project env vars for spawn
-    // TODO: Pass actual system env from backend for variable expansion
     const { env, hasProjectEnv } = passThroughProjectEnv(project?.envVars)
 
     const cwd = getDefaultCwdForProject(projectId)
