@@ -398,8 +398,9 @@ async function main(): Promise<void> {
       console.log(summaryLine(result))
     }
     saveResults(saved)
+    const blocked = surfaces.filter((s) => s.blocked).length
     console.log(
-      `[parity] ${surfaces.length} surfaces pending ${CLIENT_PENDING.unit}: ${CLIENT_PENDING.reason}`
+      `[parity] ${surfaces.length} surfaces: ${surfaces.length - blocked} pending ${CLIENT_PENDING.unit} (${CLIENT_PENDING.reason}), ${blocked} blocked`
     )
     writeReport(saved)
     return

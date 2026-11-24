@@ -364,9 +364,9 @@ export function runeWebClient(opts: { browser: Browser }): ClientLauncher {
 /**
  * The gallery's layout (`apps/rune/crates/gallery/src/lib.rs`): a 260 px
  * scene list, then the scene's frame inside 24 px of padding. The window is
- * tall enough that the list needs no scrolling and the tallest frame fits.
+ * wide and tall enough that the list needs no scrolling and every frame fits.
  */
-const GALLERY_VIEWPORT = { width: 1280, height: 2400 }
+const GALLERY_VIEWPORT = { width: 1600, height: 2400 }
 const GALLERY_FRAME = { x: 260 + 24, y: 24 }
 const GALLERY_LIST: Rect = { x: 0, y: 0, width: 260, height: GALLERY_VIEWPORT.height }
 

@@ -113,7 +113,7 @@ export async function serveStatic(dir: string): Promise<StaticServer> {
     const server = createServer((req, res) => {
       const pathname = decodeURIComponent(new URL(req.url ?? '/', 'http://x').pathname)
       const file = path.join(root, pathname === '/' ? 'index.html' : pathname)
-      if (!file.startsWith(root) || !existsSync(file) || !statSync(file).isFile()) {
+      if (!file.startsWith(root + path.sep) || !existsSync(file) || !statSync(file).isFile()) {
         res.writeHead(404).end()
         return
       }

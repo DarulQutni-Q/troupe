@@ -271,6 +271,8 @@ export async function runeDesktopGallery(): Promise<GallerySession> {
           entry.id,
           '--size',
           `${entry.width}x${entry.height}`,
+          '--scale',
+          '1',
           '--snap',
           path.resolve(file)
         ],
