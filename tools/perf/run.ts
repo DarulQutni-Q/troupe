@@ -142,7 +142,7 @@ export function parseRunArgs(argv: string[]): Options {
       take('state-root', process.env.TROUPE_PERF_STATE ?? '/tmp/troupe-perf')
     ),
     distWeb: path.resolve(take('dist-web', DIST_WEB)),
-    runeApp: take('rune-app', 'gallery') as RuneAppName,
+    runeApp: take('rune-app', 'hello') as RuneAppName,
     outDir: path.resolve(take('out', path.join(TOOLKIT_ROOT, 'results', `linux-${stamp}`))),
     overrides: {}
   }

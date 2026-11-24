@@ -28,7 +28,8 @@ import type { ClientDriver, ClientHandle, ClientLaunchOptions, ClientTreeCensus 
  * headed Chromium on the run's display, served from a static folder;
  * `rune-desktop` is the native build as a real window on that display,
  * driven through the live driver socket. Rune has no Troupe screen until R5,
- * so both open a Rune app (`--rune-app`, the gallery by default): the
+ * so both open a Rune app (`--rune-app`: `hello` by default, or the gallery
+ * on the web, whose native build has no live driver): the
  * `launch` and `idle` scenarios run, and the chat and terminal actions fail
  * with the unit that brings them. The page and the byte proxy see no Troupe
  * traffic, since these apps never talk to the server. For a Rune app,
@@ -188,6 +189,11 @@ export interface RuneDesktopHandle extends ClientHandle {
 
 export async function launchRuneDesktop(opts: ClientLaunchOptions): Promise<RuneDesktopHandle> {
   const app = opts.runeApp
+  if (!RUNE_APPS[app].liveDriver) {
+    throw new Error(
+      `the native ${app} does not link the live driver; run rune-desktop with --rune-app hello`
+    )
+  }
   const bin = runeBinary(app)
   const sockDir = mkdtempSync(path.join(os.tmpdir(), 'rune-drive-'))
   const sock = path.join(sockDir, 'drive.sock')

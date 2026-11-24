@@ -31,11 +31,18 @@ export interface RuneApp {
   /** The default `web-build.sh --out` folder, relative to `apps/rune`. */
   web: string
   ready: string
+  /** The native build links the live driver (`automation`), so `RUNE_DRIVE_SOCK` drives its window. */
+  liveDriver: boolean
 }
 
 export const RUNE_APPS = {
-  hello: { name: 'hello', web: 'target/web', ready: 'Press me' },
-  gallery: { name: 'gallery', web: 'target/web-gallery', ready: 'Surface tokens' }
+  hello: { name: 'hello', web: 'target/web', ready: 'Press me', liveDriver: true },
+  gallery: {
+    name: 'gallery',
+    web: 'target/web-gallery',
+    ready: 'Surface tokens',
+    liveDriver: false
+  }
 } as const satisfies Record<string, RuneApp>
 export type RuneAppName = keyof typeof RUNE_APPS
 

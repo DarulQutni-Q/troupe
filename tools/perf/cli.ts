@@ -64,8 +64,9 @@ Commands:
                   --runs 3 --display :181 --port 8196 --out <dir>
                   Clients: chromium (the React client), rune-web (a Rune wasm
                   build in Chromium) and rune-desktop (a native Rune window).
-                  The Rune clients open --rune-app gallery|hello and run the
-                  launch and idle scenarios until Rune has Troupe screens.
+                  The Rune clients open --rune-app hello (default; gallery runs
+                  on rune-web only) and run the launch and idle scenarios until
+                  Rune has Troupe screens.
   webkit-startup  Startup + idle of the shipped Tauri/WebKitGTK binary.
                   --bin <troupe> --runs 3 --display :182
   self-test       Fake-agent determinism + report/compare smoke. No app.
