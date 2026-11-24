@@ -3949,6 +3949,8 @@ dependencies = [
  "rune-kit",
  "serde_json",
  "theme",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]

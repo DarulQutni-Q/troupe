@@ -11,11 +11,12 @@
 //! ui::Button::new("Run task").variant(ButtonVariant::Outline).build(t).on_press(|s: &mut S| s.runs += 1)
 //! ```
 //!
-//! Dialogs, menus, popovers, sheets, toasts and tooltips are the overlay layer (unit R4c).
+//! Dialogs, menus, popovers, sheets, toasts and tooltips are the overlay layer, [`overlay`].
 
 #![forbid(unsafe_code)]
 
 pub mod base;
+pub mod overlay;
 pub mod paint;
 pub mod type_;
 pub mod zoom;
