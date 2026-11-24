@@ -13,7 +13,7 @@
  *   bash <rune checkout>/scripts/web-build.sh gallery --out target/web-gallery
  */
 
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -120,7 +120,11 @@ export async function serveStatic(dir: string): Promise<StaticServer> {
     const server = createServer((req, res) => {
       const pathname = decodeURIComponent(new URL(req.url ?? '/', 'http://x').pathname)
       const file = path.join(root, pathname === '/' ? 'index.html' : pathname)
-      if (!file.startsWith(root + path.sep) || !existsSync(file) || !statSync(file).isFile()) {
+      let body: Buffer
+      try {
+        if (!file.startsWith(root + path.sep)) throw new Error('outside the build')
+        body = readFileSync(file)
+      } catch {
         res.writeHead(404).end()
         return
       }
@@ -128,7 +132,7 @@ export async function serveStatic(dir: string): Promise<StaticServer> {
         'content-type': TYPES[path.extname(file)] ?? 'application/octet-stream',
         'cache-control': 'no-store'
       })
-      res.end(readFileSync(file))
+      res.end(body)
     })
     if (await listen(server, port)) {
       console.error(`[rune] serving ${root} on http://127.0.0.1:${port}/`)
