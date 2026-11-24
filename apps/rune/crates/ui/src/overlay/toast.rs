@@ -33,8 +33,9 @@ pub struct Toast {
     pub description: Option<String>,
     /// An action button's label (`action: { label }`); the app handles its press.
     pub action: Option<String>,
-    /// When it leaves, in the app's clock seconds.
-    pub until: f64,
+    /// When it leaves, in the app's clock seconds; None while it waits off screen. Its clock
+    /// starts once it shows.
+    pub until: Option<f64>,
 }
 
 /// The toasts raised and not yet gone, oldest first.
@@ -54,9 +55,22 @@ impl Toasts {
             title: title.into(),
             description: description.map(str::to_owned),
             action: None,
-            until: now + DURATION,
+            until: None,
         });
+        self.settle(now);
         self.next
+    }
+
+    /// Stops the clocks of toasts off screen and starts those of toasts just shown.
+    fn settle(&mut self, now: f64) {
+        let waiting = self.list.len().saturating_sub(VISIBLE);
+        for (i, t) in self.list.iter_mut().enumerate() {
+            if i < waiting {
+                t.until = None;
+            } else if t.until.is_none() {
+                t.until = Some(now + DURATION);
+            }
+        }
     }
 
     /// Gives toast `id` an action button.
@@ -66,19 +80,23 @@ impl Toasts {
         }
     }
 
+    /// Closes toast `id`. A toast that moves on screen in its place starts its clock at the
+    /// next [`Toasts::expire`].
     pub fn dismiss(&mut self, id: u64) {
         self.list.retain(|t| t.id != id);
+        let waiting = self.list.len().saturating_sub(VISIBLE);
+        for t in &mut self.list[..waiting] {
+            t.until = None;
+        }
     }
 
     /// Drops the toasts whose time is up; true when any left. A waiting toast's clock starts
     /// only once it is on screen.
     pub fn expire(&mut self, now: f64) -> bool {
+        self.settle(now);
         let before = self.list.len();
-        let waiting = before.saturating_sub(VISIBLE);
-        for t in &mut self.list[..waiting] {
-            t.until = now + DURATION;
-        }
-        self.list.retain(|t| t.until > now);
+        self.list.retain(|t| t.until.is_none_or(|until| until > now));
+        self.settle(now);
         self.list.len() != before
     }
 
@@ -89,7 +107,7 @@ impl Toasts {
 
     /// The soonest a shown toast leaves, for `Tx::wake_at`.
     pub fn next_expiry(&self) -> Option<f64> {
-        self.visible().iter().map(|t| t.until).min_by(f64::total_cmp)
+        self.visible().iter().filter_map(|t| t.until).min_by(f64::total_cmp)
     }
 
     /// The region keyed `toaster`, bottom-right; push it into the overlay layer. `close` builds
@@ -138,6 +156,7 @@ impl Toasts {
                 .border(1.0, c.border)
                 .center()
                 .child(icon(x, 12.0).color(c.foreground))
+                .focusable(true)
                 .on_press(close(toast.id));
             card = card.child(row().key("corner").absolute(-7.0, -7.0).child(close_button));
             region = region.child(shadows(card, &t.shadows.elevation_lg));

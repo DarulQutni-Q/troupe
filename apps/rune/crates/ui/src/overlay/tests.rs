@@ -127,16 +127,37 @@ fn the_back_stack_closes_from_the_top_and_takes_children_with_a_parent() {
 #[test]
 fn history_sentinels_follow_the_stack_and_tell_back_presses_from_our_own() {
     let mut h = HistorySentinels::default();
-    assert_eq!(h.reconcile(2), Some(HistoryStep::Push(2)));
+    assert_eq!(h.reconcile(2), Some(HistoryStep::Push(1..3)));
     assert_eq!(h.reconcile(2), None);
     // Escape closed one overlay: consume its entry; the popstate that causes is ours.
     assert_eq!(h.reconcile(1), Some(HistoryStep::Back(1)));
-    assert!(!h.popstate());
-    // The user pressed back: the top overlay closes and no step follows.
-    assert!(h.popstate());
+    assert_eq!(h.popstate(1), 0);
+    // The user pressed back onto a page entry: the top overlay closes and no step follows.
+    assert_eq!(h.popstate(0), 1);
     assert_eq!(h.reconcile(0), None);
     // A back press with nothing open is the page's own.
-    assert!(!h.popstate());
+    assert_eq!(h.popstate(0), 0);
+}
+
+#[test]
+fn history_sentinels_close_one_overlay_per_entry_and_undo_a_forward() {
+    let mut h = HistorySentinels::default();
+    assert_eq!(h.reconcile(3), Some(HistoryStep::Push(1..4)));
+    assert_eq!(h.popstate(1), 2, "going back two entries closes two overlays");
+    assert_eq!(h.reconcile(1), None);
+    // Forward lands on a sentinel whose overlay is gone: step back off it, close nothing.
+    assert_eq!(h.popstate(2), 0);
+    assert_eq!(h.reconcile(1), Some(HistoryStep::Back(1)));
+}
+
+#[test]
+fn a_failed_history_call_keeps_the_entries_that_exist() {
+    let mut h = HistorySentinels::default();
+    assert_eq!(h.reconcile(2), Some(HistoryStep::Push(1..3)));
+    h.failed(1);
+    assert_eq!(h.reconcile(0), Some(HistoryStep::Back(1)), "never back over an entry never pushed");
+    h.failed(1);
+    assert_eq!(h.reconcile(1), None, "a failed back expects no popstate");
 }
 
 #[test]
@@ -180,4 +201,18 @@ fn a_sheet_drag_closes_past_the_threshold_or_on_a_flick_and_settles_otherwise() 
     d.step(Move, -50.0, 4.1, h, false);
     assert_eq!(d.y, -10.0, "an upward pull follows a fifth of the finger");
     assert_eq!(d.step(Up, -50.0, 4.2, h, true), SheetRelease::Settle);
+}
+
+#[test]
+fn a_toast_a_dismissal_reveals_gets_its_full_time() {
+    let mut toasts = Toasts::default();
+    for i in 0..5 {
+        toasts.push(0.0, ToastKind::Message, format!("toast {i}"), None);
+    }
+    toasts.dismiss(3);
+    assert!(!toasts.expire(1.0));
+    let first = &toasts.visible()[0];
+    assert_eq!((first.title.as_str(), first.until), ("toast 0", Some(1.0 + toast::DURATION)));
+    assert!(toasts.expire(toast::DURATION + 0.1), "the others leave on their own time");
+    assert_eq!(toasts.visible().len(), 1);
 }
