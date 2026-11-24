@@ -37,6 +37,10 @@ const PATH_KEYS: [&str; 10] = [
 pub enum PayloadRead {
     /// The durability probe of the live window trim.
     Probe,
+    /// A history open's payload.
+    History(super::history::OpenId),
+    /// `loadOlderMessages`, for a page of `count` messages.
+    Older { count: usize },
 }
 
 /// How a [`Effect::ReadSessionPayload`] ended: the payload, `None` when the
@@ -144,11 +148,19 @@ impl State {
         outcome: PayloadReadOutcome,
         fx: &mut Vec<Effect>,
     ) {
-        let Effect::ReadSessionPayload { session_id, read } = read else {
-            return;
+        let (session_id, read) = match read {
+            Effect::ReadSessionPayload { session_id, read } => (session_id, read),
+            Effect::ReloadSessionPayload {
+                session_id,
+                count,
+                cached,
+            } => return self.on_older_reload(session_id, count, cached, outcome, fx),
+            _ => return,
         };
         match read {
             PayloadRead::Probe => self.on_durability_probe(session_id, outcome, fx),
+            PayloadRead::History(open) => self.on_history_payload(open, outcome, fx),
+            PayloadRead::Older { count } => self.on_older_payload(session_id, count, outcome, fx),
         }
     }
 

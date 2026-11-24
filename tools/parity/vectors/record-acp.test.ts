@@ -10,6 +10,7 @@ import {
   emit,
   factoryKey,
   heldReplies,
+  hostPayloads,
   type Manifest,
   manifestEntry,
   mcpReplies,
@@ -81,7 +82,13 @@ vi.mock(`${renderer}/lib/acp-history-persistence`, async (importOriginal) => {
       emit({ kind: 'readSessionPayload', sessionId: id })
       return answer(sessionPayloads.get(id) ?? null)
     },
-    loadSessionPayloadTail: async () => null
+    loadSessionPayloadTail: async () => null,
+    // The host re-read is the model's `reloadSessionPayload` effect; it
+    // answers `context.hostPayloads`.
+    reloadSessionPayloadFromHost: (id: string) => {
+      emit({ kind: 'reloadSessionPayload', sessionId: id })
+      return answer(hostPayloads.get(id) ?? null)
+    }
   }
 })
 vi.mock(`${renderer}/lib/acp-agents-persistence`, async (importOriginal) => ({
@@ -225,6 +232,9 @@ function dispatchPrompt(
     return Promise.reject(new Error('ACP_TURN_IN_PROGRESS: a prompt turn is already in progress'))
   }
   if ('error' in fields) return Promise.reject(new Error(String(fields.error)))
+  if ('uncertain' in fields) {
+    return Promise.reject(new AcpTransportError(String(fields.uncertain), 'connection lost'))
+  }
   if ('agentDead' in fields) {
     return Promise.reject(new Error('agent thread is no longer running'))
   }
@@ -331,6 +341,55 @@ vi.mock(`${renderer}/lib/acp-api`, async (importOriginal) => {
           ...(cursor === undefined ? {} : { cursor }),
           ...(projectId === undefined ? {} : { projectId })
         }),
+      // The `kind` option is `sessionKind`: `kind` names the effect.
+      newSession: (
+        agentId: string,
+        cwd: string,
+        mcpServers: unknown[],
+        { kind, ...options }: Record<string, unknown> = {}
+      ) =>
+        agentCommand({
+          kind: 'newSession',
+          agentId,
+          cwd,
+          mcpServers,
+          ...options,
+          ...(kind === undefined ? {} : { sessionKind: kind })
+        }),
+      loadSession: (
+        agentId: string,
+        sessionId: string,
+        cwd: string,
+        additionalDirectories: unknown[],
+        mcpServers: unknown[]
+      ) =>
+        agentCommand({
+          kind: 'loadSession',
+          agentId,
+          sessionId,
+          cwd,
+          additionalDirectories,
+          mcpServers
+        }),
+      resumeSession: (
+        agentId: string,
+        sessionId: string,
+        cwd: string,
+        additionalDirectories: unknown[],
+        mcpServers: unknown[]
+      ) =>
+        agentCommand({
+          kind: 'resumeSession',
+          agentId,
+          sessionId,
+          cwd,
+          additionalDirectories,
+          mcpServers
+        }),
+      promoteSession: (agentId: string, sessionId: string) =>
+        agentCommand({ kind: 'promoteSession', agentId, sessionId }),
+      disposeEphemeralSession: (agentId: string, sessionId: string) =>
+        agentCommand({ kind: 'disposeEphemeralSession', agentId, sessionId }),
       importAgentSession: (input: Record<string, unknown>) =>
         agentCommand({ kind: 'importAgentSession', ...input }),
       closeSession: (agentId: string, sessionId: string) =>

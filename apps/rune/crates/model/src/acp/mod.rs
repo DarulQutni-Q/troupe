@@ -8,11 +8,11 @@
 
 mod agent_commands;
 #[cfg(test)]
-mod answer_tests;
-#[cfg(test)]
 mod agent_commands_tests;
 pub mod agents;
 pub mod answer;
+#[cfg(test)]
+mod answer_tests;
 pub mod approvals;
 mod auth_retry;
 #[cfg(test)]
@@ -20,11 +20,14 @@ mod auth_retry_tests;
 mod clamp;
 mod close;
 pub mod controls;
+mod create;
 mod diff_stat;
 mod discovery;
 mod effect;
 mod ensure;
 mod event;
+mod history;
+mod history_install;
 mod host_error;
 mod import;
 #[cfg(test)]
@@ -39,9 +42,19 @@ mod mcp_install;
 mod mcp_oauth;
 #[cfg(test)]
 mod mcp_tests;
+mod older;
+#[cfg(test)]
+mod older_tests;
+mod oneshot;
+mod oneshot_reply;
+#[cfg(test)]
+mod oneshot_tests;
 mod picks;
 mod plan;
 pub mod prompt;
+mod reconcile;
+#[cfg(test)]
+mod reconcile_tests;
 mod restore;
 #[cfg(test)]
 mod restore_tests;
@@ -50,12 +63,19 @@ pub mod roster;
 pub mod session;
 #[cfg(test)]
 mod session_tests;
+mod setup_error;
+#[cfg(test)]
+mod setup_error_tests;
 mod spawn_env;
 pub mod subagent;
+mod switch;
+#[cfg(test)]
+mod switch_tests;
 mod tool_call;
 mod transcript;
 pub mod turn;
 pub mod types;
+mod warm;
 pub mod window;
 #[cfg(test)]
 mod window_tests;
@@ -66,11 +86,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::Ids;
-pub use agent_commands::FlightId;
+pub use agent_commands::{FlightId, Killer};
 use approvals::{PendingElicitation, PendingPermission, PendingQuestion};
+pub use create::{CreateOptions, CreateRequest};
 pub use effect::Effect;
 pub use ensure::{EnsureId, Holder};
 pub use event::Event;
+pub use history::{OpenHistoryOptions, OpenHistoryRequest};
+pub use import::RequestId;
 use mcp::{McpBook, RegistryOp};
 pub use plan::is_plan_tool;
 use prompt::{BusyRetry, Dispatch, SendNow, SendOptions};
@@ -137,6 +160,18 @@ pub struct State {
     pub discovering_keys: BTreeMap<String, Value>,
     /// Per `agentId\0cwd`, the agent's own sessions found on disk.
     pub discovered_sessions: BTreeMap<String, Value>,
+    /// Per session, the prompt command waiting to be confirmed.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub prompt_command_states: BTreeMap<String, Value>,
+    /// Warm-pool keys whose prepare is running.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub preparing_chat_keys: BTreeMap<String, Value>,
+    /// Warm-pool keys whose prepare failed, classified for the launcher.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub prepare_chat_errors: BTreeMap<String, Value>,
+    /// The agent config the one-shots run on (`selectedAgentConfigId`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_agent_config_id: Option<String>,
     /// The saved agent configs (`agentConfigs`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub agent_configs: Vec<Object>,
@@ -279,6 +314,9 @@ pub struct Book {
     /// window keeps on top of its bound.
     #[serde(skip)]
     pub(crate) backfill_counts: BTreeMap<String, usize>,
+    /// Sessions whose `loadOlderMessages` is in flight.
+    #[serde(skip)]
+    pub(crate) loading_older: BTreeSet<String>,
     /// Sessions whose history is known durable, so their window may trim.
     #[serde(skip)]
     pub(crate) durable_history: BTreeSet<String>,
@@ -298,6 +336,28 @@ pub struct Book {
     /// The `session/list` discoveries in flight, by key.
     #[serde(skip)]
     pub(crate) discoveries: BTreeMap<String, discovery::Discovery>,
+    /// The `session/new` calls in flight.
+    #[serde(skip)]
+    pub(crate) creates: create::CreateBook,
+    /// Prompts waiting to be confirmed and their resends.
+    #[serde(skip)]
+    pub(crate) reconcile: reconcile::ReconcileBook,
+    /// The warm-pool prepares in flight.
+    #[serde(skip)]
+    pub(crate) warm: warm::WarmBook,
+    /// Sessions not yet a chat, which a close or disconnect drops instead of
+    /// keeping (`ephemeralSessionIds`).
+    #[serde(skip)]
+    pub(crate) ephemeral_sessions: BTreeSet<String>,
+    /// Per session, the registry MCP servers it took, as a fingerprint.
+    #[serde(skip)]
+    pub(crate) registry_mcp: BTreeMap<String, String>,
+    /// The one-shot runs in flight.
+    #[serde(skip)]
+    pub(crate) oneshots: oneshot::OneShotBook,
+    /// The history opens in flight and the reopen generations.
+    #[serde(skip)]
+    pub(crate) history: history::HistoryBook,
     /// The import listings and imports in flight.
     #[serde(skip)]
     pub(crate) imports: import::ImportBook,
@@ -448,8 +508,8 @@ pub fn step(state: &mut State, event: Event, env: &mut Env<'_>) -> Vec<Effect> {
             state.on_session_call_failed(command, error, &mut fx)
         }
         Event::DiscoverSessions(agent_id, cwd) => state.discover_sessions(agent_id, cwd, &mut fx),
-        Event::ListImportableSessions(config_id, cwd, project_id) => {
-            state.list_importable_sessions(&config_id, &cwd, project_id, &mut fx);
+        Event::ListImportableSessions(config_id, cwd, project_id, request) => {
+            state.list_importable_sessions(&config_id, &cwd, project_id, request, &mut fx);
         }
         Event::ImportAgentSessions(request) => state.import_agent_sessions(request, &mut fx),
         Event::StopImport => state.stop_imports(),
@@ -466,7 +526,28 @@ pub fn step(state: &mut State, event: Event, env: &mut Env<'_>) -> Vec<Effect> {
         Event::SpawnAgent(config, project_id, session_id) => {
             state.spawn_agent(config, Some(project_id), session_id, None, &mut fx);
         }
-        Event::KillAgent(agent_id) => state.kill_agent(agent_id, None, &mut fx),
+        Event::KillAgent(agent_id) => state.kill_agent(agent_id, Killer::User, &mut fx),
+        Event::CreateSession(request) => state.create_session(request, &mut fx),
+        Event::PrepareChat(request) => state.prepare_chat(request, &mut fx),
+        Event::CancelPreparedChat(key) => state.cancel_prepared_chat(&key, &mut fx),
+        Event::ClaimPreparedChat(key, project_id, request) => {
+            state.claim_prepared_chat(&key, &project_id, request, &mut fx);
+        }
+        Event::AgentSwitch(event, seq) => state.on_agent_switch(event, seq, env),
+        Event::CancelAgentSwitch(session_id) => state.cancel_agent_switch(&session_id),
+        Event::ArmAgentSwitch(session_id, to_config_id, request) => {
+            state.arm_agent_switch(&session_id, &to_config_id, request, &mut fx);
+        }
+        Event::OpenHistorySession(request) => state.open_history_session(request, &mut fx),
+        Event::GenerateCommitMessage(cwd, diff, request) => {
+            state.generate_commit_message(cwd, &diff, request, &mut fx);
+        }
+        Event::AssistTerminal(kind, cwd, selection, exit_code, request) => {
+            state.assist_terminal(&kind, &cwd, &selection, &exit_code, request, &mut fx);
+        }
+        Event::DraftBugReport(input, request) => state.draft_bug_report(input, request, &mut fx),
+        Event::OneShotTimerDue(timer) => state.on_oneshot_timer(&timer, &mut fx),
+        Event::ReplayEnd(end) => state.on_replay_end(&end, &mut fx),
         Event::PrewarmAgent(config_id, cwd) => {
             let options = ensure::EnsureOptions {
                 register_warm_ui: true,
@@ -489,7 +570,7 @@ pub fn step(state: &mut State, event: Event, env: &mut Env<'_>) -> Vec<Effect> {
         }
         Event::CompleteBrowserAuth(agent_id) => state.complete_browser_auth(&agent_id, &mut fx),
         Event::AgentCommandDone(command, reply) => {
-            state.on_agent_command_done(command, reply, &mut fx);
+            state.on_agent_command_done(command, reply, env, &mut fx);
         }
         Event::AgentCommandFailed(command, message, code) => {
             state.on_agent_command_failed(command, message, code, &mut fx);
@@ -525,9 +606,28 @@ pub fn step(state: &mut State, event: Event, env: &mut Env<'_>) -> Vec<Effect> {
         Event::SendQueuedPromptNow(session_id, id) => {
             state.send_queued_prompt_now(&session_id, &id, env, &mut fx);
         }
-        Event::PromptSettled(settled) => state.on_prompt_settled(settled, env, &mut fx),
+        Event::PromptSettled(settled) => {
+            if !state.on_oneshot_sent(&settled.turn_id, &settled.outcome, &mut fx) {
+                state.on_prompt_settled(settled, env, &mut fx);
+            }
+        }
         Event::QueueRetryDue(session_id, generation) => {
             state.on_queue_retry_due(&session_id, generation, env, &mut fx);
+        }
+        Event::LoadOlderMessages(session_id, count) => {
+            state.load_older_messages(session_id, count, &mut fx);
+        }
+        Event::RecheckPromptCommand(session_id) => {
+            state.recheck_prompt_command(&session_id, &mut fx);
+        }
+        Event::PromptResendDue(session_id, generation) => {
+            state.on_prompt_resend_due(&session_id, generation, &mut fx);
+        }
+        Event::TransportReconnecting(reconnecting) => {
+            state.book.reconcile.reconnecting = reconnecting;
+        }
+        Event::ResendPendingPrompts(session_id) => {
+            state.resend_pending_prompts(session_id, &mut fx)
         }
         Event::NoteHistoryWatermark(session_id, payload) => {
             state.note_history_watermark(&session_id, &payload);
@@ -628,6 +728,18 @@ pub fn step(state: &mut State, event: Event, env: &mut Env<'_>) -> Vec<Effect> {
     }
     if let Some(session_id) = flushed {
         state.trim_flushed(&session_id, &mut fx);
+    }
+    // A one-shot whose collector settled moves on after the handler, as the
+    // TypeScript promise chain does.
+    state.advance_settled_oneshots(&mut fx);
+    // A create the host answered from its records answers once its session
+    // opened.
+    for (create, session_id) in std::mem::take(&mut state.book.history.created) {
+        state.resolve_create(create, session_id, env, &mut fx);
+    }
+    // A prompt typed while a history open ran goes out once it ends.
+    for session_id in std::mem::take(&mut state.book.history.flush) {
+        state.flush_next_queued_prompt(&session_id, env, &mut fx);
     }
     // A run waiting for re-advertised options moves on once an event changed
     // them, as the TypeScript poll would see.
