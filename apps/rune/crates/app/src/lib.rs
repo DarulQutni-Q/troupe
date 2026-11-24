@@ -15,9 +15,14 @@
 mod chat;
 mod chat_images;
 mod chat_view;
+mod composer;
+mod composer_agents;
+mod composer_sheet;
+mod composer_view;
 mod host;
 mod ids;
 mod keys;
+mod launch;
 mod phone;
 mod rail;
 mod rail_forms;
@@ -103,6 +108,8 @@ pub struct State {
     pub workspace: Workspace,
     /// The chats the workspace shows: their transcripts and the transcript's own UI state.
     pub chat: chat::ChatUi,
+    /// The composers' drafts and what their menus list.
+    pub composer: composer::ComposerUi,
     pub(crate) sync: sync::Sync,
 }
 
@@ -148,6 +155,7 @@ impl Default for State {
             zoom: ui::Zoom::DEFAULT,
             workspace: Workspace::new(Box::new(Uuids::new(seed()))),
             chat: chat::ChatUi::default(),
+            composer: composer::ComposerUi::default(),
             sync: sync::Sync::default(),
         }
     }
@@ -229,8 +237,11 @@ fn poll(state: &mut State, now: f64, tx: &mut Tx) -> bool {
     }
     changed |= state.pump(now);
     state.sync_chats();
+    state.read_agents();
     changed |= state.flush_chat();
-    if let Some(due) = state.toasts.next_expiry() {
+    let (retried, next_retry) = state.fire_retries(now);
+    changed |= retried;
+    for due in [state.toasts.next_expiry(), next_retry].into_iter().flatten() {
         tx.wake_at(due);
     }
     state.persist_workspace();

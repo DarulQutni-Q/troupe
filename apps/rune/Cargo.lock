@@ -3951,6 +3951,7 @@ dependencies = [
  "troupe-protocol",
  "ui",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "web-sys",
 ]
 
@@ -4028,7 +4029,9 @@ dependencies = [
  "model",
  "rune",
  "rune-kit",
+ "serde",
  "serde_json",
+ "sha1",
  "theme",
  "wasm-bindgen",
  "web-sys",

@@ -157,13 +157,13 @@ fn main_area(
         .border_sides([0.0, 0.0, 0.0, 1.0], t.colors.border);
     let shown = s.active_project().filter(|p| s.workspace.project() == Some(p.id.as_str()));
     if let Some(project) = shown {
-        let name = project.name.clone();
-        let empty = move || shell::launcher_heading(t, &name);
+        let (id, name) = (project.id.clone(), project.name.clone());
+        let empty = move || crate::composer_view::launcher(s, t, &id, &name);
         let leading = start
             .into_iter()
             .map(|toggle| row().pl(8.0).pr(4.0).h_full().items_center().child(toggle))
             .collect();
-        let tab = |tab: &model::workspace::Tab| crate::chat_view::tab_body(s, t, tab);
+        let tab = |tab: &model::workspace::Tab| crate::chat_view::tab_body(s, t, tab, ui::composer::view::Place::Chat);
         let slots = ui::workspace::Slots {
             leading,
             empty: &empty,
@@ -236,7 +236,7 @@ fn main_body(s: &State, t: &'static Tokens) -> El {
             .color(t.colors.muted_foreground)
     };
     if let Some(project) = s.active_project() {
-        return shell::launcher_heading(t, &project.name);
+        return crate::composer_view::launcher(s, t, &project.id, &project.name);
     }
     match &s.status {
         Status::Halted { code, message } => note(format!(
@@ -341,6 +341,33 @@ fn tool_strip(s: &State, t: &'static Tokens) -> El {
 }
 
 /// The main area under the phone header.
+/// The phone's main area shows the active pane's chat when its active tab is one (a chat the
+/// launcher just started, say); otherwise the launcher.
+fn active_chat_tab(s: &State) -> Option<&model::workspace::Tab> {
+    s.workspace.record()?;
+    if s.workspace.project() != s.active_project().map(|p| p.id.as_str()) {
+        return None;
+    }
+    let pane = &s.workspace.tree().active_pane_id;
+    let leaf = model::workspace::leaves(s.workspace.root()).into_iter().find(|l| &l.id == pane)?;
+    leaf.tabs
+        .iter()
+        .find(|tab| Some(tab.id()) == leaf.active_tab_id.as_deref())
+        .filter(|tab| matches!(tab, model::workspace::Tab::AgentChat { .. }))
+}
+
 fn workspace_main(s: &State, t: &'static Tokens) -> El {
+    if let Some(tab) = active_chat_tab(s) {
+        let body = crate::chat_view::tab_body(s, t, tab, ui::composer::view::Place::Phone);
+        return col().key("workspace-main").grow(1.0).w_full().min_h(0.0).children(body);
+    }
+    if let Some(project) = s.active_project() {
+        return col()
+            .key("workspace-main")
+            .grow(1.0)
+            .w_full()
+            .min_h(0.0)
+            .child(crate::composer_view::launcher_phone(s, t, &project.id, &project.name));
+    }
     col().key("workspace-main").grow(1.0).w_full().min_h(0.0).center().child(main_body(s, t))
 }

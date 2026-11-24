@@ -23,6 +23,8 @@ use crate::{Host, State};
 
 const ACTIVE_PROJECT_KEY: &str = "active-project";
 const PREFS_KEY: &str = "project-prefs";
+/// The code the link fails an unledgered call with when its socket drops.
+const CLOSED: &str = "closed";
 
 /// A key every device shares, written last-writer-wins on the host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -67,6 +69,16 @@ pub(crate) enum Pending {
     WriteWorkspace(String),
     /// A chat's history (`get_session_payload`).
     ChatPayload(String),
+    /// The agent configs (`acp/agents`).
+    ReadAgents,
+    /// The launcher's last agent (`agents/last-selected`).
+    ReadLastAgent,
+    /// A prompt the model dispatched; its reply settles the turn.
+    Prompt { session_id: String, turn_id: String },
+    /// The launcher's `spawn_agent`.
+    LaunchSpawn,
+    /// Then its `create_session`, on that agent.
+    LaunchSession(String),
 }
 
 /// A device read: not answered yet, or answered (`None` when the key is empty).
@@ -124,6 +136,7 @@ impl State {
     /// shared reads (calls 1 to 5) and the chat list (call 6).
     pub(crate) fn begin(&mut self) {
         self.status = Status::Connecting;
+        self.composer.agents_asked = false;
         for watch in [WsWatchName::Projects, WsWatchName::ChatHistory] {
             self.send(Command::Watch {
                 watch,
@@ -156,6 +169,26 @@ impl State {
         self.layout_step(LayoutEvent::StartHydrate);
     }
 
+    /// The composers' agent reads (`acp/agents`, `agents/last-selected`), once the first
+    /// workspace shows; asked again after a reconnect.
+    pub(crate) fn read_agents(&mut self) {
+        let down = matches!(self.status, Status::Reconnecting { .. } | Status::Halted { .. } | Status::Stopped);
+        if self.host.is_none() || down || self.composer.agents_asked || self.workspace.record().is_none() {
+            return;
+        }
+        self.composer.agents_asked = true;
+        self.call(WsRequestType::StoreRead, json!({ "key": "shared/lww/acp/agents" }), Pending::ReadAgents);
+        let key = self.device_key("agents/last-selected");
+        self.call(WsRequestType::StoreRead, json!({ "key": key }), Pending::ReadLastAgent);
+    }
+
+    /// A read the dropped socket failed (`closed`) is asked again once the link is live.
+    fn agents_read_lost(&mut self, e: &WsError) {
+        if e.code == CLOSED {
+            self.composer.agents_asked = false;
+        }
+    }
+
     fn device_key(&self, key: &str) -> String {
         format!("device/{}/{key}", self.device_id)
     }
@@ -169,6 +202,15 @@ impl State {
     }
 
     pub(crate) fn call(&mut self, kind: WsRequestType, payload: Value, pending: Pending) {
+        self.request(kind, payload, pending, false);
+    }
+
+    /// A mutating request the host ledgers: it carries a command id and survives a reconnect.
+    pub(crate) fn command(&mut self, kind: WsRequestType, payload: Value, pending: Pending) {
+        self.request(kind, payload, pending, true);
+    }
+
+    fn request(&mut self, kind: WsRequestType, payload: Value, pending: Pending, ledgered: bool) {
         self.sync.next_call += 1;
         let call = self.sync.next_call;
         self.sync.pending.insert(call, pending);
@@ -176,7 +218,7 @@ impl State {
             call,
             kind,
             payload,
-            ledgered: false,
+            ledgered,
         });
     }
 
@@ -194,9 +236,16 @@ impl State {
             return false;
         };
         let outputs = host.drain(now);
-        let changed = !outputs.is_empty();
+        let fetched = host.fetched();
+        let changed = !outputs.is_empty() || !fetched.is_empty();
         for output in outputs {
             self.apply(output);
+        }
+        for (tag, result) in fetched {
+            match tag {
+                crate::host::Fetch::Skills(root) => self.skills_listed(root, result),
+                crate::host::Fetch::Listing { dir, root } => self.listing_read(dir, &root, result),
+            }
         }
         changed
     }
@@ -316,6 +365,26 @@ impl State {
                     self.toast_error("Failed to save the setting", &e.message);
                 }
             },
+            Pending::ReadAgents => match result {
+                Ok(reply) => self.agents_loaded(stored_value(reply)),
+                Err(e) => {
+                    log::warn!("[app] reading the agent configs failed: {}", e.code);
+                    self.agents_read_lost(&e);
+                }
+            },
+            Pending::ReadLastAgent => match result {
+                Ok(reply) => self.last_agent_loaded(stored_value(reply)),
+                Err(e) => {
+                    log::warn!("[app] reading the last agent failed: {}", e.code);
+                    self.agents_read_lost(&e);
+                    if e.code != CLOSED {
+                        self.last_agent_loaded(None);
+                    }
+                }
+            },
+            Pending::Prompt { session_id, turn_id } => self.prompt_settled(session_id, turn_id, result),
+            Pending::LaunchSpawn => self.launch_spawned(result),
+            Pending::LaunchSession(agent_id) => self.launch_created(agent_id, result),
             Pending::ListChats => {
                 match result.map(|r| r.map(serde_json::from_value::<Vec<Chat>>)) {
                     Ok(Some(Ok(list))) => self.chats.replace(list),
@@ -556,7 +625,7 @@ impl State {
         self.run(effects);
     }
 
-    fn write(&mut self, key: &str, value: Value, pending: Pending) {
+    pub(crate) fn write(&mut self, key: &str, value: Value, pending: Pending) {
         let key = self.device_key(key);
         self.call(
             WsRequestType::StoreWrite,

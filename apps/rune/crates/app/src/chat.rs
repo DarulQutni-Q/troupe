@@ -16,8 +16,19 @@ use model::workspace::{Event as WorkspaceEvent, Tab};
 use serde_json::{Value, json};
 use troupe_protocol::ws::{WsError, WsEvent, WsEventType};
 
+use model::acp::prompt::{DispatchOutcome, PromptSettled};
+
 use crate::State;
 use crate::sync::{Pending, Uuid};
+
+/// `AGENT_DEAD_MARKERS`: a refusal that means the agent process went away.
+const AGENT_DEAD: [&str; 2] = ["agent thread is no longer running", "agent thread dropped the reply"];
+
+/// `isPromptTurnInProgressError`: the relay reports a busy turn as `rate_limited`, its message
+/// keeping the `ACP_TURN_IN_PROGRESS` prefix or not.
+fn is_turn_in_progress(e: &WsError) -> bool {
+    e.code == "rate_limited" || e.message.contains("ACP_TURN_IN_PROGRESS")
+}
 
 /// The chat side of the app state.
 #[derive(Default)]
@@ -34,6 +45,8 @@ pub struct ChatUi {
     pub zoomed_table: Option<String>,
     /// Turn ends the model asked for, run after the events already delivered.
     deferred: Vec<Event>,
+    /// Busy-queue retries the model asked for: (due on the frame clock, session, generation).
+    retries: Vec<(f64, String, u64)>,
     /// Pictures for images in replies; set up with the app's waker.
     pub images: Option<std::rc::Rc<crate::chat_images::ChatImages>>,
 }
@@ -163,6 +176,9 @@ impl State {
             .collect();
         let meta = payload.get("metadata").cloned().unwrap_or(Value::Null);
         let text = |k: &str| meta.get(k).and_then(Value::as_str).map(str::to_owned);
+        if let Some(ns) = text("stableAgentNamespace") {
+            self.composer.namespaces.insert(session_id.clone(), ns);
+        }
         log::info!("[chat] history of {session_id}: {} messages, {} tool calls", messages.len(), tools.len());
         let session = Session {
             id: session_id.clone(),
@@ -199,6 +215,13 @@ impl State {
         self.send(Command::Subscribe { session_id, cursor });
     }
 
+    /// A chat the launcher just created: an empty transcript on `agent_id`, followed live.
+    pub(crate) fn install_new_chat(&mut self, session_id: &str, agent_id: &str) {
+        self.chat.requested.insert(session_id.to_owned());
+        let payload = json!({ "messages": [], "toolCalls": [], "metadata": { "agentId": agent_id, "turnActive": false } });
+        self.chat_payload(session_id.to_owned(), Ok(Some(payload)));
+    }
+
     /// One session event from the link.
     pub(crate) fn chat_event(&mut self, event: WsEvent) {
         let Some(session) = event.sid.as_deref() else { return };
@@ -224,9 +247,50 @@ impl State {
                 },
                 Effect::EndTurn(end) => self.chat.deferred.push(Event::TurnEnd(end)),
                 Effect::PersistSession { .. } => {}
+                Effect::DispatchPrompt { agent_id, session_id, turn_id, blocks, display_blocks } => {
+                    self.dispatch_prompt(agent_id, session_id, turn_id, blocks, display_blocks)
+                }
+                Effect::CancelPrompt { agent_id, session_id } => self.command(
+                    troupe_protocol::ws::WsRequestType::CancelPrompt,
+                    json!({ "agentId": agent_id, "sessionId": session_id }),
+                    Pending::Host("Could not stop the turn"),
+                ),
+                Effect::ActionRejected { message } => {
+                    self.composer.rejected = true;
+                    self.toast_error("Could not send your message", &message);
+                }
+                Effect::RetryQueueAfter { session_id, delay_ms, generation } => {
+                    self.chat.retries.push((self.now + delay_ms / 1000.0, session_id, generation));
+                }
                 other => log::info!("[chat] effect not wired in the Rune client yet: {other:?}"),
             }
         }
+    }
+
+    /// The prompt command's reply: the receipt, a busy host, or a refusal.
+    pub(crate) fn prompt_settled(&mut self, session_id: String, turn_id: String, result: Result<Option<Value>, WsError>) {
+        let outcome = match result {
+            Ok(reply) => DispatchOutcome::Answered(reply.unwrap_or(Value::Null)),
+            Err(e) if is_turn_in_progress(&e) => DispatchOutcome::Busy,
+            Err(e) => {
+                log::warn!("[chat] the prompt for {session_id} was refused: {}: {}", e.code, e.message);
+                let agent_dead = AGENT_DEAD.iter().any(|m| e.message.contains(m));
+                DispatchOutcome::Failed { message: e.message, agent_dead }
+            }
+        };
+        self.acp_step(Event::PromptSettled(PromptSettled { session_id, turn_id, outcome }));
+    }
+
+    /// Fires the busy-queue retries that came due; returns when the next one is due.
+    pub(crate) fn fire_retries(&mut self, now: f64) -> (bool, Option<f64>) {
+        let (due, waiting): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut self.chat.retries).into_iter().partition(|r| r.0 <= now);
+        self.chat.retries = waiting;
+        let fired = !due.is_empty();
+        for (_, session_id, generation) in due {
+            self.acp_step(Event::QueueRetryDue(session_id, generation));
+        }
+        (fired, self.chat.retries.iter().map(|r| r.0).reduce(f64::min))
     }
 
     /// Runs the turn ends the events of this pump asked for.
