@@ -1111,6 +1111,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "gallery"
+version = "0.0.1"
+dependencies = [
+ "rune",
+ "serde_json",
+ "theme",
+ "ui",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
