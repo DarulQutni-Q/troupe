@@ -6,6 +6,9 @@
 //! [`step`] applies one event and returns the effects the app runs. The model
 //! reads no clock and draws no randomness: [`Env`] carries both.
 
+mod agent_commands;
+#[cfg(test)]
+mod agent_commands_tests;
 pub mod agents;
 pub mod approvals;
 mod clamp;
@@ -17,6 +20,9 @@ mod js_tests;
 mod picks;
 mod plan;
 pub mod prompt;
+mod restore;
+#[cfg(test)]
+mod restore_tests;
 pub mod session;
 #[cfg(test)]
 mod session_tests;
@@ -32,6 +38,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{Ids, Level};
+pub use agent_commands::FlightId;
 use agents::{
     AgentDisconnectedEvent, AgentFailureEvent, AgentSignInRequestEvent, AgentSignInResolvedEvent,
     AgentSpawnedEvent, BrowserOpenRequestEvent,
@@ -43,6 +50,8 @@ use approvals::{
 use controls::{ConfigOptionsUpdateEvent, ModeUpdateEvent};
 use picks::PickOptions;
 use prompt::{BusyRetry, Dispatch, PromptSettled, SendNow, SendOptions};
+use restore::Run;
+pub use restore::RunId;
 use session::{SessionClosedEvent, SessionCreatedEvent};
 pub use transcript::{
     CommandsUpdateEvent, CompactionNotice, HistoryPayload, MessageChunkEvent, PayloadMetadata,
@@ -156,12 +165,57 @@ pub struct Book {
     /// Browser-open URLs caught before their agent registered, oldest first.
     #[serde(skip)]
     pub early_browser_opens: VecDeque<(String, String)>,
+    /// Option restores in flight: model picks and heals.
+    #[serde(skip)]
+    pub(crate) runs: BTreeMap<RunId, Run>,
+    #[serde(skip)]
+    pub(crate) run_seq: RunId,
+    /// Per session, the newest model pick still running (`latestModelPick`).
+    #[serde(skip)]
+    pub(crate) latest_model_pick: BTreeMap<String, RunId>,
+    /// Sessions whose heal was asked for again while one ran.
+    #[serde(skip)]
+    pub(crate) heal_rerun: BTreeSet<String>,
+    /// `session\0key` of the restore warns already logged.
+    #[serde(skip)]
+    pub(crate) warned_once: BTreeSet<String>,
+    /// Agents whose process signed in.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub authenticated_agents: BTreeSet<String>,
+    /// Per agent config, the auth method that last signed in; saved, never a
+    /// credential.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub remembered_auth_methods: BTreeMap<String, String>,
+    /// `agent\0method` to the authenticate in flight.
+    #[serde(skip)]
+    pub(crate) auth_flights: BTreeMap<String, FlightId>,
+    #[serde(skip)]
+    pub(crate) flight_seq: FlightId,
+    /// Clicks that share a flight, which fail with it.
+    #[serde(skip)]
+    pub(crate) auth_waiters: BTreeMap<FlightId, usize>,
+    /// Per agent, the method of the last authenticate sent.
+    #[serde(skip)]
+    pub(crate) last_auth_attempt: BTreeMap<String, String>,
+    /// Per agent, the flight whose first browser open was let open by itself.
+    #[serde(skip)]
+    pub(crate) auto_open_granted: BTreeMap<String, FlightId>,
 }
 
 impl Book {
     pub(crate) fn next_report(&mut self) -> u64 {
         self.report_seq += 1;
         self.report_seq
+    }
+
+    pub(crate) fn next_flight(&mut self) -> FlightId {
+        self.flight_seq += 1;
+        self.flight_seq
+    }
+
+    pub(crate) fn next_run(&mut self) -> RunId {
+        self.run_seq += 1;
+        self.run_seq
     }
 
     pub(crate) fn next_seq(&mut self) -> f64 {
@@ -297,6 +351,41 @@ pub enum Event {
     /// snapshot, when the agent sent one.
     #[serde(skip_deserializing)]
     ControlSet(Effect, Option<Vec<Value>>),
+    /// The agent rejected a set command; the text is the error.
+    #[serde(skip_deserializing)]
+    ControlFailed(Effect, String),
+    /// The saved picks an [`Effect::ReadComposerOptions`] read; null when
+    /// none are saved.
+    #[serde(skip_deserializing)]
+    ComposerOptionsRead(Effect, Value),
+    /// The wait an [`Effect::WaitForReadvertisedOptions`] started ran out.
+    #[serde(skip_deserializing)]
+    ReadvertiseWaitOver(RunId),
+    #[serde(rename = "spawnAgent")]
+    SpawnAgent(Value, Value, #[serde(default)] Option<String>),
+    #[serde(rename = "killAgent")]
+    KillAgent(String),
+    #[serde(rename = "authenticateAgent")]
+    AuthenticateAgent(String, String, #[serde(default)] Option<Value>),
+    #[serde(rename = "logoutAgent")]
+    LogoutAgent(String),
+    #[serde(rename = "respondAgentSignIn")]
+    RespondAgentSignIn(String, String),
+    #[serde(rename = "completeBrowserAuth")]
+    CompleteBrowserAuth(String),
+    /// The command an agent command effect sent answered with this reply.
+    #[serde(skip_deserializing)]
+    AgentCommandDone(Effect, Value),
+    /// The command an agent command effect sent failed; the text is the
+    /// error's message.
+    #[serde(skip_deserializing)]
+    AgentCommandFailed(Effect, String),
+    #[serde(rename = "pickModel")]
+    PickModel(
+        String,
+        String,
+        #[serde(default)] Option<serde_json::Map<String, Value>>,
+    ),
     #[serde(rename = "clearPendingSignIn")]
     ClearPendingSignIn(String),
     #[serde(rename = "setActiveSession")]
@@ -398,6 +487,9 @@ pub enum Effect {
         /// The id of the session's model-category option when it was sent.
         #[serde(skip_serializing)]
         model_option: Option<Value>,
+        /// The restore that sent it, which its outcome moves on.
+        #[serde(skip_serializing)]
+        run: Option<RunId>,
     },
     /// Send `session/set_config_option`, then `Event::ControlSet` with this
     /// effect and the agent's option snapshot.
@@ -413,6 +505,8 @@ pub enum Effect {
         model_at_request: Option<String>,
         #[serde(skip_serializing)]
         is_model: bool,
+        #[serde(skip_serializing)]
+        run: Option<RunId>,
     },
     /// Free the session's transcript once the `PersistSession` before this
     /// effect has read it: send `Event::DropSessionTranscript` before the
@@ -426,12 +520,50 @@ pub enum Effect {
     /// Reload the chat index from the desktop's history store, then send
     /// what it read as `applySessionIndexSnapshot`.
     RefreshSessionIndex,
-    /// Read the user's saved picks for the config and apply the ones the
-    /// session still offers.
-    ReapplyComposerOptions {
+    /// Read the user's saved picks for the config, then send
+    /// `Event::ComposerOptionsRead` with this effect and the record.
+    ReadComposerOptions {
         config_id: String,
         #[serde(skip_serializing)]
+        run: RunId,
+    },
+    /// Start an agent process for the config; then `Event::AgentCommandDone`
+    /// with the spawn reply, or `AgentCommandFailed`.
+    SpawnAgent {
+        config: Value,
+        project_id: Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+    },
+    /// Stop the agent process; then `AgentCommandDone` or `AgentCommandFailed`.
+    KillAgent { agent_id: String },
+    /// Send `authenticate`; then `AgentCommandDone` or `AgentCommandFailed`.
+    Authenticate {
+        agent_id: String,
+        method_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        input: Option<Value>,
+        #[serde(skip_serializing)]
+        flight: FlightId,
+    },
+    /// Sign the agent out; then `AgentCommandDone` or `AgentCommandFailed`.
+    Logout { agent_id: String },
+    /// Answer the agent's own sign-in prompt; then `AgentCommandDone` or
+    /// `AgentCommandFailed`.
+    RespondElicitation {
+        agent_id: String,
+        request_id: String,
+        action: String,
+    },
+    /// Save the remembered auth method per config.
+    PersistAuthMethods { methods: BTreeMap<String, String> },
+    /// Send `Event::ReadvertiseWaitOver` with `run` after `delay_ms`, unless
+    /// the agent re-advertised the session's options first.
+    WaitForReadvertisedOptions {
         session_id: String,
+        delay_ms: f64,
+        #[serde(skip_serializing)]
+        run: RunId,
     },
 }
 
@@ -441,6 +573,14 @@ impl Effect {
             level: Level::Warn,
             source: source.to_owned(),
             message,
+        }
+    }
+
+    /// The restore a set command belongs to.
+    fn run(&self) -> Option<RunId> {
+        match self {
+            Self::SetModel { run, .. } | Self::SetConfigOption { run, .. } => *run,
+            _ => None,
         }
     }
 
@@ -488,12 +628,49 @@ pub fn step(state: &mut State, event: Event, env: &mut Env<'_>) -> Vec<Effect> {
         Event::ApplySessionIndexSnapshot(entries) => state.apply_session_index(entries, &mut fx),
         Event::SetMode(session_id, mode_id) => state.set_mode(session_id, mode_id, &mut fx),
         Event::SetModel(session_id, model_id, options) => {
-            state.set_model(session_id, model_id, options, &mut fx);
+            state.set_model(session_id, model_id, options, None, &mut fx);
         }
         Event::SetConfigOption(session_id, config_id, value, options) => {
-            state.set_config_option(session_id, config_id, value, options, &mut fx);
+            state.set_config_option(session_id, config_id, value, options, None, &mut fx);
         }
-        Event::ControlSet(command, reply) => state.on_control_set(command, reply, env, &mut fx),
+        Event::ControlSet(command, reply) => {
+            let run = command.run();
+            state.on_control_set(command, reply, env, &mut fx);
+            if let Some(run) = run {
+                state.on_run_command(run, None, &mut fx);
+            }
+        }
+        Event::ControlFailed(command, message) => match command.run() {
+            Some(run) => state.on_run_command(run, Some(message), &mut fx),
+            None => fx.push(Effect::ActionRejected { message }),
+        },
+        Event::ComposerOptionsRead(read, saved) => {
+            if let Effect::ReadComposerOptions { run, .. } = read {
+                state.on_composer_options_read(run, saved, &mut fx);
+            }
+        }
+        Event::ReadvertiseWaitOver(run) => state.poll_readvertise(Some(run), &mut fx),
+        Event::SpawnAgent(config, project_id, session_id) => {
+            state.spawn_agent(config, project_id, session_id, &mut fx);
+        }
+        Event::KillAgent(agent_id) => state.kill_agent(agent_id, &mut fx),
+        Event::AuthenticateAgent(agent_id, method_id, input) => {
+            state.authenticate_agent(agent_id, &method_id, input, &mut fx);
+        }
+        Event::LogoutAgent(agent_id) => state.logout_agent(agent_id, &mut fx),
+        Event::RespondAgentSignIn(agent_id, action) => {
+            state.respond_agent_sign_in(agent_id, action, &mut fx);
+        }
+        Event::CompleteBrowserAuth(agent_id) => state.complete_browser_auth(&agent_id, &mut fx),
+        Event::AgentCommandDone(command, reply) => {
+            state.on_agent_command_done(command, reply, &mut fx);
+        }
+        Event::AgentCommandFailed(command, message) => {
+            state.on_agent_command_failed(command, message, &mut fx);
+        }
+        Event::PickModel(session_id, model_id, values) => {
+            state.pick_model(session_id, model_id, values, &mut fx);
+        }
         Event::ClearPendingSignIn(agent_id) => state.clear_pending_sign_in(&agent_id),
         Event::SetActiveSession(session_id) => state.active_session_id = session_id,
         Event::MarkResumeFailed(session_id, reason) => {
@@ -533,5 +710,8 @@ pub fn step(state: &mut State, event: Event, env: &mut Env<'_>) -> Vec<Effect> {
             state.book.live_turn_replay_floors.insert(session_id, floor);
         }
     }
+    // A run waiting for re-advertised options moves on once an event changed
+    // them, as the TypeScript poll would see.
+    state.poll_readvertise(None, &mut fx);
     fx
 }

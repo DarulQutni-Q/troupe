@@ -2,6 +2,8 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import {
+  agentReplies,
+  composerRecord,
   configReplies,
   dispatchOutcomes,
   drawId,
@@ -157,6 +159,21 @@ function dispatchPrompt(
   }
   return Promise.resolve(outcome)
 }
+// An agent command answers the next `context.agentReplies` entry: `{ reject }`
+// fails it, `{ hold: true }` leaves it in flight, anything else is the reply.
+function agentCommand(effect: Record<string, unknown>): Promise<unknown> {
+  emit(effect)
+  const reply = agentReplies.shift() ?? null
+  if (typeof reply === 'object' && reply !== null) {
+    if ('reject' in reply) return Promise.reject(new Error(String(reply.reject)))
+    if ('hold' in reply) return new Promise(() => {})
+  }
+  return Promise.resolve(reply)
+}
+vi.mock(`${renderer}/lib/acp-auth-method-memory`, async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  saveAuthMethodMemory: async (methods: unknown) => emit({ kind: 'persistAuthMethods', methods })
+}))
 vi.mock(`${renderer}/lib/acp-api`, async (importOriginal) => {
   const actual = await importOriginal<{ acpApi: object }>()
   return {
@@ -166,6 +183,19 @@ vi.mock(`${renderer}/lib/acp-api`, async (importOriginal) => {
       sendPrompt: (agentId: string, sessionId: string, text: string, turnId: string) =>
         dispatchPrompt(agentId, sessionId, [{ type: 'text', text }], turnId),
       sendPromptBlocks: dispatchPrompt,
+      spawnAgent: (config: unknown, projectId: unknown, sessionId?: string) =>
+        agentCommand({
+          kind: 'spawnAgent',
+          config,
+          projectId,
+          ...(sessionId ? { sessionId } : {})
+        }),
+      killAgent: (agentId: string) => agentCommand({ kind: 'killAgent', agentId }),
+      authenticate: (agentId: string, methodId: string, input?: unknown) =>
+        agentCommand({ kind: 'authenticate', agentId, methodId, ...(input ? { input } : {}) }),
+      logout: (agentId: string) => agentCommand({ kind: 'logout', agentId }),
+      respondElicitation: (agentId: string, requestId: string, action: string) =>
+        agentCommand({ kind: 'respondElicitation', agentId, requestId, action }),
       cancelPrompt: async (agentId: string, sessionId: string) =>
         emit({ kind: 'cancelPrompt', agentId, sessionId }),
       setMode: async (agentId: string, sessionId: string, modeId: string) =>
@@ -179,14 +209,19 @@ vi.mock(`${renderer}/lib/acp-api`, async (importOriginal) => {
         value: unknown
       ) => {
         emit({ kind: 'setConfigOption', agentId, sessionId, configId, value })
-        return configReplies.shift() ?? null
+        const reply = configReplies.shift() ?? null
+        if (typeof reply === 'object' && reply !== null && 'reject' in reply) {
+          throw new Error(String(reply.reject))
+        }
+        return reply
       }
     }
   }
 })
 
 // The model list save and the read of the user's saved composer picks are
-// the boundary of the options cache; the vector keeps both calls.
+// the boundary of the options cache; the vector keeps both calls. The read
+// answers `context.composerOptions`.
 vi.mock(`${renderer}/stores/acp-store/model-catalog`, async (importOriginal) => ({
   ...(await importOriginal<object>()),
   persistModelCatalog: (configId: string, catalog: unknown) =>
@@ -197,8 +232,8 @@ vi.mock(`${renderer}/stores/acp-store/composer-options`, async (importOriginal) 
   persistComposerOptions: (configId: string, patch: unknown) =>
     emit({ kind: 'persistComposerOptions', configId, patch }),
   readComposerOptions: async (configId: string) => {
-    emit({ kind: 'reapplyComposerOptions', configId })
-    return null
+    emit({ kind: 'readComposerOptions', configId })
+    return composerRecord.saved
   }
 }))
 

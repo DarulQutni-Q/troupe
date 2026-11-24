@@ -96,9 +96,11 @@ TypeScript lines are whole files, comments included. Every path below is under
 | `pending-permission-sync.ts` | 146 | `acp/approvals.rs` | state | 6 |
 | `host-session-reports.ts` | 62 | `acp/turn.rs` | state | 3 |
 | `rate-limit.ts` | 34 | `acp/usage.rs` | state | 1 |
-| `session-controls.ts`, `composer-options.ts` (the saved-pick heal, `setMode`, `setModel`, `setConfigOption`, `pickModel`) | 404 | `acp/controls.rs` | state; the composer record and the set commands are effects | 11 |
+| `session-controls.ts`, `composer-options.ts` (`setMode`, `setModel`, `setConfigOption`) | 404 | `acp/picks.rs` | state; the composer record and the set commands are effects | 11a |
+| `slices/prompt.ts` `pickModel`; `helpers.ts` `reapplyPersistedComposerOptions`, `applyOptionValues`, `waitForReadvertisedOptions`; `composer-options.ts` `savedModelValues`, `savedAgentWideValues`, `warnOnce` | (parts) | `acp/restore.rs` | state; the record read, the set commands and the re-advertise wait are effects | 11b |
 | `slices/session.ts` (`_onSessionCreated`, `_onSessionClosed`, `createSession`, `closeSession`, index load and snapshot, history open, retry) | 2,879 | `acp/session.rs`, `acp/history.rs` | state; payload reads, index writes, `session/load` are effects | 6 |
-| `slices/agent.ts` (roster events, spawn, kill, sign-in, browser consent) and `agent-roster-watch.ts` | 1,554 | `acp/agents.rs` | state; spawn and kill are socket effects | 7 |
+| `slices/agent.ts` (roster events, browser consent) and `agent-roster-watch.ts` | 1,554 | `acp/agents.rs` | state | 7a |
+| `slices/agent.ts` (spawn, kill, sign-in, sign-out, the sign-in prompt answer, the auth bookkeeping) | (same file) | `acp/agent_commands.rs` | state; each command is an effect with an outcome event | 7b |
 | `browser-agent-tabs.ts` | 77 | `acp/agents.rs` | state; the workspace tab is an effect | 7 |
 | `slices/agent.ts` `_onBrowserConsentTicket`, `_onBrowserTicketClosed` and `lib/browser-consent-api.ts` `parseBrowserConsentTicket` | (part) | `acp/approvals.rs` | state; revealing the chat tab is an effect | 2 |
 | `slices/launch.ts`, `chat-reuse-scope.ts`, `ephemeral-ids.ts`, `registry-mcp-fingerprints.ts` | 1,139 | `acp/launch.rs` | state; prepare and claim are socket effects | 8 |
@@ -205,11 +207,27 @@ Each PR stays under 50 files, adds its vectors, and is green on its own.
      running subagents end), `agent_disconnected` (a kill, reap or close
      drops the agent and its reuse keys; a crash keeps `error`), the
      browser-open and sign-in prompts and `clearPendingSignIn`. Not yet:
-     the one-shot collectors (PR 10), the warm-pool drop of an empty
-     session (PR 8), and the auth flight that lets the first browser open
-     of a sign-in open by itself (`authenticateAgent`, 7b).
-   - 7b. Spawn, kill, sign-in, logout and `authenticateAgent` (effects with
-     outcome events, as sending does), the roster watch, browser tabs.
+     the one-shot collectors (PR 10) and the warm-pool drop of an empty
+     session (PR 8).
+   - 7b, first part (R6a-3). `spawnAgent`, `killAgent`,
+     `authenticateAgent`, `logoutAgent`, `respondAgentSignIn` and
+     `completeBrowserAuth` (`acp/agent_commands.rs`). Each command is an
+     effect (`spawnAgent`, `killAgent`, `authenticate`, `logout`,
+     `respondElicitation`) the app answers with `agentCommandDone` and the
+     reply, or `agentCommandFailed` and the error's message. The auth
+     bookkeeping is in `Book`: `authenticatedAgents` and
+     `rememberedAuthMethods` (serialized, so the vectors check them), the
+     authenticate in flight per agent and method (a click on the same
+     method shares it and fails with it), the last method tried, and the
+     flight whose first browser open may open by itself (`persistAuthMethods`
+     saves the remembered ones). The auth flight closes the 7a gap: the
+     first browser open of a sign-in now sets `autoOpenBrowserUrl`. A
+     disconnect forgets the agent's sign-in. Not here: the re-prepare of
+     chats that failed on auth after `completeBrowserAuth` (it needs
+     `prepareChat`, PR 8), `stoppingAgentIds` (read only by the warm-pool
+     reap, PR 8), and the sign-in before a session call
+     (`authenticateBeforeSession`, `withAuthRetry`, PR 8).
+   - 7b, rest. The roster watch and the browser tabs.
 8. Launch, prepare and warm pool, agent configs.
 9. In-chat agent switch.
 10. MCP, import, discovery, one-shot collectors.
@@ -226,8 +244,22 @@ Each PR stays under 50 files, adds its vectors, and is green on its own.
       option). Not yet: the re-auth retry (`withAuthRetry`, 7b), the pick
       marks a reopen restore reads (`noteUserPick`), and the drop of a
       warm-pool session's pick (PR 8).
-    - 11b. `pickModel`, the saved-pick heal, the reopen restore, and the
-      prompt reconcile.
+    - 11b, first part (R6a-3). `pickModel` and the saved-pick heal
+      (`reapplyPersistedComposerOptions`), as runs in `Book::runs`
+      (`acp/restore.rs`). A run sends one command and waits: the record
+      read (`readComposerOptions`, answered by `composerOptionsRead`), a set
+      command's acknowledgement (`controlSet`) or failure (`controlFailed`),
+      or, after a native model switch with values to restore, the agent's
+      re-advertised options (`waitForReadvertisedOptions`, 1 s, answered by
+      `readvertiseWaitOver` or by an event that changes the options). A
+      newer pick stops an older one at its next step; a heal is skipped
+      while a pick runs, and a trigger during a heal runs it once more after.
+      The recorder's clock stands still within a step, so the wait, an
+      interleaved read and a value moved during the read are Rust unit tests
+      (`restore_tests.rs`), not vectors. Not here: the reopen restore
+      (`reopenRestores`, `noteUserPick`; it needs history open, 6b) and the
+      re-auth retry (`withAuthRetry`, 7b).
+    - 11b, rest. The reopen restore and the prompt reconcile.
 
 ### Sending as two steps
 
@@ -264,9 +296,6 @@ so the replay drops `retryQueueAfter` before it compares.
   commit-message, terminal assist and bug-report sessions. PR 10.
 - The live-window trim and the tool-call trim at flush. PR 6.
 - Switch markers in `maxPayloadSeq`. PR 9.
-- Composer-side option logic: the saved-pick heal itself, and the user's own
-  `setMode`, `setModel`, `setConfigOption`, `pickModel`. PR 11. The model
-  returns `reapplyComposerOptions` where the store starts the heal.
 - On `prompt_complete`: the prompt-reconcile clear (PR 11), and the update of
   the in-memory payload cache (PR 6).
 - In sending: an outcome-unknown dispatch (PR 11), the warm-pool promotion
@@ -301,6 +330,12 @@ its pinned sources match a path glob of both workflows.
   (`live_only`) client skips the index reload the way the server one does;
   the model folds both into `Env::server_history`.
 - `context.openChatTabs` lists the sessions a chat tab shows.
+- `context.agentReplies` answers the agent commands in order: an entry is
+  the reply, `{ "reject": text }` fails it, and `{ "hold": true }` leaves it
+  in flight for the rest of the vector.
+- `context.composerOptions` is the saved record every `readComposerOptions`
+  answers (null by default). A `context.configReplies` entry
+  `{ "reject": text }` fails that `setConfigOption` with `Error: text`.
 - The TypeScript seq counter only moves up, so each vector starts on the next
   hundred and records the start in `book.seq`. Adding a scenario shifts the
   seqs of the ones after it; re-record and commit the whole file.
