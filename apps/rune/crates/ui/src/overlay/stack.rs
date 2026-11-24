@@ -59,21 +59,22 @@ impl Overlays {
 }
 
 /// What the web build does to `window.history` to match the stack.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HistoryStep {
-    /// Push this many sentinel entries.
-    Push(usize),
+    /// Push one sentinel per depth in the range; each entry's state records its depth.
+    Push(std::ops::Range<usize>),
     /// Go back over this many of our own sentinels (`history.go(-n)`).
     Back(usize),
 }
 
 /// The overlay entries on the browser's history, as the mobile shell's reconciler keeps them:
-/// one sentinel per open overlay. A close by Escape, the scrim or a button consumes its
-/// sentinel; a back press the user made pops the top overlay. The `popstate` our own
-/// [`HistoryStep::Back`] causes is not a back press.
+/// one sentinel per open overlay, each recording its depth. A close by Escape, the scrim or a
+/// button consumes its sentinel. A traversal the user made (Back, several entries at once, or
+/// Forward) lands on an entry whose depth says how many overlays to close; the `popstate` our
+/// own [`HistoryStep::Back`] causes closes none.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HistorySentinels {
-    /// Sentinel entries on the history, ours.
+    /// The depth of the history entry the page is on: 0 off our sentinels.
     pushed: usize,
     /// `popstate` events still to come from our own `history.go(-n)`.
     expected: usize,
@@ -87,9 +88,9 @@ impl HistorySentinels {
         }
         match depth.cmp(&self.pushed) {
             std::cmp::Ordering::Greater => {
-                let n = depth - self.pushed;
+                let step = HistoryStep::Push(self.pushed + 1..depth + 1);
                 self.pushed = depth;
-                Some(HistoryStep::Push(n))
+                Some(step)
             }
             std::cmp::Ordering::Less => {
                 let n = self.pushed - depth;
@@ -101,18 +102,23 @@ impl HistorySentinels {
         }
     }
 
-    /// A `popstate` arrived. True when the user pressed back over one of our sentinels, so the
-    /// top overlay closes; false for the one our own [`HistoryStep::Back`] caused and for a
-    /// back press with no overlay open.
-    pub fn popstate(&mut self) -> bool {
-        if self.expected > 0 {
+    /// The page moved to an entry of depth `landed` (0 for one that is not our sentinel).
+    /// Returns how many overlays to close: none for our own step or a Forward, one per entry
+    /// for a Back.
+    pub fn popstate(&mut self, landed: usize) -> usize {
+        let closes = if self.expected > 0 {
             self.expected -= 1;
-            return false;
-        }
-        if self.pushed == 0 {
-            return false;
-        }
-        self.pushed -= 1;
-        true
+            0
+        } else {
+            self.pushed.saturating_sub(landed)
+        };
+        self.pushed = landed;
+        closes
+    }
+
+    /// A history call threw: the page is on depth `pushed`, and no `popstate` is coming.
+    pub fn failed(&mut self, pushed: usize) {
+        self.pushed = pushed;
+        self.expected = 0;
     }
 }
