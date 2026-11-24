@@ -11,9 +11,10 @@ mod web {
     use std::cell::RefCell;
 
     use rune::Waker;
+    use wasm_bindgen::JsCast;
     use wasm_bindgen::JsValue;
     use wasm_bindgen::closure::Closure;
-    use wasm_bindgen::JsCast;
+    use web_sys::PopStateEvent;
 
     use crate::overlay::stack::{HistorySentinels, HistoryStep};
 
@@ -28,18 +29,27 @@ mod web {
         static WEB: RefCell<Web> = RefCell::default();
     }
 
+    const PREFIX: &str = "troupe-overlay:";
+
+    /// The depth a history entry's state records: 0 for an entry that is not our sentinel.
+    fn depth_of(state: &JsValue) -> usize {
+        state.as_string().and_then(|s| s.strip_prefix(PREFIX)?.parse().ok()).unwrap_or(0)
+    }
+
     pub fn install(wake: Waker) {
         let first = WEB.with_borrow_mut(|w| w.wake.replace(wake).is_none());
         if !first {
             return;
         }
         let Some(window) = web_sys::window() else { return };
-        let on_pop = Closure::<dyn Fn(JsValue)>::new(|_| {
+        let on_pop = Closure::<dyn Fn(PopStateEvent)>::new(|event: PopStateEvent| {
+            let landed = depth_of(&event.state());
             let wake = WEB.with_borrow_mut(|w| {
-                if !w.sentinels.popstate() {
+                let closes = w.sentinels.popstate(landed);
+                if closes == 0 {
                     return None;
                 }
-                w.backs += 1;
+                w.backs += closes;
                 w.wake.clone()
             });
             if let Some(wake) = wake {
@@ -57,12 +67,24 @@ mod web {
             return;
         };
         let Some(history) = web_sys::window().and_then(|w| w.history().ok()) else { return };
-        let done = match step {
-            HistoryStep::Push(n) => (0..n).try_for_each(|_| history.push_state(&JsValue::from_str("troupe-overlay"), "")),
-            HistoryStep::Back(n) => history.go_with_delta(-(n as i32)),
+        let (done, reached) = match step.clone() {
+            HistoryStep::Push(depths) => {
+                let mut reached = depths.start - 1;
+                let mut done = Ok(());
+                for d in depths {
+                    done = history.push_state(&JsValue::from_str(&format!("{PREFIX}{d}")), "");
+                    if done.is_err() {
+                        break;
+                    }
+                    reached = d;
+                }
+                (done, reached)
+            }
+            HistoryStep::Back(n) => (history.go_with_delta(-(n as i32)), depth + n),
         };
         if let Err(e) = done {
             web_sys::console::warn_1(&format!("troupe overlay: history {step:?} failed: {e:?}").into());
+            WEB.with_borrow_mut(|w| w.sentinels.failed(reached));
         }
     }
 
