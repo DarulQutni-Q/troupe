@@ -41,8 +41,8 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum UpdateChannel {
+    #[serde(alias = "insider")]
     Stable,
-    Insider,
     Nightly,
 }
 
@@ -51,8 +51,7 @@ impl UpdateChannel {
     /// unrecognized — the caller treats an absent/invalid channel as "no checks".
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "stable" => Some(Self::Stable),
-            "insider" => Some(Self::Insider),
+            "stable" | "insider" => Some(Self::Stable),
             "nightly" => Some(Self::Nightly),
             _ => None,
         }
@@ -64,9 +63,6 @@ impl UpdateChannel {
         match self {
             Self::Stable => {
                 "https://github.com/gnoviawan/troupe/releases/latest/download/latest-stable.json"
-            }
-            Self::Insider => {
-                "https://github.com/gnoviawan/troupe/releases/download/insider/latest-insider.json"
             }
             // latest-nightly.json is kept for builds released before the
             // X.Y.N nightly scheme; it advertises the same build under a

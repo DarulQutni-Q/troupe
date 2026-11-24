@@ -13,7 +13,7 @@ async fn fetch_channel_manifest_rejects_unknown_channel_without_network() {
     );
 }
 
-/// Parity guard: the three accepted channels must map to the same URLs
+/// Parity guard: the accepted channels must map to the same URLs
 /// `server_update::UpdateChannel::manifest_url()` returns. If someone
 /// changes the Rust constant, this breaks — prompting a check that the
 /// renderer `CHANNEL_MANIFEST_URLS` constant (the error-message source)
@@ -25,17 +25,11 @@ fn channel_manifest_urls_match_server_update() {
         "https://github.com/gnoviawan/troupe/releases/latest/download/latest-stable.json"
     );
     assert_eq!(
-        UpdateChannel::Insider.manifest_url(),
-        "https://github.com/gnoviawan/troupe/releases/download/insider/latest-insider.json"
-    );
-    assert_eq!(
         UpdateChannel::Nightly.manifest_url(),
         "https://github.com/gnoviawan/troupe/releases/download/nightly/nightly.json"
     );
 }
 
-/// Only Nightly is served by the signed in-app channel check; Stable keeps the
-/// build-time `plugins.updater.endpoints` and Insider stays manual.
 #[test]
 fn signed_channel_endpoint_is_nightly_only() {
     assert_eq!(
@@ -43,7 +37,6 @@ fn signed_channel_endpoint_is_nightly_only() {
         Some(UpdateChannel::Nightly.manifest_url())
     );
     assert_eq!(signed_channel_endpoint(UpdateChannel::Stable), None);
-    assert_eq!(signed_channel_endpoint(UpdateChannel::Insider), None);
 }
 
 #[test]
@@ -51,11 +44,6 @@ fn resolve_signed_channel_rejects_unsupported_channels_without_network() {
     assert_eq!(
         resolve_signed_channel("nightly"),
         Ok(UpdateChannel::Nightly)
-    );
-    let insider = resolve_signed_channel("insider").expect_err("insider is manual");
-    assert!(
-        insider.contains("does not support in-app updates"),
-        "{insider}"
     );
     let stable = resolve_signed_channel("stable").expect_err("stable uses check()");
     assert!(
@@ -97,10 +85,12 @@ fn a_build_from_before_the_x_y_n_scheme_is_offered_the_new_nightly() {
 }
 
 #[test]
-fn non_nightly_channels_never_accept_signed_channel_updates() {
-    for channel in [UpdateChannel::Stable, UpdateChannel::Insider] {
-        assert!(!accepts_channel_update(channel, &v("0.5.0"), &v("0.5.37")));
-    }
+fn stable_never_accepts_signed_channel_updates() {
+    assert!(!accepts_channel_update(
+        UpdateChannel::Stable,
+        &v("0.5.0"),
+        &v("0.5.37")
+    ));
 }
 
 /// Stable never reads the Nightly manifest and Nightly never reads the
