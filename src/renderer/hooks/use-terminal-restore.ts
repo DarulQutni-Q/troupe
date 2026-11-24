@@ -7,7 +7,7 @@ import { resolveAgentEnv } from '@/lib/agent-launch'
 import { getBuiltInAgent } from '@/lib/agents/agent-registry'
 import { loadCustomAgents } from '@/lib/agents/custom-agents'
 import { terminalApi } from '@/lib/api'
-import { resolveEnvForSpawn } from '@/lib/env-parser'
+import { passThroughProjectEnv } from '@/lib/env-parser'
 import { whenProjectSwitchSettled } from '@/lib/project-switch/status-store'
 import { shellApi } from '@/lib/shell-api'
 import {
@@ -880,7 +880,7 @@ async function restoreFromLayout(
 
     // Resolve project env vars for spawn
     // TODO: Pass actual system env from backend for variable expansion
-    const { env: projectEnv, hasProjectEnv } = resolveEnvForSpawn(project?.envVars, {})
+    const { env: projectEnv, hasProjectEnv } = passThroughProjectEnv(project?.envVars)
     const customAgents = await loadCustomAgents()
 
     debugLog('restoreFromLayout', `START [${restoreId}] ACQUIRING LOCK`, {
@@ -1408,7 +1408,7 @@ async function createDefaultTerminal(
 
     // Resolve project env vars for spawn
     // TODO: Pass actual system env from backend for variable expansion
-    const { env, hasProjectEnv } = resolveEnvForSpawn(project?.envVars, {})
+    const { env, hasProjectEnv } = passThroughProjectEnv(project?.envVars)
 
     const cwd = getDefaultCwdForProject(projectId)
 
