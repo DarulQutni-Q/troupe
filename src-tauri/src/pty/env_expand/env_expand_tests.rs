@@ -1,11 +1,12 @@
-//! Tests for [`super::expand_env_references`] and [`super::expand_custom_env`].
+//! Tests for [`super::expand_env_references`], [`super::expand_custom_env`]
+//! and [`super::value_references_var`].
 //!
 //! The fake base env stands in for the process env: expansion must resolve
 //! against it only, never against sibling custom vars.
 
 use std::collections::HashMap;
 
-use super::{expand_custom_env, expand_env_references};
+use super::{expand_custom_env, expand_env_references, value_references_var};
 
 fn fake_base() -> HashMap<String, String> {
     HashMap::from([
@@ -113,6 +114,44 @@ fn case_insensitive_lookup_matches_windows_keys() {
     );
     // Case-sensitive lookup does not match a differently-cased key.
     assert_eq!(expand_env_references("%PATH%\\x", &base, false), "\\x");
+}
+
+#[test]
+fn detects_path_references_in_all_three_forms() {
+    assert!(value_references_var("$HOME/bin:$PATH", "PATH", false));
+    assert!(value_references_var("prefix ${PATH} suffix", "PATH", false));
+    assert!(value_references_var("%PATH%;C:\\bin", "PATH", false));
+    assert!(value_references_var(
+        "a${HOME}b$USER-c%PATH%d",
+        "PATH",
+        false
+    ));
+    // The second `$` in `$$PATH` is a real reference.
+    assert!(value_references_var("$$PATH", "PATH", false));
+}
+
+#[test]
+fn rejects_lookalikes_and_non_references() {
+    // A longer name is a different variable.
+    assert!(!value_references_var("$PATHX/bin", "PATH", false));
+    assert!(!value_references_var("$PATH2", "PATH", false));
+    // A different variable, a literal assignment, a lone `$`.
+    assert!(!value_references_var("$HOME/bin", "PATH", false));
+    assert!(!value_references_var("PATH=/usr/bin", "PATH", false));
+    assert!(!value_references_var("price $", "PATH", false));
+    // A `{` right after a bare name is not a reference, same as expansion.
+    assert!(!value_references_var("a $PATH{bar} b", "PATH", false));
+    // Unterminated `%` form and a bare `%` are not references.
+    assert!(!value_references_var("%PATH", "PATH", false));
+    assert!(!value_references_var("100% sure", "PATH", false));
+    assert!(!value_references_var("", "PATH", false));
+}
+
+#[test]
+fn reference_matching_follows_lookup_case_rules() {
+    assert!(!value_references_var("$path/bin", "PATH", false));
+    assert!(value_references_var("$path/bin", "PATH", true));
+    assert!(value_references_var("%path%\\x", "PATH", true));
 }
 
 /// The merge step: `PATH=$HOME/bin:$PATH` expands against the fake base

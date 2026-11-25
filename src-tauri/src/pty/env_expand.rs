@@ -92,6 +92,72 @@ pub(crate) fn expand_env_references(
     out
 }
 
+/// Whether `value` contains a reference to the variable named `name`
+/// (`$NAME`, `${NAME}` or `%NAME%`), using the same recognition rules as
+/// `expand_env_references`: a bare `$NAME` needs the complete name (so
+/// `$NAME2` does not count), and a `{` right after a bare name is not a
+/// reference. With `case_insensitive` (Windows), `Path` and `PATH` match.
+pub(crate) fn value_references_var(value: &str, name: &str, case_insensitive: bool) -> bool {
+    let bytes = value.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'$' => {
+                // `${NAME}` braced form.
+                if bytes.get(i + 1) == Some(&b'{') {
+                    match bytes[i + 2..].iter().position(|b| *b == b'}') {
+                        Some(rel_end) => {
+                            let end = i + 2 + rel_end;
+                            if names_equal(&value[i + 2..end], name, case_insensitive) {
+                                return true;
+                            }
+                            i = end + 1;
+                        }
+                        None => {
+                            // Unterminated `${`: literal, keep scanning after `$`.
+                            i += 1;
+                        }
+                    }
+                    continue;
+                }
+                // `$NAME` bare form.
+                let (found, end) = scan_name(value, bytes, i + 1);
+                if !found.is_empty()
+                    && bytes.get(end) != Some(&b'{')
+                    && names_equal(found, name, case_insensitive)
+                {
+                    return true;
+                }
+                // Skip past the scanned name (or past `$` when there is none).
+                i = end.max(i + 1);
+            }
+            b'%' => {
+                // `%NAME%` Windows form.
+                let (found, end) = scan_name(value, bytes, i + 1);
+                if !found.is_empty()
+                    && bytes.get(end) == Some(&b'%')
+                    && names_equal(found, name, case_insensitive)
+                {
+                    return true;
+                }
+                i = end.max(i + 1);
+            }
+            _ => {
+                i += utf8_len(bytes[i]);
+            }
+        }
+    }
+    false
+}
+
+fn names_equal(a: &str, b: &str, case_insensitive: bool) -> bool {
+    if case_insensitive {
+        a.eq_ignore_ascii_case(b)
+    } else {
+        a == b
+    }
+}
+
 /// Expand every value in `custom` against `base` only, returning a new map.
 /// All values are expanded before any result is visible to another value,
 /// so a reference never resolves against a sibling custom var.
