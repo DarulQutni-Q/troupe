@@ -9,6 +9,7 @@
 //! changed shapes that row only. Colours resolve here, as xterm.js does at draw time: bold
 //! brightens the eight base colours, inverse swaps, dim halves the foreground's alpha.
 
+mod glyphs;
 pub mod keys;
 mod rows;
 
@@ -30,6 +31,8 @@ pub const FONT_SIZE: f32 = 14.0;
 pub const LINE_HEIGHT: f32 = 1.2;
 /// The terminal surface's padding (`px-4 py-0.5 pb-1`): left/right, top, bottom.
 pub const PAD: [f32; 3] = [16.0, 2.0, 4.0];
+/// The width `FitAddon` keeps for xterm.js's scroll bar (`DEFAULT_SCROLL_BAR_WIDTH`).
+pub const SCROLLBAR: f32 = 14.0;
 /// The phone shell's horizontal padding (`px-1.5`).
 pub const PAD_PHONE: f32 = 6.0;
 
@@ -60,9 +63,10 @@ impl Metrics {
         Metrics { cell_w, cell_h, style: probe.lh(cell_h).tracking(cell_w - advance) }
     }
 
-    /// The columns and rows that fit `width` x `height` points of content.
+    /// The columns and rows that fit `width` x `height` points of content, less the
+    /// scroll bar's width as xterm.js's `FitAddon` reserves it.
     pub fn fit(&self, width: f32, height: f32) -> (u16, u16) {
-        let cols = (width / self.cell_w).floor().clamp(2.0, 1000.0) as u16;
+        let cols = ((width - SCROLLBAR) / self.cell_w).floor().clamp(2.0, 1000.0) as u16;
         let rows = (height / self.cell_h).floor().clamp(1.0, 1000.0) as u16;
         (cols, rows)
     }
@@ -75,6 +79,8 @@ pub struct Palette {
     pub bg: Color,
     pub cursor: Color,
     pub cursor_accent: Color,
+    pub selection: Color,
+    pub selection_inactive: Color,
     pub ansi: [Color; 256],
 }
 
@@ -99,7 +105,15 @@ impl Palette {
             let v = (8 + i * 10) as u8;
             ansi[232 + i] = rgb(v, v, v);
         }
-        Palette { fg: x.foreground, bg: x.background, cursor: x.cursor, cursor_accent: x.cursor_accent, ansi }
+        Palette {
+            fg: x.foreground,
+            bg: x.background,
+            cursor: x.cursor,
+            cursor_accent: x.cursor_accent,
+            selection: x.selection_background,
+            selection_inactive: x.selection_inactive_background,
+            ansi,
+        }
     }
 
     pub fn resolve(&self, c: troupe_term::Color, default: Color) -> Color {
@@ -119,6 +133,18 @@ pub struct RowCache {
     key: Option<(Palette, [u32; 2], usize)>,
 }
 
+/// A run of cells on one visible row the view marks: a selection or a search match fills it
+/// under the text, a hovered link underlines it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Mark {
+    /// The visible row, 0 at the top of the view.
+    pub row: usize,
+    pub start: usize,
+    pub end: usize,
+    pub fill: Option<Color>,
+    pub underline: Option<Color>,
+}
+
 /// What a terminal's screen shows.
 pub struct Screen<'a> {
     pub term: &'a Term,
@@ -127,6 +153,14 @@ pub struct Screen<'a> {
     pub focused: bool,
     /// The blink phase: false while a blinking cursor is off.
     pub blink_on: bool,
+    pub marks: &'a [Mark],
+}
+
+impl Screen<'_> {
+    /// The index in [`Term::lines`] of the top visible row.
+    pub fn top(&self) -> usize {
+        self.term.screen_start().saturating_sub(self.scrolled)
+    }
 }
 
 /// The visible rows of `screen` as grid rows, reusing `cache` for unchanged lines.
@@ -138,7 +172,7 @@ pub fn visible_rows(screen: &Screen, palette: &Palette, m: &Metrics, cache: &mut
         cache.key = Some(key);
     }
     let lines = term.lines();
-    let top = term.screen_start().saturating_sub(screen.scrolled);
+    let top = screen.top();
     let mut kept = HashMap::with_capacity(term.rows());
     let rows = (top..top + term.rows())
         .filter_map(|i| Some((lines.get(i)?, lines.get(i + 1).is_some_and(|next| next.wrapped))))
@@ -165,7 +199,23 @@ pub fn screen(key: &str, screen: &Screen, palette: &Palette, m: &Metrics, cache:
     if on_screen {
         g = g.grid_caret(cursor.col.min(term.cols() - 1) as u16, cursor.row as u16);
     }
-    let mut surface = el().key(key.to_owned()).w(width).h(height).child(g);
+    let bar = |i: usize, layer: &str, mark: &Mark, color: Color, y: f32, h: f32| {
+        let w = mark.end.saturating_sub(mark.start) as f32 * m.cell_w;
+        el().key(format!("{key}-{layer}-{i}")).absolute(mark.start as f32 * m.cell_w, y).w(w).h(h).fill(color)
+    };
+    // Fills go under the grid, so the text stays readable; underlines go over it.
+    let mut surface = el().key(key.to_owned()).w(width).h(height);
+    for (i, mark) in screen.marks.iter().enumerate() {
+        if let Some(fill) = mark.fill {
+            surface = surface.child(bar(i, "fill", mark, fill, mark.row as f32 * m.cell_h, m.cell_h));
+        }
+    }
+    surface = surface.child(g);
+    for (i, mark) in screen.marks.iter().enumerate() {
+        if let Some(line) = mark.underline {
+            surface = surface.child(bar(i, "line", mark, line, (mark.row + 1) as f32 * m.cell_h - 1.0, 1.0));
+        }
+    }
     if on_screen && (screen.blink_on || !screen.focused) {
         surface = surface.child(cursor_box(term, screen.focused, palette, m));
     }

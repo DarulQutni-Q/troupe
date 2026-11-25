@@ -27,6 +27,16 @@ pub struct TermView {
     pub scrolled: usize,
     /// The part of a line the wheel moved that has not scrolled a whole line yet.
     pub wheel: f32,
+    pub selection: Option<crate::term_select::Held>,
+    pub find: Option<crate::term_select::Find>,
+    /// The link under the pointer, underlined.
+    pub hover: Option<troupe_term::links::Link>,
+}
+
+impl TermView {
+    pub(crate) fn new(cells: Cells) -> TermView {
+        TermView { cells, cache: RefCell::default(), scrolled: 0, wheel: 0.0, selection: None, find: None, hover: None }
+    }
 }
 
 #[derive(Default)]
@@ -43,6 +53,28 @@ pub struct TerminalUi {
     /// project switch.
     shown: Option<(String, BTreeSet<String>)>,
     metrics: Option<Metrics>,
+    /// The terminal that took the last key or press: the Terminal Search shortcut's target.
+    pub focused: Option<String>,
+    /// What a find field edits when its terminal is gone mid-frame.
+    pub spare_edit: rune::TextEdit,
+    /// When the cursor's blink last restarted (input or output).
+    pub blink_from: f64,
+    /// The terminal whose context menu is open, and where it was asked for.
+    pub menu: Option<(String, rune::PointerPress)>,
+    /// The assist card, over the terminal it names.
+    pub assist: Option<crate::term_menu::Assist>,
+    /// Restarts waiting for their new PTY: the spawn call and the terminal it replaces.
+    pub restarts: BTreeMap<CallId, String>,
+    pub history: crate::command_history::HistoryUi,
+    /// The phone key bar shows only its toggle and Paste.
+    pub keys_hidden: bool,
+    /// Whether the focused cursor showed in the last frame, to redraw when it blinks.
+    pub blink_shown: Option<bool>,
+    /// The last pointer report, by terminal: a move to the same cell is not sent again.
+    pub last_mouse: Option<(String, troupe_term::mouse::MouseEvent)>,
+    /// Every command sent, for the tests (a test state has no terminal link).
+    #[cfg(test)]
+    pub(crate) sent: Vec<Command>,
 }
 
 impl TerminalUi {
@@ -57,6 +89,8 @@ impl TerminalUi {
     }
 
     fn send(&mut self, command: Command) {
+        #[cfg(test)]
+        self.sent.push(command.clone());
         match &mut self.host {
             Some(host) => host.send(command),
             None => log::warn!("[term] no terminal link; {command:?} dropped"),
@@ -73,9 +107,15 @@ impl TerminalUi {
 impl State {
     /// The `+` menu's "New terminal": a login shell in the visible project's folder.
     pub(crate) fn new_terminal(&mut self, pane: Option<String>) {
+        self.spawn_terminal(pane);
+    }
+
+    /// Asks the host for a shell in the visible project's folder; the spawn's call, when a
+    /// project is shown.
+    pub(crate) fn spawn_terminal(&mut self, pane: Option<String>) -> Option<CallId> {
         let Some(project) = self.active_project().cloned() else {
             log::warn!("[term] new terminal with no project shown");
-            return;
+            return None;
         };
         let (cols, rows) = DEFAULT_SIZE;
         let options = TerminalSpawnOptions {
@@ -90,6 +130,7 @@ impl State {
         let call = self.terms.request(WebTerminalRequestType::Spawn, payload, true);
         self.terms.sessions.spawn(call, &project.id, pane);
         log::info!("[term] spawning a terminal for {} (call {call})", project.id);
+        Some(call)
     }
 
     /// Carries out what the terminal link said; true when the view must redraw.
@@ -97,35 +138,44 @@ impl State {
         if self.terms.metrics.is_none() && self.terms.host.is_some() {
             self.terms.metrics = Some(Metrics::new(ui::terminal::FONT_SIZE, ui::terminal::LINE_HEIGHT));
         }
-        let Some(host) = &mut self.terms.host else { return false };
+        let Some(host) = &mut self.terms.host else { return self.refresh_terminal_finds(&[], now) };
         let events = host.drain(now);
         let mut changed = false;
+        let mut redrawn = Vec::new();
         for event in events {
             changed = true;
             match event {
-                TermEvent::Changed(_) => {}
+                TermEvent::Changed(id) => {
+                    if self.terms.focused.as_ref() == Some(&id) {
+                        self.terms.blink_from = now;
+                    }
+                    redrawn.push(id)
+                }
                 TermEvent::Link(output) => self.terminal_output(output),
             }
         }
-        changed | self.reap_closed_tabs()
+        changed | self.reap_closed_tabs() | self.refresh_terminal_finds(&redrawn, now)
     }
 
-    fn terminal_output(&mut self, output: Output) {
+    pub(crate) fn terminal_output(&mut self, output: Output) {
         match output {
             Output::Reply { call, result } if self.terms.sessions.spawning.contains_key(&call) => match result {
                 Ok(data) => match serde_json::from_value::<SpawnedTerminal>(data) {
                     Ok(spawned) => self.terminal_spawned(call, spawned),
                     Err(e) => {
                         self.terms.sessions.spawn_failed(call);
+                        self.terms.restarts.remove(&call);
                         log::error!("[term] unreadable spawn reply: {e}");
                     }
                 },
                 Err(e) => {
                     self.terms.sessions.spawn_failed(call);
+                    self.terms.restarts.remove(&call);
                     log::error!("[term] spawn failed: {} {}", e.code, e.message);
                     self.toast_error("Couldn't open a terminal", &e.message);
                 }
             },
+            Output::Reply { call, result } if self.terms.sessions.restoring.contains_key(&call) => self.terminal_restored(call, result),
             Output::Reply { result: Err(e), .. } => log::warn!("[term] request failed: {} {}", e.code, e.message),
             Output::Reply { .. } | Output::Status(_) | Output::Data { .. } | Output::Replay { .. } => {}
             Output::Attached(attached) => log::info!("[term] attached {} (pid {})", attached.id, attached.pid),
@@ -145,30 +195,64 @@ impl State {
     }
 
     fn terminal_spawned(&mut self, call: CallId, s: SpawnedTerminal) {
+        let restarted = self.terms.restarts.remove(&call);
         let spawned = Spawned { id: s.id.clone(), shell: s.shell, cwd: s.cwd, pid: s.pid, cols: s.cols, rows: s.rows, claim: s.claim.clone() };
         let Some((session, pane)) = self.terms.sessions.spawned(call, spawned) else { return };
         let (project, cols, rows) = (session.project_id.clone(), session.cols, session.rows);
         log::info!("[term] spawned {} (pid {}) for {project}", s.id, session.pid);
-        if self.workspace.project() != Some(project.as_str()) {
-            // The project closed or switched before the PTY started: release it, as React does
-            // when the pane it was asked for is gone.
-            log::info!("[term] released {}: project {project} is no longer shown", s.id);
+        let orphaned = restarted.as_deref().is_some_and(|old| !self.shows_terminal(old));
+        if self.workspace.project() != Some(project.as_str()) || orphaned {
+            // The project closed or switched, or the restarted tab closed, before the PTY
+            // started: release it, as React does when the pane it was asked for is gone.
+            log::info!("[term] released {}: nothing shows it", s.id);
             self.terms.sessions.close(&s.id);
             self.terms.request(WebTerminalRequestType::Kill, json!({ "terminalId": s.id }), true);
             return;
         }
-        let Some(host) = &mut self.terms.host else { return };
-        let cells = host.open(&s.id, cols, rows);
-        self.terms.views.insert(s.id.clone(), TermView { cells, cache: RefCell::default(), scrolled: 0, wheel: 0.0 });
-        self.terms.opened += 1;
-        self.terms.names.insert(s.id.clone(), format!("Terminal {}", self.terms.opened));
-        self.terms.send(Command::Attach { terminal_id: s.id.clone(), claim: s.claim, log_epoch: None, last_seq: 0 });
-        self.workspace.step(WorkspaceEvent::AddTerminalTab(s.id, pane));
+        self.terminal_attach(&s.id, &s.claim, cols, rows);
+        match restarted {
+            Some(old) => self.terminal_restarted(&old, &s.id),
+            None => {
+                self.workspace.step(WorkspaceEvent::AddTerminalTab(s.id, pane));
+            }
+        }
     }
 
-    /// A closed terminal tab kills its PTY. A tab that went because the project switched is
-    /// not closed: its session stays.
-    fn reap_closed_tabs(&mut self) -> bool {
+    /// Opens the cells of a session this client now holds and attaches from the start, so the
+    /// host replays what the PTY printed.
+    fn terminal_attach(&mut self, id: &str, claim: &str, cols: u16, rows: u16) {
+        let Some(host) = &mut self.terms.host else { return };
+        let cells = host.open(id, cols, rows);
+        self.terms.views.insert(id.to_owned(), TermView::new(cells));
+        self.terms.opened += 1;
+        self.terms.names.insert(id.to_owned(), format!("Terminal {}", self.terms.opened));
+        self.terms.send(Command::Attach { terminal_id: id.to_owned(), claim: claim.to_owned(), log_epoch: None, last_seq: 0 });
+    }
+
+    /// The `list_preserved` reply for a restored tab: re-attach its PTY when the host still
+    /// runs it, as React's restore does.
+    fn terminal_restored(&mut self, call: CallId, result: Result<Value, client::terminal::TermError>) {
+        let terminal_id = self.terms.sessions.restoring.get(&call).map(|r| r.terminal_id.clone()).unwrap_or_default();
+        let found = match result {
+            Ok(data) => preserved_entry(&data, &terminal_id),
+            Err(e) => {
+                log::warn!("[term] list_preserved for a restored tab failed: {} {}", e.code, e.message);
+                None
+            }
+        };
+        let Some(session) = self.terms.sessions.restored(call, found) else {
+            log::info!("[term] restored tab {terminal_id} has no preserved PTY to attach");
+            return;
+        };
+        let (id, claim, cols, rows, pid) = (session.id.clone(), session.claim.clone(), session.cols, session.rows, session.pid);
+        log::info!("[term] re-attaching restored terminal {id} (pid {pid})");
+        self.terminal_attach(&id, &claim, cols, rows);
+    }
+
+    /// A closed terminal tab kills its PTY, when this client holds it. A tab that went because
+    /// the project switched is not closed: its session stays. A shown tab for a PTY this client
+    /// does not hold (a saved layout brought it back) asks the host whether it still runs.
+    pub(crate) fn reap_closed_tabs(&mut self) -> bool {
         let Some(project) = self.workspace.project().map(str::to_owned) else { return false };
         let now: BTreeSet<String> = model::workspace::leaves(self.workspace.root())
             .into_iter()
@@ -182,23 +266,50 @@ impl State {
             Some((shown_project, before)) if *shown_project == project => before.difference(&now).cloned().collect(),
             _ => Vec::new(),
         };
+        if self.terms.host.is_some() {
+            for id in now.iter().filter(|id| self.terms.sessions.should_restore(id)).cloned().collect::<Vec<_>>() {
+                let call = self.terms.request(WebTerminalRequestType::ListPreserved, json!({ "projectId": project, "terminalId": id }), false);
+                self.terms.sessions.restore(call, &project, &id);
+                log::info!("[term] asking whether restored tab {id} still runs (call {call})");
+            }
+        }
         self.terms.shown = Some((project, now));
         for id in &closed {
-            log::info!("[term] tab closed; killing {id}");
-            self.terms.sessions.close(id);
             self.terms.views.remove(id);
             self.terms.names.remove(id);
             if let Some(host) = &mut self.terms.host {
                 host.forget(id);
             }
+            if self.terms.sessions.close(id).is_none() {
+                log::info!("[term] tab closed for {id}, which this client does not hold; nothing to kill");
+                continue;
+            }
+            log::info!("[term] tab closed; killing {id}");
             self.terms.request(WebTerminalRequestType::Kill, json!({ "terminalId": id }), true);
             self.terms.send(Command::Detach { terminal_id: id.clone() });
         }
         !closed.is_empty()
     }
 
-    /// A key while terminal `id` has focus: true when it went to the PTY.
-    pub(crate) fn terminal_key(&mut self, id: &str, key: &KeyEvent) -> bool {
+    /// A key while terminal `id` has focus: true when the terminal took it.
+    pub(crate) fn terminal_key(&mut self, id: &str, key: &KeyEvent, tx: &mut Tx) -> bool {
+        self.terms.focused = Some(id.to_owned());
+        self.terms.blink_from = self.now;
+        // The platform modifier (⌘, or Ctrl elsewhere) with C copies a selection and with A
+        // selects everything, as React's clipboard keys do; ^C without a selection interrupts.
+        if !key.mods.alt && !key.mods.shift {
+            if key.is_command('c') && self.terminal_copy(id, tx) {
+                return true;
+            }
+            if key.is_command('v') {
+                self.terminal_paste_clipboard(id, tx);
+                return true;
+            }
+            if key.is_command('a') {
+                self.terminal_select_all(id);
+                return true;
+            }
+        }
         if let Some(chord) = crate::keys::chord(key, self.shortcuts.platform)
             && model::shortcuts::find_match(&self.shortcuts, &chord).is_some()
         {
@@ -218,18 +329,24 @@ impl State {
         }
         let Some(bytes) = ui::terminal::keys::encode(key, app_cursor) else { return false };
         view.scrolled = 0;
+        view.selection = None;
         self.terminal_write(id, &String::from_utf8_lossy(&bytes));
         true
     }
 
-    /// The wheel over terminal `id` moved its content `dy` points down: scroll the scrollback.
-    pub(crate) fn terminal_wheel(&mut self, id: &str, dy: f32) -> bool {
+    /// The wheel over terminal `id` moved its content `dy` points down: the program takes it
+    /// when it reports the pointer or shows the alternate screen, else the scrollback scrolls.
+    pub(crate) fn terminal_wheel(&mut self, id: &str, e: &rune::WheelEvent) -> bool {
         let cell_h = self.terms.metrics().cell_h;
         let Some(view) = self.terms.views.get_mut(id) else { return false };
-        let history = view.cells.lock().map(|t| t.screen_start()).unwrap_or(0);
-        view.wheel += dy / cell_h;
+        view.wheel += e.dy / cell_h;
         let lines = view.wheel.trunc();
         view.wheel -= lines;
+        if self.terminal_wheel_input(id, lines as i32, e) {
+            return true;
+        }
+        let Some(view) = self.terms.views.get_mut(id) else { return false };
+        let history = view.cells.lock().map(|t| t.screen_start()).unwrap_or(0);
         view.scrolled = (view.scrolled as f32 + lines).clamp(0.0, history as f32) as usize;
         true
     }
@@ -256,3 +373,23 @@ impl State {
         self.terms.request(WebTerminalRequestType::Resize, json!({ "terminalId": id, "cols": cols, "rows": rows }), false);
     }
 }
+
+/// The `list_preserved` entry for `terminal_id` with a claim, if the reply holds one.
+fn preserved_entry(data: &Value, terminal_id: &str) -> Option<Spawned> {
+    let entry = data.get("terminals")?.as_array()?.iter().find(|e| e.get("id").and_then(Value::as_str) == Some(terminal_id))?;
+    let text = |key: &str| entry.get(key).and_then(Value::as_str).map(str::to_owned);
+    let number = |key: &str| entry.get(key).and_then(Value::as_u64);
+    Some(Spawned {
+        id: terminal_id.to_owned(),
+        shell: text("shell").unwrap_or_default(),
+        cwd: text("cwd").unwrap_or_default(),
+        pid: number("pid").and_then(|n| u32::try_from(n).ok()).unwrap_or(0),
+        cols: number("cols").and_then(|n| u16::try_from(n).ok()).unwrap_or(DEFAULT_SIZE.0),
+        rows: number("rows").and_then(|n| u16::try_from(n).ok()).unwrap_or(DEFAULT_SIZE.1),
+        claim: text("claim")?,
+    })
+}
+
+#[cfg(test)]
+#[path = "terminal_tests.rs"]
+mod tests;
