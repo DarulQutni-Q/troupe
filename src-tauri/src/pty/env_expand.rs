@@ -134,13 +134,17 @@ pub(crate) fn value_references_var(value: &str, name: &str, case_insensitive: bo
             b'%' => {
                 // `%NAME%` Windows form.
                 let (found, end) = scan_name(value, bytes, i + 1);
-                if !found.is_empty()
-                    && bytes.get(end) == Some(&b'%')
-                    && names_equal(found, name, case_insensitive)
-                {
-                    return true;
+                if !found.is_empty() && bytes.get(end) == Some(&b'%') {
+                    if names_equal(found, name, case_insensitive) {
+                        return true;
+                    }
+                    // A complete reference: advance past its closing `%`
+                    // so it cannot be reused as the opening `%` of
+                    // another one (`%FOO%PATH%` references FOO only).
+                    i = end + 1;
+                } else {
+                    i = end.max(i + 1);
                 }
-                i = end.max(i + 1);
             }
             _ => {
                 i += utf8_len(bytes[i]);

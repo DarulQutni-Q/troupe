@@ -128,6 +128,9 @@ fn detects_path_references_in_all_three_forms() {
     ));
     // The second `$` in `$$PATH` is a real reference.
     assert!(value_references_var("$$PATH", "PATH", false));
+    // A complete `%FOO%` does not hide a real reference after it.
+    assert!(value_references_var("%FOO%%PATH%", "PATH", false));
+    assert!(value_references_var("%FOO% $PATH", "PATH", false));
 }
 
 #[test]
@@ -145,6 +148,11 @@ fn rejects_lookalikes_and_non_references() {
     assert!(!value_references_var("%PATH", "PATH", false));
     assert!(!value_references_var("100% sure", "PATH", false));
     assert!(!value_references_var("", "PATH", false));
+    // A closing `%` cannot be reused as the opening `%` of another
+    // reference: `%FOO%PATH%` references FOO only, the trailing `PATH%`
+    // stays literal under expansion.
+    assert!(!value_references_var("%FOO%PATH%", "PATH", false));
+    assert!(!value_references_var("%FOO%PATH%", "PATH", true));
 }
 
 #[test]
